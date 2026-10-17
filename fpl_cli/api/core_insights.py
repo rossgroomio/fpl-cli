@@ -136,20 +136,72 @@ def _optional_float(row: Mapping[str, str], column: str) -> float | None:
     return value
 
 
-def _elo(raw: str) -> float | None:
+def _numeric_cell(raw: str | None) -> float | None:
+    """A numeric matches.csv / playermatchstats.csv cell, or None when it holds no number.
+
+    None covers the cell `csv.DictReader` fills in for a row shorter than
+    its header, a blank or whitespace-only cell, and NaN or infinity, which
+    `float()` parses without raising and no column here can mean. Text that
+    is not a number raises ValueError instead: that is a format change, and
+    dropping the row keeps it visible to the tripwires rather than quietly
+    reading it as missing.
+    """
+    if raw is None or not raw.strip():
+        return None
+    value = float(raw)
+    return value if isfinite(value) else None
+
+
+def _elo(raw: str | None) -> float | None:
     """One side's Elo from matches.csv, or None when the cell carries none.
 
     Core-Insights publishes an Elo it has not filled in as a blank cell: at
     the start of a season (#142), and for every match from GW3 of 2026-27
     (#431). Dropping the row with it threw away the match's xG, minutes and
-    defensive stats too, so a blank Elo is unknown rather than fatal. A value
-    that is not a positive finite number is no rating either.
+    defensive stats too, so a blank Elo is unknown rather than fatal, and so
+    is a number that cannot be a rating (zero or below). Text that is not a
+    number still raises, through `_numeric_cell`.
     """
-    try:
-        value = float(raw)
-    except ValueError:
-        return None
-    return value if isfinite(value) and value > 0 else None
+    value = _numeric_cell(raw)
+    return value if value is not None and value > 0 else None
+
+
+def _match_xg(row: Mapping[str, str | None]) -> float:
+    """One playermatchstats.csv row's xG; raises ValueError when it has none to give.
+
+    Blank is how 2026-27 writes a match with no shot: 2025-26 wrote 0 for
+    those, about half of every gameweek's appearances, and 2026-27 leaves xg
+    and total_shots empty instead and never writes 0. Dropping the row kept
+    only the matches a player shot in, so every per-90 figure built on them
+    read high. A blank xG reads as 0 only when the row agrees there was no
+    shot and no penalty, though: with one recorded, the xG is missing rather
+    than zero (a feed not filled in yet), and the row drops so the tripwires
+    count it. A row cut short before its xg cell drops too.
+    """
+    raw = row["xg"]
+    if raw is None:
+        msg = "row ends before its xg cell"
+        raise ValueError(msg)
+    value = _numeric_cell(raw)
+    if value is not None:
+        return value
+    if any(
+        _numeric_cell(row.get(column))
+        for column in ("total_shots", "penalties_scored", "penalties_missed")
+    ):
+        msg = "xg is blank on a row that records a shot"
+        raise ValueError(msg)
+    return 0.0
+
+
+def match_stats_gameweeks(current_gw: int) -> range:
+    """The gameweeks `get_match_stats` reads for *current_gw*: up to 12 before it.
+
+    Twelve is the lookback of the rolling window `compute_adjusted_npxg`
+    reads. The `fpl doctor --providers` probe scans this same range, so its
+    verdict on Elo coverage is about the matches scoring actually uses.
+    """
+    return range(max(1, current_gw - 12), current_gw)
 
 
 def make_core_insights_fetcher(ttl: timedelta = DEFAULT_TTL) -> DatasetFetcher:
@@ -216,7 +268,7 @@ def parse_match_records(
     a weaker header check, so it cannot pass a file the runtime reads as zero
     records (#142). Elo and xG are the exceptions (#431): the columns must
     be there, but a blank Elo keeps the row with an unknown `opponent_elo`,
-    and a blank xG is a match with no shot, so it reads as 0.
+    and a blank xG on a row with no shot reads as 0 (`_match_xg`).
     """
     matches: dict[str, dict[str, str]] = {}
     for row in csv.DictReader(io.StringIO(matches_text)):
@@ -228,10 +280,13 @@ def parse_match_records(
     rows_read = 0
     for row in csv.DictReader(io.StringIO(stats_text)):
         rows_read += 1
+        # TypeError beside ValueError throughout: `csv.DictReader` fills a row
+        # shorter than its header with None, which `int()` / `float()` reject
+        # with TypeError, and an uncaught one took every gameweek down.
         try:
             pid = int(row["player_id"])
             mid = row["match_id"]
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, TypeError):
             continue
 
         match = matches.get(mid)
@@ -247,21 +302,16 @@ def parse_match_records(
             away_elo = _elo(match["away_team_elo"])
             gameweek = int(float(match["gameweek"]))
             home_team_code = int(float(match["home_team"]))
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, TypeError):
             continue
 
         is_home = player.team_code == home_team_code
         opponent_elo = away_elo if is_home else home_elo
 
         try:
-            # Blank is how 2026-27 writes a match with no shot: 2025-26 wrote
-            # 0 for those, about half of every gameweek's appearances, and
-            # 2026-27 leaves xg and total_shots empty instead and never writes
-            # 0. Dropping the row kept only the matches a player shot in, so
-            # every per-90 figure built on them read high.
-            xg = float(row["xg"] or 0)
+            xg = _match_xg(row)
             minutes_played = int(float(row["minutes_played"]))
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, TypeError):
             continue
 
         record: MatchRecord = {
@@ -289,6 +339,33 @@ def parse_match_records(
         result.setdefault(pid, []).append(record)
 
     return result, rows_read
+
+
+def count_matches_missing_elo(matches_text: str) -> tuple[int, int]:
+    """(matches without a usable Elo on either side, matches) in one matches.csv.
+
+    Each cell is read by `_elo`, the rule the join applies, so the `fpl
+    doctor --providers` probe counts what scoring sees. Matches are keyed on
+    match_id as the join keys them, and one flagged unfinished is left out:
+    it has no player rows to adjust. Text where a rating belongs counts as
+    missing here; the join drops those rows, and the probe reports that drop
+    on its own.
+    """
+    matches: dict[str, dict[str, str]] = {}
+    for row in csv.DictReader(io.StringIO(matches_text)):
+        mid = row.get("match_id")
+        if mid and (row.get("finished") or "").strip().lower() != "false":
+            matches[mid] = row
+
+    missing = 0
+    for row in matches.values():
+        try:
+            rated = _elo(row.get("home_team_elo")) and _elo(row.get("away_team_elo"))
+        except ValueError:
+            rated = None
+        if not rated:
+            missing += 1
+    return missing, len(matches)
 
 
 def parse_gw_stat_rows(
@@ -445,8 +522,7 @@ class CoreInsightsClient:
         lookup = await self._fetch_player_lookup()
 
         # Fetch last 12 GWs concurrently (2 files per GW)
-        first_gw = max(1, current_gw - 12)
-        gw_range = range(first_gw, current_gw)
+        gw_range = match_stats_gameweeks(current_gw)
         fetch_tasks = []
         for gw in gw_range:
             fetch_tasks.append(self.fetcher.get(self._gw_path(gw, "matches.csv")))
@@ -463,7 +539,8 @@ class CoreInsightsClient:
         # runs (#142). A gameweek missing either file contributes nothing.
         result: dict[int, list[MatchRecord]] = {}
         joined_gws = 0
-        rows_read = 0
+        # Gameweeks that kept under half their rows, as "GW3 (0 of 398)".
+        thin_gws: list[str] = []
         for i, gw in enumerate(gw_range):
             matches_result = raw_results[i * 2]
             stats_result = raw_results[i * 2 + 1]
@@ -475,11 +552,12 @@ class CoreInsightsClient:
                 continue
             joined_gws += 1
             gw_records, gw_rows_read = parse_match_records(matches_result, stats_result, lookup)
-            rows_read += gw_rows_read
+            gw_kept = sum(len(records) for records in gw_records.values())
+            if gw_kept * 2 < gw_rows_read:
+                thin_gws.append(f"GW{gw} ({gw_kept} of {gw_rows_read})")
             for pid, records in gw_records.items():
                 result.setdefault(pid, []).extend(records)
 
-        kept = sum(len(records) for records in result.values())
         if joined_gws and not result:
             logger.warning(
                 "Core-Insights match stats parsed to 0 records from %d gameweek file(s) — "
@@ -487,19 +565,19 @@ class CoreInsightsClient:
                 "are unavailable",
                 joined_gws,
             )
-        elif kept * 2 < rows_read:
+        elif thin_gws:
             # A partial collapse is as silent as a total one at exactly zero:
             # #431 kept GW1-2 alone, enough records to stay off the warning
             # above and too few for any player to reach the adjusted-npxG
-            # minimum, so every score fell back without a word. This also
-            # caught the blank-xG drop above, which no warning had named.
+            # minimum, so every score fell back without a word. Judged per
+            # gameweek, because a total across the window lets intact early
+            # gameweeks hide the newest ones collapsing, and the rolling
+            # window leans on the newest.
             logger.warning(
-                "Core-Insights match stats kept %d of %d player-match rows from %d "
-                "gameweek file(s) — the upstream format may have changed; "
-                "opponent-adjusted xG and consistency signals rest on what survived",
-                kept,
-                rows_read,
-                joined_gws,
+                "Core-Insights match stats kept under half their player-match rows in "
+                "%s — the upstream format may have changed; opponent-adjusted xG and "
+                "consistency signals rest on what survived",
+                ", ".join(thin_gws),
             )
         self._match_records = result
         return result

@@ -476,6 +476,10 @@ async def _ci_gw_file_text(fetcher: DatasetFetcher, path: str) -> str | None:
         raise
 
 
+def _ci_matches_path(season: str, gw: int) -> str:
+    return f"{season}/By Tournament/Premier League/GW{gw}/matches.csv"
+
+
 def _ci_gw_paths(season: str, gw: int) -> list[tuple[str, str, frozenset[str]]]:
     from fpl_cli.api.core_insights import (
         GW_STATS_REQUIRED_COLUMNS,
@@ -485,7 +489,7 @@ def _ci_gw_paths(season: str, gw: int) -> list[tuple[str, str, frozenset[str]]]:
 
     tournament = f"{season}/By Tournament/Premier League/GW{gw}"
     return [
-        ("matches.csv", f"{tournament}/matches.csv", MATCHES_REQUIRED_COLUMNS),
+        ("matches.csv", _ci_matches_path(season, gw), MATCHES_REQUIRED_COLUMNS),
         (
             "playermatchstats.csv",
             f"{tournament}/playermatchstats.csv",
@@ -526,21 +530,29 @@ class _GwProbe:
     unknown: list[str]
     match_records: int
     gw_stat_rows: int
-    # Records the join kept with no opponent Elo (#431): not a parse failure,
-    # but each one scores with a neutral opponent factor.
-    unknown_elo_records: int
+    # playermatchstats.csv rows the join read, so a majority drop shows up
+    # here as it does in the runtime's warning (#431).
+    match_rows_read: int
+
+    @property
+    def thin_units(self) -> set[str]:
+        """The match join, when it kept rows but under half of those it read."""
+        if self.match_records and self.match_records * 2 < self.match_rows_read:
+            return {MATCH_JOIN_UNIT}
+        return set()
 
     @property
     def unusable_units(self) -> set[str]:
-        """Units this gameweek yields nothing from, however they failed.
+        """Units this gameweek yields nothing, or too little, from, however they failed.
 
         Absent and empty are the same outcome one gameweek later — the data
         is not there — so persistence is judged on the unit, not on the
         failure kind. Comparing kind against kind would let a unit that
         404s one gameweek and parses to nothing the next read as two
-        separate one-off lags.
+        separate one-off lags. A join keeping under half its rows counts
+        too: the runtime warns on it, so the probe must not read it as ok.
         """
-        return {FILE_UNITS[f] for f in self.absent} | set(self.empty)
+        return {FILE_UNITS[f] for f in self.absent} | set(self.empty) | self.thin_units
 
     @property
     def unknown_units(self) -> set[str]:
@@ -605,15 +617,10 @@ async def _ci_probe_gw(
     gw_stats_text = by_name["player_gameweek_stats.csv"]
 
     match_records = 0
-    unknown_elo_records = 0
+    match_rows_read = 0
     if matches_text is not None and stats_text is not None:
-        joined = [
-            record
-            for records in parse_match_records(matches_text, stats_text, lookup)[0].values()
-            for record in records
-        ]
-        match_records = len(joined)
-        unknown_elo_records = sum(1 for r in joined if r["opponent_elo"] is None)
+        joined, match_rows_read = parse_match_records(matches_text, stats_text, lookup)
+        match_records = sum(len(records) for records in joined.values())
     gw_stat_rows = 0
     if gw_stats_text is not None:
         gw_stat_rows = len(parse_gw_stat_rows(gw_stats_text, lookup)[0])
@@ -626,36 +633,108 @@ async def _ci_probe_gw(
 
     return _GwProbe(
         absent, column_problems, empty, unknown, match_records, gw_stat_rows,
-        unknown_elo_records,
+        match_rows_read,
     )
 
 
-def _ci_elo_phrase(
-    probe: _GwProbe, previous: _GwProbe | None, previous_gw: int
-) -> str | None:
-    """Name an Elo gap in the match join, or None when every record carries one.
+@dataclasses.dataclass(frozen=True)
+class _EloCoverage:
+    """How many matches lack opponent Elo across the window scoring reads.
 
     A blank Elo no longer empties the join (#431): the record is kept and
-    scores with a neutral opponent factor, so what it costs is the opponent
-    adjustment, not the signal. The previous gameweek tells a backfill in
-    progress from an upstream gap.
+    scores with a neutral opponent factor, so what a gap costs is the
+    opponent adjustment, not the signal. The window, not the newest
+    gameweek, is what the runtime adjusts over, so it is what the verdict
+    is about: blanks a backfill left behind in earlier gameweeks still cost
+    the adjustment, and one blank match among dozens costs almost nothing.
     """
-    if not probe.unknown_elo_records:
-        return None
-    phrase = (
-        f"matches.csv carries no opponent Elo for {probe.unknown_elo_records} of "
-        f"{probe.match_records} player-match records, so those matches count "
-        "unadjusted in the opponent-adjusted xG signals"
-    )
-    if previous is None or not previous.match_records:
-        return phrase
-    if previous.unknown_elo_records:
-        return (
-            f"{phrase}; GW{previous_gw} has none for {previous.unknown_elo_records} "
-            f"of {previous.match_records} either, so this is an upstream gap rather "
-            "than a backfill in progress"
+
+    gameweeks: list[int]
+    missing_by_gw: dict[int, int]
+    matches_by_gw: dict[int, int]
+
+    @property
+    def missing(self) -> int:
+        return sum(self.missing_by_gw.values())
+
+    @property
+    def matches(self) -> int:
+        return sum(self.matches_by_gw.values())
+
+    @property
+    def gap(self) -> bool:
+        """Whether most matches lack Elo: the adjustment is then mostly off."""
+        return self.missing * 2 > self.matches
+
+    def phrase(self) -> str | None:
+        """Name the gap, or the minority without Elo, or None when every match has it."""
+        if not self.missing:
+            return None
+        first, last = self.gameweeks[0], self.gameweeks[-1]
+        span = f"GW{first}" if first == last else f"GW{first}-{last}"
+        if not self.gap:
+            return (
+                f"{self.missing} of {self.matches} matches in {span} carry no "
+                "opponent Elo and count unadjusted"
+            )
+        phrase = (
+            f"opponent Elo is missing for {self.missing} of {self.matches} matches in "
+            f"{span}, the window scoring reads, so those matches count unadjusted in "
+            "the opponent-adjusted xG signals"
         )
-    return f"{phrase}; GW{previous_gw} carries it, so this is likely a backfill in progress"
+        lacking = [gw for gw in self.gameweeks if self.missing_by_gw[gw]]
+        if lacking == [last]:
+            return f"{phrase}; only GW{last} lacks it, so this is likely a backfill in progress"
+        # The earliest gameweek from which every match lacks it, when there is one.
+        blank_from = None
+        for gw in reversed(self.gameweeks):
+            if self.missing_by_gw[gw] != self.matches_by_gw[gw]:
+                break
+            blank_from = gw
+        since = f"every match from GW{blank_from} lacks it, " if blank_from else ""
+        return (
+            f"{phrase}; {since}so this is an upstream gap rather than a backfill in "
+            "progress, and clears only once Core-Insights fills Elo in"
+        )
+
+
+async def _ci_elo_coverage(
+    fetcher: DatasetFetcher, season: str, latest_finished_gw: int
+) -> _EloCoverage | None:
+    """Elo coverage over the gameweeks `get_match_stats` reads, or None when none fetch.
+
+    Only matches.csv carries Elo, so only it is fetched. A gameweek that will
+    not fetch or 404s is left out rather than failing the check: the per-GW
+    probe already reports on the files themselves.
+    """
+    from fpl_cli.api.core_insights import count_matches_missing_elo, match_stats_gameweeks
+
+    window = list(match_stats_gameweeks(latest_finished_gw + 1))
+    texts = await asyncio.gather(
+        *(_ci_gw_file_text(fetcher, _ci_matches_path(season, gw)) for gw in window),
+        return_exceptions=True,
+    )
+    missing_by_gw: dict[int, int] = {}
+    matches_by_gw: dict[int, int] = {}
+    for gw, text in zip(window, texts):
+        if text is None or isinstance(text, BaseException):
+            continue
+        missing, matches = count_matches_missing_elo(text)
+        if matches:
+            missing_by_gw[gw], matches_by_gw[gw] = missing, matches
+    if not matches_by_gw:
+        return None
+    return _EloCoverage(sorted(matches_by_gw), missing_by_gw, matches_by_gw)
+
+
+def _ci_thin_phrase(probe: _GwProbe) -> str:
+    """Name a match join that kept rows, but under half of them."""
+    return (
+        f"{MATCH_JOIN_UNIT} keep only {probe.match_records} of "
+        f"{probe.match_rows_read} player-match rows — every expected column is "
+        "present but most rows do not survive the join, so opponent-adjusted xG "
+        "signals run on what is left"
+    )
 
 
 def _ci_empty_phrase(units: list[str]) -> str:
@@ -680,10 +759,12 @@ async def _ci_gw_check(
     every expected column and still parsed to zero records (Elo published
     blank at the start of a season), so the probe reported ok while every
     scoring command warned the signal was gone. It runs the runtime parsers
-    here instead and asserts they yield something. Since #431 a blank Elo
-    keeps its record, so it is reported as a gap of its own: stale, whether
-    it is a backfill in progress or open-ended upstream, because the runtime
-    degrades around it rather than reading anything wrong.
+    here instead and asserts they yield something, and that the match join
+    keeps most of the rows it reads. Since #431 a blank Elo keeps its
+    record, so Elo is judged on its own, across the window scoring reads
+    (`_EloCoverage`): stale when most of it lacks Elo, whether a backfill
+    in progress or open-ended upstream, because the runtime degrades around
+    it rather than reading anything wrong.
 
     A unit that yields nothing for the newest gameweek but is healthy for
     the previous one is a publishing lag (the dataset updates a few times a
@@ -710,14 +791,18 @@ async def _ci_gw_check(
 
     if probe.column_problems:
         return CheckResult(name, CheckStatus.BROKEN, "; ".join(probe.column_problems))
-    parsed = not probe.absent and not probe.empty
-    if parsed and not probe.unknown_elo_records:
+    coverage = await _ci_elo_coverage(fetcher, season, latest_finished_gw)
+    elo = coverage.phrase() if coverage is not None else None
+    elo_suffix = f"; {elo}" if elo else ""
+    if not probe.unusable_units:
+        if coverage is not None and coverage.gap:
+            return CheckResult(name, CheckStatus.STALE, f"GW{latest_finished_gw}: {elo}")
         return CheckResult(
             name,
             CheckStatus.OK,
             f"GW{latest_finished_gw}: all per-GW files present, parsing to "
             f"{probe.match_records} player-match records and "
-            f"{probe.gw_stat_rows} gameweek stat rows",
+            f"{probe.gw_stat_rows} gameweek stat rows{elo_suffix}",
         )
 
     # Something is wrong at the newest finished GW — decide lag vs break by
@@ -732,10 +817,6 @@ async def _ci_gw_check(
         previous = await _ci_probe_gw(
             fetcher, season, previous_gw, lookup, tolerate_errors=True
         )
-    elo_gap = _ci_elo_phrase(probe, previous, previous_gw)
-    elo_suffix = f"; {elo_gap}" if elo_gap else ""
-    if parsed:
-        return CheckResult(name, CheckStatus.STALE, f"GW{latest_finished_gw}: {elo_gap}")
 
     broken_units = probe.unusable_units & (
         previous.unusable_units if previous is not None else set()
@@ -751,6 +832,8 @@ async def _ci_gw_check(
             )
         if empty_now:
             problems.append(_ci_empty_phrase(empty_now))
+        if probe.thin_units & broken_units:
+            problems.append(_ci_thin_phrase(probe))
         # previous is not None whenever broken_units is non-empty.
         assert previous is not None
         prev_cause = (
@@ -758,11 +841,15 @@ async def _ci_gw_check(
             if previous.column_problems
             else ""
         )
+        # A join that kept a few rows has not yielded nothing.
+        prev_verdict = (
+            "is no better" if previous.thin_units & broken_units else "yields nothing either"
+        )
         return CheckResult(
             name,
             CheckStatus.BROKEN,
-            f"GW{latest_finished_gw}: {'; '.join(problems)}; GW{previous_gw} yields "
-            f"nothing either{prev_cause}, so this is not publishing lag{elo_suffix}",
+            f"GW{latest_finished_gw}: {'; '.join(problems)}; GW{previous_gw} "
+            f"{prev_verdict}{prev_cause}, so this is not publishing lag{elo_suffix}",
         )
 
     lag = []
@@ -770,6 +857,8 @@ async def _ci_gw_check(
         lag.append(f"{', '.join(probe.absent)} not published upstream yet")
     if probe.empty:
         lag.append(_ci_empty_phrase(probe.empty))
+    if probe.thin_units:
+        lag.append(_ci_thin_phrase(probe))
     # Say so when the comparison gameweek could not settle it, rather than
     # letting "self-corrects" imply a check that never happened.
     unconfirmed = previous is not None and bool(

@@ -9,7 +9,7 @@ against calibrated anchors measured on a cohort that has since turned over.
 None of them error -- they produce plausible output. Every check here reports
 the identity it resolved (team name, league name, season) so a wrong-but-valid
 value is visible, and distinguishes "broken, fix this" from "stale, will
-self-correct".
+self-correct" (or waits on an upstream fix the tool already works around).
 """
 # Pattern: direct-api
 
@@ -53,7 +53,9 @@ from fpl_cli.utils.teams import describe_team_set_mismatch
 class CheckStatus(StrEnum):
     OK = "ok"
     BROKEN = "broken"  # wrong answers now; needs a manual fix
-    STALE = "stale"  # self-corrects, or needs one routine refresh
+    # self-corrects, needs one routine refresh, or waits on an upstream fix
+    # the tool already works around (Core-Insights Elo published blank, #431)
+    STALE = "stale"
     SKIPPED = "skipped"  # not configured / not present
     UNCHECKED = "unchecked"  # the data needed to check was unreachable
 
@@ -713,8 +715,8 @@ def _print_summary(broken: int, stale: int, unchecked: int) -> None:
         console.print(f"[red]{broken} problem(s) need attention.[/red]")
     if stale:
         console.print(
-            f"[yellow]{stale} stale item(s) — will self-correct or need a routine "
-            "refresh.[/yellow]"
+            f"[yellow]{stale} stale item(s) — will self-correct, need a routine "
+            "refresh, or wait on an upstream fix the tool works around.[/yellow]"
         )
     if unchecked:
         console.print(f"[yellow]{unchecked} check(s) could not run.[/yellow]")

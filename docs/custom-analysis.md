@@ -438,7 +438,7 @@ For each completed match within a 7-match / 12-GW rolling window:
 3. **Adjusted per-90**: `(npxg × factor) / minutes × 90` per match, averaged over qualifying matches
 4. Players with fewer than 4 qualifying matches fall back to raw Understat npxG/90
 
-The median Elo is computed fresh each run from the season's matches that carry one. Elo ratings come from per-gameweek `matches.csv` files in the Core-Insights dataset (`By Tournament/Premier League/GW{n}/`). Core-Insights publishes an Elo it has not filled in as a blank cell, as it did for every match from GW3 of 2026-27. While a gap like that lasts, adj. npxG/90 is the same rolling 7-match npxG/90 with no opponent adjustment for those matches, rather than switching back to Understat's season average. `fpl doctor --providers` flags the gap on its `Core-Insights per-GW files` row.
+The median Elo is computed fresh each run from the matches in the last 12 gameweeks that carry one, the same match data the window draws on, and falls back to 1700 when none do. Elo ratings come from per-gameweek `matches.csv` files in the Core-Insights dataset (`By Tournament/Premier League/GW{n}/`). Core-Insights publishes an Elo it has not filled in as a blank cell, as it did for every match from GW3 of 2026-27. While a gap like that lasts, a player with 4 or more qualifying matches still gets adj. npxG/90, with the matches that lack Elo counted unadjusted, rather than switching back to Understat's season average; one with fewer falls back as step 4 says. `fpl doctor --providers` flags the gap on its `Core-Insights per-GW files` row once most matches in that 12-gameweek window lack Elo.
 
 ### Display
 
