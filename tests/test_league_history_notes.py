@@ -326,8 +326,8 @@ class TestStreakEntries:
         )
 
         assert text == (
-            "Alice has 3 captain blanks in the last 6 (GW1-GW6), "
-            "with 2 gameweeks not recorded and 1 gameweek with no captain fixture."
+            "Alice has 3 captain blanks in the last 6 (GW1-GW6). "
+            "Of the rest, 2 were not recorded and 1 had no captain fixture."
         )
 
     @pytest.mark.parametrize(("length", "end", "held", "inapplicable"), [

@@ -401,11 +401,11 @@ def _streak_text(
     without one, so a missing label here is a defect, raised rather than
     papered over with generic wording that would say nothing.
 
-    `for_prompt` renders the same facts as the editorial prompt's sentence
-    ("Bob has 3 waiver hauls in the last 4 (GW3-GW6), with 1 gameweek with
-    no completed moves") rather than the ledger line. Each clause there
-    names its own gameweeks, so the two never read as one set inside the
-    other."""
+    `for_prompt` renders the same facts as the editorial prompt's sentences
+    ("Bob has 3 waiver hauls in the last 4 (GW3-GW6). Of the rest, 1 had no
+    completed moves.") rather than the ledger line. "Of the rest" places
+    the gaps outside the run and apart from each other without stating a
+    remainder, which would be a figure the ledger line does not carry."""
     span = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
     count_label = count_label_one if length == 1 else count_label_many
     lead = f"{manager_name} has" if for_prompt else f"{manager_name}:"
@@ -415,7 +415,7 @@ def _streak_text(
     clauses: list[str] = []
     if not_recorded:
         clauses.append(
-            f"{not_recorded} {_gameweek_noun(not_recorded)} not recorded" if for_prompt
+            f"{not_recorded} {'was' if not_recorded == 1 else 'were'} not recorded" if for_prompt
             else f"{not_recorded} not recorded",
         )
     if inapplicable_count:
@@ -425,12 +425,12 @@ def _streak_text(
                 "inapplicable_label to name them.",
             )
         clauses.append(
-            f"{inapplicable_count} {_gameweek_noun(inapplicable_count)} with {inapplicable_label}" if for_prompt
+            f"{inapplicable_count} had {inapplicable_label}" if for_prompt
             else f"{inapplicable_label} in {inapplicable_count}",
         )
     text = f"{lead} {length} {count_label} in the last {window.span_length} ({span})"
     if clauses:
-        text += ", with " + " and ".join(clauses)
+        text += (". Of the rest, " if for_prompt else ", with ") + " and ".join(clauses)
     return text + "."
 
 
