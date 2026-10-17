@@ -85,7 +85,9 @@ from fpl_cli.services.scoring.signals import (
     _WINDOW_LOOKBACK_GWS,
     _WINDOW_SIZE,
     _assign_percentile_ranks,
+    _opponent_factor,
     _rolling_window,
+    compute_median_elo,
 )
 from tests.conftest import make_player
 
@@ -3648,26 +3650,110 @@ def _make_match(
 MEDIAN_ELO = 1700.0
 
 
+class TestOpponentFactor:
+    """The one factor npxG and the consistency signals scale a match by (#439).
+
+    A higher Elo is a stronger side. The adjustment removes a soft schedule's
+    inflation, so output against a strong side scales up and output against
+    a weak side scales down; the inverse rewarded an easy run twice over,
+    once here and once in the matchup score.
+    """
+
+    def test_stronger_than_median_opponent_scales_up(self):
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=1900.0)
+        assert _opponent_factor(match, MEDIAN_ELO) == pytest.approx(1900.0 / 1700.0)
+
+    def test_weaker_than_median_opponent_scales_down(self):
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=1500.0)
+        assert _opponent_factor(match, MEDIAN_ELO) == pytest.approx(1500.0 / 1700.0)
+
+    def test_median_opponent_is_neutral(self):
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=MEDIAN_ELO)
+        assert _opponent_factor(match, MEDIAN_ELO) == 1.0
+
+    def test_cap_bounds_each_side_of_the_median(self):
+        strong = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=2500.0)
+        weak = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=500.0)
+        assert _opponent_factor(strong, MEDIAN_ELO) == 1.25
+        assert _opponent_factor(weak, MEDIAN_ELO) == 0.80
+
+    def test_non_positive_opponent_elo_is_neutral(self):
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=0.0)
+        assert _opponent_factor(match, MEDIAN_ELO) == 1.0
+
+    def test_non_positive_median_is_neutral(self):
+        # The inverted ratio divides by the median, so a median nothing
+        # could be computed from must not raise.
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=1800.0)
+        assert _opponent_factor(match, 0.0) == 1.0
+
+    def test_null_opponent_elo_is_neutral(self):
+        # A null where a number belongs counts at face value rather than raising.
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=None)
+        assert _opponent_factor(match, MEDIAN_ELO) == 1.0
+
+    def test_nan_opponent_elo_is_neutral(self):
+        # NaN fails every comparison, so without a finiteness check it slid
+        # past a `<= 0` guard and landed on the 1.25 cap.
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=float("nan"))
+        assert _opponent_factor(match, MEDIAN_ELO) == 1.0
+
+    def test_missing_opponent_elo_is_neutral(self):
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=1800.0)
+        del match["opponent_elo"]
+        assert _opponent_factor(match, MEDIAN_ELO) == 1.0
+
+
+class TestComputeMedianElo:
+    def test_median_of_usable_elos(self):
+        records = {
+            1: [_make_match(1, xg=0.5, minutes_played=90, opponent_elo=1600.0)],
+            2: [_make_match(1, xg=0.5, minutes_played=90, opponent_elo=1800.0)],
+        }
+        assert compute_median_elo(records) == pytest.approx(1700.0)
+
+    def test_unusable_elos_do_not_pull_the_median(self):
+        # The factor reads these as unrated, so the median they are compared
+        # against must not count them: a 0 here used to drag the median down
+        # and make every real opponent look stronger than it was.
+        records = {
+            1: [_make_match(1, xg=0.5, minutes_played=90, opponent_elo=1600.0),
+                _make_match(2, xg=0.5, minutes_played=90, opponent_elo=0.0)],
+            2: [_make_match(1, xg=0.5, minutes_played=90, opponent_elo=1800.0),
+                _make_match(2, xg=0.5, minutes_played=90, opponent_elo=float("nan")),
+                _make_match(3, xg=0.5, minutes_played=90, opponent_elo=None)],
+        }
+        assert compute_median_elo(records) == pytest.approx(1700.0)
+
+    def test_falls_back_when_no_match_has_a_usable_elo(self):
+        records = {1: [_make_match(1, xg=0.5, minutes_played=90, opponent_elo=0.0)]}
+        assert compute_median_elo(records) == 1700.0
+
+    def test_empty_falls_back(self):
+        assert compute_median_elo({}) == 1700.0
+
+
 class TestComputeAdjustedNpxg:
     def test_adjustment_scales_up_against_strong_opponent(self):
-        """xG against high-Elo opponent is scaled up (factor > 1)."""
-        # opponent_elo=1600 < median=1700 => factor = 1700/1600 = 1.0625
-        records = [_make_match(gw, xg=0.40, minutes_played=90, opponent_elo=1600.0)
-                   for gw in range(1, 8)]
-        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
-        raw_per_90 = 0.40  # xg/90 raw
-        assert result is not None
-        assert result > raw_per_90  # adjusted up for tough opponents
-
-    def test_adjustment_scales_down_against_weak_opponent(self):
-        """xG against low-Elo opponent is scaled down (factor < 1)."""
-        # opponent_elo=1800 > median=1700 => factor = 1700/1800 = 0.944
+        """xG against a stronger-than-median opponent is scaled up (factor > 1)."""
+        # opponent_elo=1800 > median=1700 => factor = 1800/1700 = 1.0588
         records = [_make_match(gw, xg=0.40, minutes_played=90, opponent_elo=1800.0)
                    for gw in range(1, 8)]
         result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
-        raw_per_90 = 0.40
-        assert result is not None
-        assert result < raw_per_90  # adjusted down for easy opponents
+        assert result == pytest.approx(0.40 * 1800.0 / 1700.0, abs=1e-6)
+
+    def test_adjustment_scales_down_against_weak_opponent(self):
+        """xG against a weaker-than-median opponent is scaled down (factor < 1).
+
+        The soft-schedule case the adjustment exists for: output inflated by
+        weak opposition is deflated, so fixture difficulty counts only in the
+        matchup score (#439).
+        """
+        # opponent_elo=1600 < median=1700 => factor = 1600/1700 = 0.9412
+        records = [_make_match(gw, xg=0.40, minutes_played=90, opponent_elo=1600.0)
+                   for gw in range(1, 8)]
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.40 * 1600.0 / 1700.0, abs=1e-6)
 
     def test_equal_elo_factor_is_one(self):
         """opponent_elo == median_elo => factor 1.0, adjusted == raw."""
@@ -3677,17 +3763,17 @@ class TestComputeAdjustedNpxg:
         assert result == pytest.approx(0.50, abs=1e-6)
 
     def test_cap_floor_at_0_80(self):
-        """Very high opponent Elo capped at factor 0.80."""
-        # opponent_elo=2500 would give factor 1700/2500=0.68 < 0.80 -> capped at 0.80
-        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=2500.0)
+        """A very weak opponent is capped at factor 0.80."""
+        # opponent_elo=500 would give factor 500/1700=0.29 < 0.80 -> capped at 0.80
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=500.0)
                    for gw in range(1, 8)]
         result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
         assert result == pytest.approx(0.50 * 0.80, abs=1e-6)
 
     def test_cap_ceiling_at_1_25(self):
-        """Very low opponent Elo capped at factor 1.25."""
-        # opponent_elo=500 would give factor 1700/500=3.4 > 1.25 -> capped at 1.25
-        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=500.0)
+        """A very strong opponent is capped at factor 1.25."""
+        # opponent_elo=2500 would give factor 2500/1700=1.47 > 1.25 -> capped at 1.25
+        records = [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=2500.0)
                    for gw in range(1, 8)]
         result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
         assert result == pytest.approx(0.50 * 1.25, abs=1e-6)
@@ -4007,6 +4093,27 @@ class TestComputeCvXgi:
         # All same opponent -> still zero CV (uniform adjustment)
         assert result == 0.0
 
+    def test_output_tracking_opponent_weakness_is_consistent_once_adjusted(self):
+        """xGI that rises against weak sides and dips against strong ones has no
+        variance left once each match is read against median opposition.
+
+        Scaled the other way (up against the weak side, down against the
+        strong one) the gap widens and the player reads as inconsistent (#439).
+        """
+        records = [
+            _make_match(
+                gw,
+                xg=0.35 if gw % 2 else 0.30,
+                xa=0.10,
+                minutes_played=90,
+                opponent_elo=1600.0 if gw % 2 else 1800.0,
+            )
+            for gw in range(1, 8)
+        ]
+        # 0.45 * 1600/1700 == 0.40 * 1800/1700 == 0.4235
+        result = compute_cv_xgi(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.0, abs=1e-9)
+
     def test_dgw_records_both_counted(self):
         records = [
             _make_match(gw, xg=0.3, xa=0.1, minutes_played=90, opponent_elo=MEDIAN_ELO)
@@ -4115,6 +4222,27 @@ class TestComputeFloorXgi:
             for gw in range(1, 4)
         ]
         assert compute_floor_xgi(records, current_gw=10, median_elo=MEDIAN_ELO) is None
+
+    def test_floor_reads_a_dip_against_a_strong_side_at_median_strength(self):
+        """The floor is the 25th percentile of output read against median
+        opposition, so a dip against a strong side is lifted, not deepened.
+
+        Output that tracks opponent strength exactly adjusts to one value,
+        which is then the floor; scaled the other way the strong-side
+        matches sink further and the floor reads below it (#439).
+        """
+        records = [
+            _make_match(
+                gw,
+                xg=0.35 if gw % 2 else 0.30,
+                xa=0.10,
+                minutes_played=90,
+                opponent_elo=1600.0 if gw % 2 else 1800.0,
+            )
+            for gw in range(1, 8)
+        ]
+        result = compute_floor_xgi(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.45 * 1600.0 / 1700.0, abs=1e-9)
 
 
 class TestComputeFloorXgiFallback:
