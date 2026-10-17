@@ -537,3 +537,138 @@ class TestEarlySeasonQualityWarning:
         unblended = early_season_quality_warning(3, blended=False)
         assert blended is not None and unblended is not None
         assert blended["code"] != unblended["code"]
+
+
+# ---------------------------------------------------------------------------
+# history_prior_share / priors_history_informed
+# ---------------------------------------------------------------------------
+
+
+class TestPriorsHistoryInformed:
+    """"Blended" means pedigree reached the pool, not that a prior exists (#438)."""
+
+    def test_share_counts_history_sourced_priors(self):
+        from fpl_cli.services.player_prior import history_prior_share
+
+        priors = {
+            1: PlayerPrior(0.7, 0.5, "history"),
+            2: PlayerPrior(0.2, 0.3, "price"),
+            3: PlayerPrior(0.8, 0.5, "history"),
+            4: PlayerPrior(0.1, 0.3, "price"),
+        }
+        assert history_prior_share(priors) == 0.5
+        assert history_prior_share(None) is None
+        assert history_prior_share({}) is None
+
+    def test_informed_at_the_floor_and_not_under_it(self):
+        from fpl_cli.services.player_prior import (
+            HISTORY_PRIOR_FLOOR,
+            priors_history_informed,
+        )
+
+        def _set(history: int, total: int):
+            return {
+                i: PlayerPrior(0.5, 0.5, "history" if i <= history else "price")
+                for i in range(1, total + 1)
+            }
+
+        at_floor = round(HISTORY_PRIOR_FLOOR * 100)
+        assert priors_history_informed(_set(at_floor, 100))
+        assert not priors_history_informed(_set(at_floor - 1, 100))
+        assert not priors_history_informed(_set(0, 100))
+
+    def test_none_is_not_informed_and_an_empty_pool_vacuously_is(self):
+        from fpl_cli.services.player_prior import priors_history_informed
+
+        assert not priors_history_informed(None)
+        assert priors_history_informed({})
+
+    def test_reach_is_the_count_behind_the_share(self):
+        from fpl_cli.services.player_prior import history_prior_reach
+
+        priors = {1: PlayerPrior(0.7, 0.5, "history"), 2: PlayerPrior(0.2, 0.3, "price")}
+        assert history_prior_reach(priors) == (1, 2)
+        assert history_prior_reach(None) == (0, 0)
+        assert history_prior_reach({}) == (0, 0)
+
+    def test_informed_priors_gates_a_short_set_to_none_and_passes_the_rest(self):
+        from fpl_cli.services.player_prior import informed_priors
+
+        short = {i: PlayerPrior(0.5, 0.5, "price") for i in range(1, 5)}
+        full = {i: PlayerPrior(0.5, 0.5, "history") for i in range(1, 5)}
+        assert informed_priors(short) is None
+        assert informed_priors(full) is full
+        assert informed_priors(None) is None
+        assert informed_priors({}) == {}
+
+
+class TestLoaderHandsBackACollapsedHistory:
+    """A previous season that reached nobody is returned, warned about, and never cached (#438)."""
+
+    @staticmethod
+    def _collapsed():
+        players = [make_player(id=i, code=100 + i, now_cost=50 + i) for i in range(1, 5)]
+        # Profiles exist but none has a qualifying previous season: the
+        # shape a blank minutes column leaves behind.
+        profiles = {
+            100 + i: _make_profile(100 + i, [_make_season(100 + i, minutes=0)])
+            for i in range(1, 5)
+        }
+        return players, profiles
+
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
+    async def test_a_price_only_generation_is_returned_logged_and_not_cached(
+        self, _mock_season, caplog,
+    ):
+        import logging
+
+        from fpl_cli.services.player_prior import informed_priors
+
+        players, profiles = self._collapsed()
+        with patch(
+            "fpl_cli.api.historical.make_historical_provider",
+            return_value=_provider(profiles),
+        ):
+            with caplog.at_level(logging.WARNING):
+                result = await load_or_generate_player_priors(players, 3)
+
+        # The set is there for a consumer that wants the price priors (the
+        # returnee radar); a scoring consumer gates it to none.
+        assert result is not None
+        assert {p.source for p in result.values()} == {"price"}
+        assert informed_priors(result) is None
+        assert "reached only 0 of 4 player priors" in caplog.text
+        assert load_cached_priors(3) is None
+
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
+    async def test_the_attempt_is_remembered_for_the_rest_of_the_process(self, _mock_season):
+        # Not cached to disk, so the next process retries; within this one a
+        # second bundle must not re-read the multi-season datasets.
+        players, profiles = self._collapsed()
+        with patch(
+            "fpl_cli.api.historical.make_historical_provider",
+            return_value=_provider(profiles),
+        ) as make_provider:
+            first = await load_or_generate_player_priors(players, 3)
+            second = await load_or_generate_player_priors(players, 3)
+
+        assert first is second
+        make_provider.assert_called_once()
+
+    @patch("fpl_cli.services.player_prior.previous_season_label", return_value="2024-25")
+    async def test_a_collapsed_cache_is_regenerated_rather_than_served(self, _mock_season):
+        players = [make_player(id=1, code=100, position=PlayerPosition.MIDFIELDER, now_cost=80)]
+        collapsed = {1: PlayerPrior(prior_strength=0.1, confidence=0.3, source="price")}
+        profiles = {100: _make_profile(100, [_make_season(100, total_points=180, minutes=2700)])}
+        with (
+            patch("fpl_cli.services.player_prior.load_cached_priors", return_value=collapsed),
+            patch(
+                "fpl_cli.api.historical.make_historical_provider",
+                return_value=_provider(profiles),
+            ) as make_provider,
+        ):
+            result = await load_or_generate_player_priors(players, 3)
+
+        make_provider.assert_called_once()
+        assert result is not None
+        assert result[1].source == "history"

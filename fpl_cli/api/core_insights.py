@@ -45,8 +45,11 @@ class MatchRecord(TypedDict):
     gameweek: int
     xg: float
     xa: float
-    penalties_scored: int
-    penalties_missed: int
+    # None when playermatchstats.csv carries no count for the match (the
+    # column gone, or the cell blank); the adjusted-npxG rate leaves such a
+    # match out rather than reading the gap as no penalty (#438).
+    penalties_scored: int | None
+    penalties_missed: int | None
     minutes_played: int
     # None when matches.csv carries no Elo for the opponent; scoring gives
     # the match a neutral opponent factor (#431).
@@ -70,22 +73,25 @@ class MatchRecord(TypedDict):
 
 DEFAULT_TTL = timedelta(hours=4)
 
-# Columns the parsers below index directly (`row[...]`). The header checks
-# and the `fpl doctor --providers` probe both assert against these constants,
-# so the declared contract cannot drift from what the parsers consume.
-# Optional columns read via `row.get(...)` are deliberately not listed.
+# Columns the parsers below index directly (`row[...]`), plus the two
+# penalty counts: read via `row.get(...)` so a blank cell is unknown rather
+# than a dropped row, but load-bearing all the same, since a match without
+# them is left out of the adjusted-npxG rate (#438). The header checks and
+# the `fpl doctor --providers` probe both assert against these constants, so
+# the declared contract cannot drift from what the parsers consume. Every
+# other column read via `row.get(...)` is deliberately not listed.
 PLAYERS_CSV_REQUIRED_COLUMNS: frozenset[str] = frozenset({
     "player_id", "player_code", "web_name", "position", "team_code",
 })
 PLAYERSTATS_REQUIRED_COLUMNS: frozenset[str] = frozenset({
-    "id", "gw", "now_cost", "cost_change_start", "total_points",
+    "id", "gw", "now_cost", "cost_change_start", "total_points", "minutes",
 })
 GW_STATS_REQUIRED_COLUMNS: frozenset[str] = frozenset({"id", "now_cost"})
 MATCHES_REQUIRED_COLUMNS: frozenset[str] = frozenset({
     "match_id", "gameweek", "home_team", "home_team_elo", "away_team_elo",
 })
 PLAYERMATCHSTATS_REQUIRED_COLUMNS: frozenset[str] = frozenset({
-    "player_id", "match_id", "xg", "minutes_played",
+    "player_id", "match_id", "xg", "minutes_played", "penalties_scored", "penalties_missed",
 })
 
 # Core-Insights uses full position names; map to FPL abbreviations.
@@ -134,6 +140,25 @@ def _optional_float(row: Mapping[str, str], column: str) -> float | None:
         logger.debug("Non-finite %s in playerstats.csv: %r", column, raw)
         return None
     return value
+
+
+def _optional_count(row: Mapping[str, str | None], column: str) -> int | None:
+    """A count column of playermatchstats.csv, or None when the row has none.
+
+    The column absent from the header, a row cut short before it, and a
+    blank cell all read as unknown rather than 0: Core-Insights writes every
+    count it has, 0 included (every 2025-26 and 2026-27 gameweek sampled
+    writes `0` in the penalty columns, never a blank), so a gap is a format
+    change, and the one consumer that cannot live without the count, the
+    adjusted-npxG rate, degrades visibly rather than crediting a penalty
+    taker with the penalty's xG (#438). Text that is not a number raises
+    ValueError, which the caller's row try turns into a dropped row like
+    the other tripwires.
+    """
+    raw = row.get(column)
+    if raw is None or not raw.strip():
+        return None
+    return int(float(raw))
 
 
 def _numeric_cell(raw: str | None) -> float | None:
@@ -311,6 +336,8 @@ def parse_match_records(
         try:
             xg = _match_xg(row)
             minutes_played = int(float(row["minutes_played"]))
+            penalties_scored = _optional_count(row, "penalties_scored")
+            penalties_missed = _optional_count(row, "penalties_missed")
         except (ValueError, KeyError, TypeError):
             continue
 
@@ -319,8 +346,8 @@ def parse_match_records(
             "gameweek": gameweek,
             "xg": xg,
             "xa": float(row.get("xa") or 0),
-            "penalties_scored": int(float(row.get("penalties_scored") or 0)),
-            "penalties_missed": int(float(row.get("penalties_missed") or 0)),
+            "penalties_scored": penalties_scored,
+            "penalties_missed": penalties_missed,
             "minutes_played": minutes_played,
             "opponent_elo": opponent_elo,
             "is_home": is_home,
@@ -558,7 +585,18 @@ class CoreInsightsClient:
             for pid, records in gw_records.items():
                 result.setdefault(pid, []).extend(records)
 
-        if joined_gws and not result:
+        if gw_range and not joined_gws:
+            # Every gameweek's files failed to fetch: a debug line per
+            # gameweek was all this left, and the zero-records warning below
+            # needs at least one gameweek to have loaded (#438).
+            logger.warning(
+                "Core-Insights per-gameweek match files for GW%d-%d could not be "
+                "fetched — opponent-adjusted xG signals are unavailable and consistency "
+                "signals rest on FPL history alone; run `fpl doctor --providers`",
+                gw_range.start,
+                gw_range.stop - 1,
+            )
+        elif joined_gws and not result:
             logger.warning(
                 "Core-Insights match stats parsed to 0 records from %d gameweek file(s) — "
                 "the upstream format may have changed; opponent-adjusted xG signals "
@@ -671,7 +709,15 @@ class CoreInsightsClient:
                 now_cost = int(round(float(row["now_cost"]) * 10))
                 cost_change_start = int(round(float(row["cost_change_start"])))
                 total_points = int(row["total_points"])
-            except (ValueError, KeyError):
+                # Required rather than defaulted (#438): the player prior
+                # reads minutes against its 450-minute floor, so a column
+                # published blank read as a season nobody played and every
+                # player fell to a price prior while the notice still said
+                # pedigree. The dataset writes 0 for no minutes, never a
+                # blank, so a blank is a format change and the row drops
+                # into the all-rows-skipped tripwire below.
+                minutes = int(row["minutes"])
+            except (ValueError, KeyError, TypeError):
                 logger.debug("Skipping player %d: missing/malformed required field", pid)
                 continue
 
@@ -679,7 +725,7 @@ class CoreInsightsClient:
                 element_code=player.player_code,
                 season=season,
                 total_points=total_points,
-                minutes=int(row.get("minutes", 0) or 0),
+                minutes=minutes,
                 starts=int(row.get("starts", 0) or 0),
                 goals=int(row.get("goals_scored", 0) or 0),
                 assists=int(row.get("assists", 0) or 0),

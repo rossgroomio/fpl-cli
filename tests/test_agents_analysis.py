@@ -329,7 +329,9 @@ class TestCaptainAgent:
 
             result = await agent.run()
 
-        assert result.data["warnings"] == []
+        # No ratings file in the test dirs, so the bundle's own coverage entry
+        # is present (#438); what must be absent is the fallback notice.
+        assert "captain_global_fallback" not in [w["code"] for w in result.data["warnings"]]
 
     @pytest.mark.asyncio
     async def test_run_no_next_gameweek(self, agent, mock_players, mock_teams):
@@ -812,3 +814,40 @@ class TestCaptainAgentDifferentials:
             assert "differential_picks" in result.data
             # Differential player (3% ownership) should be in differential picks
             # if their score is high enough
+
+
+class TestCaptainAgentCarriesCoverageWarnings:
+    """The captain payload carries what the scoring bundle found short (#438)."""
+
+    @pytest.mark.asyncio
+    async def test_bundle_warnings_reach_the_result(self):
+        import dataclasses
+
+        from fpl_cli.services.scoring import prepare_scoring_data as real_prepare
+
+        marker = {"code": "understat_coverage_low", "message": "Understat npxG reached 0 of 30"}
+
+        async def tagged(*args, **kwargs):
+            data = await real_prepare(*args, **kwargs)
+            return dataclasses.replace(data, warnings=[*data.warnings, marker])
+
+        agent = CaptainAgent()
+        players = [
+            make_player(id=1, web_name="Haaland", team_id=13, position=PlayerPosition.FORWARD,
+                        minutes=2000, form=8.5, points_per_game=8.0),
+            make_player(id=2, web_name="Salah", team_id=14, position=PlayerPosition.MIDFIELDER,
+                        minutes=1800, form=7.2, points_per_game=6.5),
+        ]
+        teams = [make_team(id=13, short_name="MCI"), make_team(id=14, short_name="LIV")]
+        fixtures = [make_fixture(id=1, gameweek=25, home_team_id=13, away_team_id=14)]
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock, return_value=players), \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock, return_value=teams), \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock, return_value={"id": 25}), \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock, return_value=fixtures), \
+             patch("fpl_cli.agents.analysis.captain.prepare_scoring_data", side_effect=tagged):
+            result = await agent.run()
+
+        assert result.status == AgentStatus.SUCCESS
+        assert marker in result.data["warnings"]
+        # The test dirs hold no ratings file, so the bundle's own entry is here too.
+        assert "fixture_ratings_coverage_low" in [w["code"] for w in result.data["warnings"]]

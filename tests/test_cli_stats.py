@@ -397,6 +397,43 @@ class TestStatsDraftOwnership:
             result = runner.invoke(main, ["stats"])
         assert "draft_league_id" in result.output
 
+    def test_a_rival_squad_the_ownership_read_missed_is_named(self):
+        """Its players read as Available, so the gap is said in both channels (#438)."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        players = [make_player(id=1, web_name="Salah", team_id=1,
+                               position=PlayerPosition.MIDFIELDER, minutes=2000)]
+        draft_client = MagicMock()
+        draft_client.__aenter__ = AsyncMock(return_value=draft_client)
+        draft_client.__aexit__ = AsyncMock(return_value=False)
+        settings = {"fpl": {"draft_league_id": 12345}}
+        for json_mode in (True, False):
+            client = _make_client(players, _sample_teams())
+            runner = CliRunner()
+            with (
+                patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+                patch("fpl_cli.cli._context.load_settings", return_value=settings),
+                patch("fpl_cli.cli.load_settings", return_value=settings),
+                patch("fpl_cli.cli._context.resolve_format", return_value=Format.DRAFT),
+                patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
+                patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+                patch(
+                    "fpl_cli.agents.common.get_draft_ownership_mapping",
+                    new=AsyncMock(return_value=({}, {}, {}, {8: "Team B"})),
+                ),
+            ):
+                args = ["stats"] + (["--format", "json"] if json_mode else [])
+                result = runner.invoke(main, args)
+
+            assert result.exit_code == 0, result.output
+            if json_mode:
+                warnings = json.loads(result.stdout)["metadata"]["warnings"]
+                unread = [w for w in warnings if w["code"] == "draft_squads_unread"]
+                assert len(unread) == 1 and "Team B" in unread[0]["message"]
+            else:
+                assert "Team B" in result.stderr
+                assert "could not be read" in result.stderr
+
     def test_classic_mode_no_draft_column(self):
         """CLASSIC format never shows Draft column."""
         client = _make_client(_sample_players(), _sample_teams())
@@ -1319,3 +1356,74 @@ class TestStatsJsonStdoutPurity:
         result = _run(["--team", "BADCODE"], client=client)
         assert result.exit_code == 1
         assert "Unknown team" in result.output
+
+
+class TestStatsValueFeedCoverage:
+    """`fpl stats --value` says when a feed reached only part of the pool (#438)."""
+
+    @staticmethod
+    def _pool(n: int = 30):
+        return [
+            make_player(
+                id=i, web_name=f"Player{i}", team_id=1, position=PlayerPosition.MIDFIELDER,
+                total_points=60, minutes=900, now_cost=60,
+            )
+            for i in range(1, n + 1)
+        ]
+
+    def _run_json(self, us_match):
+        client = _make_value_client(self._pool(), _sample_teams())
+        client.get_player_detail = AsyncMock(
+            return_value={"history": [{"round": 19, "minutes": 90, "total_points": 5}]},
+        )
+        mock_understat = MagicMock()
+        mock_understat.get_league_players = AsyncMock(return_value=[
+            {"id": 100, "player_name": "Somebody", "team_title": "Liverpool"},
+        ])
+        mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
+        mock_understat.__aexit__ = AsyncMock(return_value=False)
+        runner = CliRunner(env={"COLUMNS": "200"})
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
+            patch("fpl_cli.api.understat.match_fpl_to_understat", return_value=us_match),
+            patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
+        ):
+            result = runner.invoke(main, ["stats", "--value", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        return json.loads(result.output)["metadata"]["warnings"]
+
+    def test_a_join_that_reached_nobody_is_named(self):
+        warnings = self._run_json(us_match=None)
+        codes = [w["code"] for w in warnings]
+        assert "understat_coverage_low" in codes
+        message = next(w["message"] for w in warnings if w["code"] == "understat_coverage_low")
+        assert "0 of 30 players with minutes" in message
+
+    def test_a_payload_without_npxg_is_the_same_gap(self):
+        # Every player matches, but the rate the score reads is gone.
+        warnings = self._run_json(us_match={**_make_us_match(), "npxG_per_90": None})
+        assert "understat_coverage_low" in [w["code"] for w in warnings]
+
+    def test_a_full_join_is_quiet(self):
+        warnings = self._run_json(us_match=_make_us_match())
+        assert "understat_coverage_low" not in [w["code"] for w in warnings]
+        assert "gw_history_coverage_low" not in [w["code"] for w in warnings]
+
+    def test_table_mode_prints_the_entry_to_stderr(self):
+        client = _make_value_client(self._pool(), _sample_teams())
+        mock_understat = MagicMock()
+        mock_understat.get_league_players = AsyncMock(return_value=[{"id": 100}])
+        mock_understat.__aenter__ = AsyncMock(return_value=mock_understat)
+        mock_understat.__aexit__ = AsyncMock(return_value=False)
+        runner = CliRunner(env={"COLUMNS": "200"})
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=mock_understat),
+            patch("fpl_cli.api.understat.match_fpl_to_understat", return_value=None),
+            patch("fpl_cli.cli.stats.is_custom_analysis_enabled", return_value=True),
+        ):
+            result = runner.invoke(main, ["stats", "--value"])
+        assert result.exit_code == 0, result.output
+        assert "Understat npxG reached 0 of 30" in result.stderr
+        assert "Understat npxG reached" not in result.stdout

@@ -817,3 +817,26 @@ class TestAllocateCommand:
 
         effective_total = sum(p["effective_price"] for p in data["data"])
         assert abs(effective_total - data["metadata"]["budget_used"]) < 0.2
+
+
+class TestAllocateCarriesCoverageWarnings:
+    """The solver's bundle names a feed that reached part of the pool (#438)."""
+
+    MARKER = {"code": "understat_coverage_low", "message": "Understat npxG reached 0 of 30 players"}
+
+    def _scoring_data(self):
+        sd = _make_scoring_data()
+        sd.warnings = [self.MARKER]
+        sd.player_priors = None
+        return sd
+
+    def test_json_metadata_carries_the_entry(self):
+        result = _run_allocate(_make_squad_result(), ["--format", "json"], scoring_data=self._scoring_data())
+        assert result.exit_code == 0, result.output
+        assert self.MARKER in json.loads(result.output)["metadata"]["warnings"]
+
+    def test_table_mode_prints_it_to_stderr(self):
+        result = _run_allocate(_make_squad_result(), scoring_data=self._scoring_data())
+        assert result.exit_code == 0, result.output
+        assert "Understat npxG reached 0 of 30 players" in result.stderr
+        assert "Understat npxG reached" not in result.stdout

@@ -349,6 +349,7 @@ class TestGetDraftOwnershipMapping:
             "teams": [make_draft_team(id=6, code=team_code_for(1))],
         })
         client.get_league_ownership = AsyncMock(return_value={99: 7})
+        client.unread_squads = {}
         return client
 
     async def test_reuses_league_details_it_already_fetched(self):
@@ -367,7 +368,7 @@ class TestGetDraftOwnershipMapping:
     async def test_returns_ownership_entries_and_id_mapping(self):
         client = self._make_client()
 
-        owned, entries, main_to_draft = await get_draft_ownership_mapping(
+        owned, entries, main_to_draft, unread = await get_draft_ownership_mapping(
             client, [make_player(id=1, web_name="Salah", team_id=1)], 12345,
             main_teams=[make_team(id=1)],
         )
@@ -375,6 +376,21 @@ class TestGetDraftOwnershipMapping:
         assert owned == {99: 7}
         assert entries == {7: "Alice Smith"}
         assert main_to_draft == {1: 99}
+        assert unread == {}
+
+    async def test_hands_back_the_squads_the_ownership_read_could_not_fetch(self):
+        # Every consumer of the map gets the record, not only the one that
+        # knows to look on the client (#438).
+        client = self._make_client()
+        client.unread_squads = {8: "Team B"}
+
+        *_, unread = await get_draft_ownership_mapping(
+            client, [make_player(id=1, web_name="Salah", team_id=1)], 12345,
+            main_teams=[make_team(id=1)],
+        )
+
+        assert unread == {8: "Team B"}
+        assert unread is not client.unread_squads
 
 
 class TestRekeyForDraft:

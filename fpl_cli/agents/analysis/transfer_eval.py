@@ -188,6 +188,7 @@ class TransferEvalAgent(Agent):
                 score_names=tuple(shown_scores),
             )
             warnings: list[dict[str, str]] = [warning] if warning is not None else []
+            warnings.extend(data.warnings)
 
             self.log_success("Transfer evaluation complete")
 

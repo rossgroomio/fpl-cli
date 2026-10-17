@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 import respx
 from click.testing import CliRunner
 from httpx import Response
@@ -38,6 +39,9 @@ from fpl_cli.season import core_insights_season, understat_season
 FPL_BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 DRAFT_BOOTSTRAP_URL = "https://draft.premierleague.com/api/bootstrap-static"
 UNDERSTAT_URL = f"https://understat.com/getLeagueData/EPL/{understat_season()}"
+# The per-player history probe asks for whichever bootstrap element has the
+# most minutes; the harness answers every id the same way.
+ELEMENT_SUMMARY_URL = r"https://fantasy\.premierleague\.com/api/element-summary/\d+/"
 FD_STANDINGS_URL = "https://api.football-data.org/v4/competitions/PL/standings"
 
 # The allocation the probes read from (#101): vaastav the two oldest seasons
@@ -105,6 +109,17 @@ BLANK_ELO = frozenset({"home_team_elo", "away_team_elo"})
 UNJOINABLE = frozenset({"gameweek", "home_team"})
 
 
+def _history_row(drop: tuple[str, ...] = ()) -> dict:
+    """One element-summary history row carrying every key the signals read."""
+    from fpl_cli.api.fpl import PLAYER_HISTORY_ROW_KEYS
+
+    return {key: 1 for key in PLAYER_HISTORY_ROW_KEYS if key not in drop}
+
+
+def _element_summary(rows: int = 5, drop: tuple[str, ...] = ()) -> dict:
+    return {"fixtures": [], "history": [_history_row(drop) for _ in range(rows)], "history_past": []}
+
+
 def _understat_players(team_names: list[str], player_names: list[str] | None = None) -> dict:
     return {
         "players": [
@@ -161,6 +176,8 @@ def _register_routes(
     fd_tlas: list[str] | None = None,
     draft_teams: list[dict] | None = None,
     draft_error: Exception | None = None,
+    element_summary: Response | None = None,
+    understat_response: Response | None = None,
 ) -> None:
     bootstrap = _bootstrap(
         finished_gws=finished_gws,
@@ -173,6 +190,11 @@ def _register_routes(
         fpl_route.mock(side_effect=fpl_error)
     else:
         fpl_route.mock(return_value=Response(200, json=bootstrap))
+    respx.get(url__regex=ELEMENT_SUMMARY_URL).mock(
+        return_value=element_summary
+        if element_summary is not None
+        else Response(200, json=_element_summary())
+    )
     draft_bootstrap = bootstrap if draft_teams is None else {**bootstrap, "teams": draft_teams}
     draft_route = respx.get(DRAFT_BOOTSTRAP_URL)
     if draft_error is not None:
@@ -237,7 +259,9 @@ def _register_routes(
         f"Team {i:02d}" for i in range(1, 21)
     ]
     respx.get(UNDERSTAT_URL).mock(
-        return_value=Response(200, json=_understat_players(teams, understat_player_names))
+        return_value=understat_response
+        if understat_response is not None
+        else Response(200, json=_understat_players(teams, understat_player_names))
     )
 
     tlas = fd_tlas if fd_tlas is not None else [f"T{i:02d}" for i in range(1, 21)]
@@ -1077,3 +1101,148 @@ class TestJsonOutput:
         assert payload["metadata"]["broken"] == 0
         statuses = {c["status"] for c in payload["data"]["providers"]}
         assert statuses == {"ok"}
+
+
+class TestUnderstatStatusAnswers:
+    """An HTTP status from Understat is the provider answering, not the network failing (#438).
+
+    While it answers that way every scoring command falls back to FPL xGI for
+    every player without a word, so the row cannot read as "could not check".
+    """
+
+    def _row(self, result):
+        return _row(result, "Understat league data")
+
+    @respx.mock
+    def test_a_refusal_is_broken(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(understat_response=Response(403))
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "broken"
+        assert "HTTP 403" in row["detail"]
+        assert "falls back to FPL xGI for every player" in row["detail"]
+
+    @respx.mock
+    @pytest.mark.parametrize("status", [429, 503])
+    def test_a_transient_answer_is_stale(self, monkeypatch, status):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(understat_response=Response(status))
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "stale"
+        assert f"HTTP {status}" in row["detail"]
+        assert "broken if it persists" in row["detail"]
+
+    @respx.mock
+    @pytest.mark.parametrize("status", [404, 410])
+    def test_a_gone_endpoint_is_broken(self, monkeypatch, status):
+        # getLeagueData is undocumented and has moved before: this needs a
+        # code change, not a wait, and the weekly job must go red for it.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(understat_response=Response(status))
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "broken"
+        assert f"HTTP {status}" in row["detail"]
+        assert "moved or gone" in row["detail"]
+
+    @respx.mock
+    def test_a_network_failure_is_still_unchecked(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes()
+        respx.get(UNDERSTAT_URL).mock(
+            side_effect=httpx.ConnectError("down", request=httpx.Request("GET", UNDERSTAT_URL))
+        )
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "unchecked"
+
+
+class TestPlayerHistoryProbe:
+    """One element-summary is probed for the rows every per-player signal reads (#438)."""
+
+    def _row(self, result):
+        return _row(result, "FPL player history")
+
+    async def test_a_bootstrap_it_cannot_pick_a_probe_from_is_unchecked_not_a_traceback(self):
+        # The probe runs before the shape checks; a renamed id or minutes
+        # served as text must leave the player-fields row to report it.
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fpl_cli.cli.doctor_providers import _player_history_check
+
+        client = MagicMock()
+        client.get_player_detail = AsyncMock()
+        for elements in ([{"element": 1, "minutes": 90}], [{"id": 1, "minutes": "90.0"}]):
+            result = await _player_history_check(client, elements, season_started=True)
+            assert result.status.value == "unchecked"
+            assert "FPL player fields" in result.detail
+        client.get_player_detail.assert_not_awaited()
+
+    @respx.mock
+    def test_a_healthy_history_is_ok(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes()
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "ok"
+        assert "5 history rows" in row["detail"]
+        assert "all 10 expected fields present" in row["detail"]
+
+    @respx.mock
+    def test_the_probe_asks_about_the_player_with_the_most_minutes(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(joining_players=3)
+        _run(["--format", "json"])
+        asked = [
+            c.request.url.path for c in respx.calls if "element-summary" in c.request.url.path
+        ]
+        # Elements 1-3 carry 900 minutes, the rest 0; max() keeps the first.
+        assert asked == ["/api/element-summary/1/"]
+
+    @respx.mock
+    def test_a_renamed_row_key_is_broken_and_named(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            element_summary=Response(200, json=_element_summary(drop=("expected_goals", "round"))),
+        )
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "broken"
+        assert "missing expected_goals, round" in row["detail"]
+        assert "read as 0" in row["detail"]
+
+    @respx.mock
+    def test_no_history_rows_mid_season_is_broken(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(element_summary=Response(200, json=_element_summary(rows=0)))
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "broken"
+        assert "no history rows mid-season" in row["detail"]
+
+    @respx.mock
+    def test_no_history_rows_before_the_first_finished_gameweek_is_skipped(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(finished_gws=0, element_summary=Response(200, json=_element_summary(rows=0)))
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "skipped"
+
+    @respx.mock
+    def test_a_payload_without_a_history_list_is_broken(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(element_summary=Response(200, json={"fixtures": [], "history_past": []}))
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "broken"
+        assert "no `history` list" in row["detail"]
+
+    @respx.mock
+    def test_a_server_error_is_unchecked(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(element_summary=Response(500))
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "unchecked"
+        assert "HTTP 500" in row["detail"]
+
+    @respx.mock
+    def test_an_unreachable_bootstrap_leaves_no_history_row(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            fpl_error=httpx.ConnectError("down", request=httpx.Request("GET", FPL_BOOTSTRAP_URL)),
+        )
+        payload = json.loads(_run(["--format", "json"]).output)
+        assert "FPL player history" not in [c["name"] for c in payload["data"]["providers"]]

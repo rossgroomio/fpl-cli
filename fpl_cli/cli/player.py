@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 import httpx
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 
 from fpl_cli.cli._context import (
@@ -31,6 +32,7 @@ from fpl_cli.models.player import resolve_players, usable_code
 from fpl_cli.services.player_prior import (
     CUTOFF_GW,
     early_season_quality_warning,
+    informed_priors,
     load_or_generate_player_priors,
 )
 from fpl_cli.services.scoring import (
@@ -40,7 +42,9 @@ from fpl_cli.services.scoring import (
     compute_quality_value,
     compute_rolling_pts_per_m,
     compute_xgi_sustainability,
+    coverage_warnings,
     fetch_match_records,
+    history_prior_coverage,
 )
 
 if TYPE_CHECKING:
@@ -79,8 +83,9 @@ def player_command(
       fpl player "Palmer (CHE)" --fixtures --detail
       fpl player Haaland --understat --history --format json
     """
+    from fpl_cli.agents.common import get_draft_ownership_mapping
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_teams_to_main, match_draft_to_main
+    from fpl_cli.api.fpl_draft import FPLDraftClient, unread_squads_warning
 
     fmt = get_format(ctx)
     show_draft = fmt != Format.CLASSIC
@@ -117,40 +122,23 @@ def player_command(
                 # name resolves: this costs a league-details fetch, a draft
                 # bootstrap, game state, and one squad fetch per league entry, and
                 # only the resolved players are ever shown as owned or available.
-                draft_owned = {}
-                draft_entries = {}
-                main_to_draft_id = {}  # Map main FPL player IDs to draft player IDs
+                draft_owned: dict[int, int] = {}
+                draft_entries: dict[int, str] = {}
+                main_to_draft_id: dict[int, int] = {}  # main FPL player id -> draft player id
+                draft_warnings: list[dict[str, str]] = []
                 if show_draft and draft_league_id:
                     try:
                         async with FPLDraftClient() as draft_client:
-                            league_details = await draft_client.get_league_details(draft_league_id)
-                            draft_bootstrap = await draft_client.get_bootstrap_static()
-
-                            # Map entry IDs to manager names
-                            for entry in league_details.get("league_entries", []):
-                                manager_name = (
-                                    f"{entry.get('player_first_name', '')} {entry.get('player_last_name', '')}".strip()
+                            draft_owned, draft_entries, main_to_draft_id, unread_squads = (
+                                await get_draft_ownership_mapping(
+                                    draft_client, players, draft_league_id, main_teams=team_list,
                                 )
-                                draft_entries[entry["entry_id"]] = manager_name or "Unknown"
-
-                            # Get accurate ownership from actual squads (element-status can be stale).
-                            # league_details is passed through — it is not memoised on the client.
-                            draft_owned = await draft_client.get_league_ownership(
-                                draft_league_id, draft_bootstrap, league_details,
                             )
-
-                            # Create mapping from main FPL IDs to draft IDs
-                            # Draft API may use different player IDs than main FPL API
-                            draft_players = draft_bootstrap.get("elements", [])
-                            main_to_draft_id.update({
-                                main_player.id: draft_id
-                                for draft_id, main_player in match_draft_to_main(
-                                    draft_players, display,
-                                    team_id_map=match_draft_teams_to_main(
-                                        draft_bootstrap.get("teams", []), team_list,
-                                    ),
-                                ).items()
-                            })
+                        # A rival squad the read missed leaves its players
+                        # labelled Available below (#438): both channels.
+                        unread_warning = unread_squads_warning(unread_squads)
+                        if unread_warning is not None:
+                            draft_warnings.append(unread_warning)
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment
                         logger.warning("Draft ID mapping failed: %s", e)
 
@@ -257,8 +245,10 @@ def player_command(
                 custom_on = is_custom_analysis_enabled(settings)
                 rolling_window = int(settings.get("rolling_window", 5))
                 consistency_lookup: dict[int, ConsistencySignals] = {}
+                loaded_priors: dict[int, PlayerPrior] | None = None
                 priors: dict[int, PlayerPrior] | None = None
                 quality_warning: dict[str, str] | None = None
+                prior_coverage_warnings: list[dict[str, str]] = []
                 if custom_on:
                     match_data = await fetch_match_records(next_gw_id)
                     if match_data:
@@ -273,7 +263,10 @@ def player_command(
                     # `players` rather than `display`. Unreachable history
                     # degrades to the pure-observation score.
                     if next_gw_id < CUTOFF_GW:
-                        priors = await load_or_generate_player_priors(players, next_gw_id)
+                        loaded_priors = await load_or_generate_player_priors(players, next_gw_id)
+                        # A set the history reached too little of scores as
+                        # none; the coverage entry below reads the real reach.
+                        priors = informed_priors(loaded_priors)
 
                     for p in display:
                         us_match = us_matches.get(p.id)
@@ -317,10 +310,20 @@ def player_command(
                     # pure observation because the priors could not be loaded —
                     # in the same slot fpl stats --value uses, so an agent
                     # reading either command checks one place.
+                    # The one feed this command reads over the whole pool
+                    # rather than the few players shown, so the one whose
+                    # reach can be judged here (#438). Understat and the
+                    # match data are joined per displayed player, and a
+                    # miss there is that player's, not the feed's. Both
+                    # entries belong to quality_score, so neither is said
+                    # of an output that carries none.
                     if quality_scores:
                         quality_warning = early_season_quality_warning(
                             next_gw_id, blended=priors is not None,
                         )
+                        prior_coverage_warnings = coverage_warnings([
+                            history_prior_coverage(players, loaded_priors, next_gw_id=next_gw_id),
+                        ])
 
                 # JSON output mode
                 if output_format == "json":
@@ -455,6 +458,8 @@ def player_command(
 
                         warnings = [quality_warning] if quality_warning else []
                         warnings.extend(understat_join_warnings())
+                        warnings.extend(prior_coverage_warnings)
+                        warnings.extend(draft_warnings)
                         emit_json("player", players_data, metadata={
                             "query": name,
                             "matches": len(display),
@@ -464,6 +469,10 @@ def player_command(
 
                 if quality_warning:
                     error_console.print(f"[yellow]{quality_warning['message']}[/yellow]")
+                for feed_warning in [*prior_coverage_warnings, *draft_warnings]:
+                    error_console.print(
+                        f"[yellow]{rich_escape(feed_warning['message'])}[/yellow]"
+                    )
 
                 # Render each player
                 for p in display:
@@ -485,8 +494,13 @@ def player_command(
                     understat_line = ""
                     us_match = us_matches.get(p.id)
                     if us_match:
+                        # npxG is None when Understat's payload stopped
+                        # carrying it (#438); the panel says so rather than
+                        # printing a zero nobody measured.
+                        npxg_total = us_match.get("npxG")
+                        npxg_text = f"{npxg_total:.2f}" if npxg_total is not None else "n/a"
                         understat_line = (
-                            f"npxG: {us_match['npxG']:.2f} | "
+                            f"npxG: {npxg_text} | "
                             f"xGChain: {us_match['xGChain']:.2f} | "
                             f"xGBuildup: {us_match['xGBuildup']:.2f}\n"
                         )

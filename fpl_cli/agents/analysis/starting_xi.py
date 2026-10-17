@@ -161,6 +161,10 @@ class StartingXIAgent(Agent):
                     "excluded_players": excluded,
                     "total_score": result["total_score"],
                     "team_exposure_penalties": result["team_exposure_penalties"],
+                    # The scoring bundle's coverage entries (#438): a feed
+                    # that reached part of the pool changes this ranking
+                    # as much as any other's.
+                    "warnings": list(data.warnings),
                 },
                 message="Starting XI selected",
             )

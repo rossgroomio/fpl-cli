@@ -1414,3 +1414,115 @@ class TestDraftFetchDeferral:
         draft.get_league_details.assert_awaited_once()
         args = draft.get_league_ownership.await_args.args
         assert args[2] == draft.get_league_details.return_value
+
+
+class TestPlayerDraftSquadsUnread:
+    """A rival squad the ownership read missed is named beside the draft column (#438)."""
+
+    def test_a_rival_squad_the_read_missed_is_named_in_json_and_on_stderr(self):
+        from fpl_cli.cli._context import Format
+
+        for json_mode in (True, False):
+            client, fixture_agent, ratings_svc = _make_mocks()
+            draft_client = _make_draft_client()
+            draft_client.unread_squads = {8: "Team B"}
+            runner = CliRunner()
+            with (
+                patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
+                patch("fpl_cli.cli.player.get_settings",
+                      return_value={"fpl": {"draft_league_id": 12345}}),
+                patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+                patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+                patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+                patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
+            ):
+                args = ["player", "Salah"] + (["--format", "json"] if json_mode else [])
+                result = runner.invoke(main, args)
+            assert result.exit_code == 0, result.output
+            if json_mode:
+                warnings = json.loads(result.output)["metadata"]["warnings"]
+                unread = [w for w in warnings if w["code"] == "draft_squads_unread"]
+                assert len(unread) == 1 and "Team B" in unread[0]["message"]
+            else:
+                assert "Team B" in result.stderr
+                assert "could not be read" in result.stderr
+
+
+class TestPlayerHistoryPriorCoverage:
+    """`fpl player` judges the one feed it reads over the whole pool (#438)."""
+
+    @staticmethod
+    def _client():
+        client, fixture_agent, ratings_svc = _make_mocks()
+        pool = [make_player(id=1, web_name="Salah", team_id=1, position=PlayerPosition.MIDFIELDER)] + [
+            make_player(id=i, web_name=f"Other{i}", team_id=1, minutes=900) for i in range(2, 31)
+        ]
+        client.get_players = AsyncMock(return_value=pool)
+        client.get_next_gameweek = AsyncMock(return_value={"id": 4})
+        client.get_player_detail = AsyncMock(return_value={"history": []})
+        return client, fixture_agent, ratings_svc
+
+    def _warnings(self, priors):
+        client, fixture_agent, ratings_svc = self._client()
+        with patch(
+            "fpl_cli.cli.player.load_or_generate_player_priors",
+            AsyncMock(return_value=priors),
+        ):
+            result = _run_with_us_match([], client, fixture_agent, ratings_svc, json_mode=True)
+        assert result.exit_code == 0, result.output
+        return json.loads(result.output)["metadata"]["warnings"]
+
+    def test_no_priors_before_the_cutoff_is_named_beside_the_notice(self):
+        codes = [w["code"] for w in self._warnings(None)]
+        assert "early_season_small_sample" in codes
+        assert "history_prior_coverage_low" in codes
+
+    def test_a_history_informed_pool_is_quiet(self):
+        from fpl_cli.services.player_prior import PlayerPrior
+
+        priors = {i: PlayerPrior(0.6, 0.5, "history") for i in range(1, 31)}
+        assert "history_prior_coverage_low" not in [w["code"] for w in self._warnings(priors)]
+
+    def test_a_short_set_names_its_real_reach_and_scores_as_no_prior(self):
+        from fpl_cli.services.player_prior import PlayerPrior
+
+        priors = {i: PlayerPrior(0.6, 0.5, "history" if i <= 3 else "price") for i in range(1, 31)}
+        warnings = self._warnings(priors)
+        codes = [w["code"] for w in warnings]
+        assert "early_season_small_sample" in codes
+        message = next(w["message"] for w in warnings if w["code"] == "history_prior_coverage_low")
+        assert "3 of 30 player priors" in message
+
+    def test_no_quality_score_means_no_prior_entry(self):
+        # No Understat row for the player shown, so no quality_score and
+        # nothing for the entry to caveat (#454 review).
+        client, fixture_agent, ratings_svc = self._client()
+        with patch(
+            "fpl_cli.cli.player.load_or_generate_player_priors", AsyncMock(return_value=None),
+        ):
+            result = _run_with_us_match(
+                [], client, fixture_agent, ratings_svc, us_match={}, json_mode=True,
+            )
+        assert result.exit_code == 0, result.output
+        codes = [w["code"] for w in json.loads(result.output)["metadata"]["warnings"]]
+        assert "history_prior_coverage_low" not in codes
+        assert "early_season_small_sample" not in codes
+
+    def test_table_mode_prints_the_entry_to_stderr(self):
+        client, fixture_agent, ratings_svc = self._client()
+        with patch(
+            "fpl_cli.cli.player.load_or_generate_player_priors", AsyncMock(return_value=None),
+        ):
+            result = _run_with_us_match([], client, fixture_agent, ratings_svc)
+        assert result.exit_code == 0, result.output
+        assert "Last season's history reached 0 of 30 player priors" in result.stderr
+
+
+class TestPlayerPanelWithoutNpxg:
+    def test_an_unknown_npxg_renders_as_not_available(self):
+        """The panel says n/a rather than crashing on, or printing, a 0 nobody measured (#438)."""
+        client, fixture_agent, ratings_svc = _make_mocks()
+        us_match = {**_make_us_match(), "npxG": None, "npxG_per_90": None, "xGChain": 8.0, "xGBuildup": 2.0}
+        result = _run_with_us_match([], client, fixture_agent, ratings_svc, us_match=us_match)
+        assert result.exit_code == 0, result.output
+        assert "npxG: n/a" in result.output

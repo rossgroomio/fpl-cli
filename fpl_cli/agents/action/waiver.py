@@ -17,6 +17,7 @@ from fpl_cli.api.fpl_draft import (
     FPLDraftClient,
     match_draft_teams_to_main,
     match_draft_to_main,
+    unread_squads_warning,
     untranslated_draft_teams,
 )
 from fpl_cli.models.player import Player
@@ -32,8 +33,10 @@ from fpl_cli.services.scoring import (
     compute_aggregate_matchup,
     compute_form_trajectory,
     compute_xgi_sustainability,
+    coverage_warnings,
     prepare_scoring_data,
     read_chance_of_playing,
+    understat_join_coverage,
 )
 
 if TYPE_CHECKING:
@@ -301,6 +304,16 @@ class WaiverAgent(Agent):
             unjoined_warning = self._unjoined_player_warning(parsed_available)
             if unjoined_warning is not None:
                 warnings.append(unjoined_warning)
+            squads_warning = unread_squads_warning(self.client.unread_squads)
+            if squads_warning is not None:
+                warnings.append(squads_warning)
+            # The bundle's coverage entries, plus this agent's own Understat
+            # join over the draft pool, which it runs itself rather than
+            # through the bundle, judged by the bundle's rule (#438).
+            warnings.extend(data.warnings)
+            warnings.extend(coverage_warnings([
+                understat_join_coverage(parsed_available, us_lookup, next_gw_id=next_gw_id),
+            ]))
 
             return self._create_result(
                 AgentStatus.SUCCESS,
