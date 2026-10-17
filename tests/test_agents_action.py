@@ -929,6 +929,206 @@ class TestWaiverAgentGkSignals:
         assert agent._main_player_map == {5: main_keeper}
 
 
+class TestWaiverAgentDefensiveContribution:
+    """#437: draft defenders are scored with the defensive-contribution term.
+
+    The waiver DEF anchor was calibrated with ``dc_per_90`` present, but the
+    draft bootstrap carries defensive contribution only as a season total and
+    the parser drops it, so the rate has to come from the main-game player
+    joined on ``code``. The draft id deliberately differs from the main id,
+    and the main player who holds the draft id has a different rate, so a
+    read on the wrong key lands on a stranger's DC rather than missing.
+    """
+
+    DRAFT_ID = 5
+    MAIN_ID = 500
+    CODE = 9001
+
+    def _draft_defender(self):
+        return make_draft_player(
+            id=self.DRAFT_ID, web_name="Gabriel", team=1, element_type=2,
+            code=self.CODE, form=5.0, minutes=1800,
+        )
+
+    def _main_defender(self, **overrides):
+        fields = {
+            "id": self.MAIN_ID, "code": self.CODE, "web_name": "Gabriel",
+            "team_id": 1, "position": PlayerPosition.DEFENDER, "form": 5.0,
+            "points_per_game": 5.0, "minutes": 1800, "total_points": 100,
+            "defensive_contribution_per_90": 3.2,
+        }
+        return make_player(**{**fields, **overrides})
+
+    def _id_sharer(self):
+        """The main-game player who happens to hold the draft element's id."""
+        return make_player(
+            id=self.DRAFT_ID, code=7777, web_name="Somebody Else", team_id=5,
+            position=PlayerPosition.DEFENDER, minutes=900,
+            defensive_contribution_per_90=0.4,
+        )
+
+    async def _run_agent(
+        self, mock_draft_bootstrap, mock_league_details, players,
+        *, squad=(), released=(), pool_player=None,
+    ):
+        """Drive ``run()`` with *squad* picked by entry 100 and *released* dropped."""
+        pool_player = pool_player or self._draft_defender()
+        config: dict[str, Any] = {"draft_league_id": 12345}
+        if squad:
+            config["draft_entry_id"] = 100
+        agent = WaiverAgent(config=config)
+        bootstrap = {
+            **mock_draft_bootstrap,
+            "elements": [pool_player, *squad, *released],
+        }
+
+        with _stub_upstream_fetches(players=players), \
+             patch.object(agent.client, "get_bootstrap_static", new_callable=AsyncMock) as mock_bootstrap, \
+             patch.object(agent.client, "get_available_players", new_callable=AsyncMock) as mock_available, \
+             patch.object(agent.client, "get_recent_releases", new_callable=AsyncMock) as mock_releases, \
+             patch.object(agent.client, "get_league_details", new_callable=AsyncMock) as mock_details, \
+             patch.object(agent.client, "get_game_state", new_callable=AsyncMock, return_value={"current_event": 25}), \
+             patch.object(agent.client, "get_entry_picks", new_callable=AsyncMock) as mock_picks, \
+             patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock) as mock_order:
+
+            mock_bootstrap.return_value = bootstrap
+            mock_available.return_value = [pool_player]
+            mock_releases.return_value = [
+                {"player": p, "dropped_by": 101, "gameweek": 24} for p in released
+            ]
+            mock_details.return_value = mock_league_details
+            mock_picks.return_value = {
+                "picks": [{"element": p["id"], "position": n} for n, p in enumerate(squad, 1)],
+            }
+            mock_order.return_value = []
+
+            result = await agent.run()
+
+        assert result.status == AgentStatus.SUCCESS
+        return result
+
+    async def _run(self, mock_draft_bootstrap, mock_league_details, players, pool_player=None):
+        result = await self._run_agent(
+            mock_draft_bootstrap, mock_league_details, players, pool_player=pool_player,
+        )
+        [target] = result.data["top_targets"]
+        return target
+
+    @pytest.mark.asyncio
+    async def test_joined_defender_carries_the_main_game_rate(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """The row reports the code-joined player's DC/90, not the id-sharer's."""
+        target = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._main_defender(), self._id_sharer()],
+        )
+
+        assert target["id"] == self.DRAFT_ID
+        assert target["dc_per_90"] == 3.2
+
+    @pytest.mark.asyncio
+    async def test_the_rate_reaches_the_waiver_score(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """Same defender, same everything else: only the DC/90 differs."""
+        with_dc = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._main_defender()],
+        )
+        without_dc = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._main_defender(defensive_contribution_per_90=0.0)],
+        )
+
+        assert with_dc["waiver_score"] > without_dc["waiver_score"]
+
+    @pytest.mark.asyncio
+    async def test_unjoined_defender_keeps_zero_and_says_so(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """No main-game counterpart: DC stays at 0, never borrowed by id.
+
+        The miss is named on stderr, as a keeper's is, since the defender is
+        then scored against a DC-calibrated anchor without the term.
+        """
+        with patch.object(WaiverAgent, "log_warning") as warn:
+            target = await self._run(
+                mock_draft_bootstrap, mock_league_details,
+                players=[self._id_sharer()],
+            )
+
+        assert target["dc_per_90"] == 0
+        [message] = [
+            c.args[0] for c in warn.call_args_list if "defensive contribution" in c.args[0]
+        ]
+        assert "1 draft defender(s) (Gabriel)" in message
+
+    @pytest.mark.asyncio
+    async def test_midfielder_rate_is_display_only(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """A MID row carries its real rate, which the MID score does not weight.
+
+        Midfielders earn DC points too, so the row shows the main-game figure
+        rather than the parser's 0; the waiver weights zero ``dc_per_90``
+        outside the DEF path, so the score is the same either way.
+        """
+        midfielder = make_draft_player(
+            id=self.DRAFT_ID, web_name="Rice", team=1, element_type=3,
+            code=self.CODE, form=5.0, minutes=1800,
+        )
+        main_mid = {"web_name": "Rice", "position": PlayerPosition.MIDFIELDER}
+        with_dc = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._main_defender(**main_mid)], pool_player=midfielder,
+        )
+        without_dc = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._main_defender(**main_mid, defensive_contribution_per_90=0.0)],
+            pool_player=midfielder,
+        )
+
+        assert (with_dc["position"], with_dc["dc_per_90"]) == ("MID", 3.2)
+        assert with_dc["waiver_score"] == without_dc["waiver_score"]
+
+    @pytest.mark.asyncio
+    async def test_squad_and_release_rows_carry_the_main_game_rate(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """The rows beside the pool are joined too, not left at the parser's 0.
+
+        gw-prep hands the whole payload to a sub-agent, so a squad defender
+        left at 0 next to a target carrying its real rate reads as an upgrade
+        in DC that is an artefact of which list the player sits in.
+        """
+        squad_defender = make_draft_player(
+            id=6, web_name="Saliba", team=1, element_type=2, code=9002, minutes=1800,
+        )
+        released_defender = make_draft_player(
+            id=7, web_name="Timber", team=1, element_type=2, code=9003, minutes=1800,
+        )
+        players = [
+            self._main_defender(),
+            self._main_defender(
+                id=600, code=9002, web_name="Saliba", defensive_contribution_per_90=2.6,
+            ),
+            self._main_defender(
+                id=700, code=9003, web_name="Timber", defensive_contribution_per_90=1.9,
+            ),
+        ]
+
+        result = await self._run_agent(
+            mock_draft_bootstrap, mock_league_details, players,
+            squad=[squad_defender], released=[released_defender],
+        )
+
+        [squad_row] = result.data["current_squad"]
+        [release_row] = result.data["recent_releases"]
+        assert (squad_row["id"], squad_row["dc_per_90"]) == (6, 2.6)
+        assert (release_row["id"], release_row["dc_per_90"]) == (7, 1.9)
+
+
 class TestWaiverAgentClubIdSpace:
     """#423: the draft game numbers its clubs independently of the main game.
 
