@@ -138,6 +138,17 @@ rival-owned). Every payload therefore follows one convention:
 - A `code` that is not known is `null`, never `0` or a guess: a shared `0` would join every
   such player to every other.
 
+Clubs follow the same rule one level up. Each game publishes its own `teams` list and numbers
+its 20 clubs 1-20 for the season; the numberings agree today, but nothing ties them together,
+and a draft club id read as a main-game one would name a different club rather than missing.
+What both lists share is the club's permanent `code` (Arsenal is id 1, code 3), so every
+draft path translates the draft game's club id by `code` before reading main-game fixtures,
+form or team data (#423), and a `team_id` on any payload's player row is **the main game's**,
+`fpl waivers` included. A matched player's club is his main-game player's; an unmatched one's is
+his draft club translated by code. A club the main game does not list comes out as `null`, never
+the raw draft id, and `fpl waivers` says so with a `draft_club_untranslated` entry in
+`metadata.warnings` (stderr in table mode) naming the clubs.
+
 Which namespace each payload's `id` is in, and whether the row carries `code`:
 
 | Command | Player rows | `id` is | `code` |

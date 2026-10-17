@@ -162,6 +162,7 @@ def squad_group(ctx: click.Context, is_draft: bool, is_classic: bool, output_for
                         squad_players = await get_draft_squad_players(
                             draft_client, all_players, draft_entry_id, gw,
                             log=lambda msg: error_console.print(f"[yellow]{msg}[/yellow]"),
+                            main_teams=await client.get_teams(),
                         )
                     except httpx.HTTPStatusError as exc:
                         if exc.response.status_code != 404:

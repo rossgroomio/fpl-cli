@@ -2094,6 +2094,7 @@ def _resolve_draft_txn_sides(
     draft_player_map: dict[int, dict[str, Any]],
     draft_to_main_id: dict[int, int],
     draft_to_main_code: dict[int, int],
+    team_id_of: Callable[[dict[str, Any]], int | None],
     club_of: Callable[..., Team | None],
 ) -> _DraftTxnSides | None:
     """Resolve a transaction's two sides, or None for a row we cannot place.
@@ -2118,8 +2119,8 @@ def _resolve_draft_txn_sides(
 
     in_main_id = draft_to_main_id.get(in_id)
     out_main_id = draft_to_main_id.get(out_id)
-    in_club = club_of(in_main_id, dp_in.get("team"))
-    out_club = club_of(out_main_id, dp_out.get("team"))
+    in_club = club_of(in_main_id, team_id_of(dp_in))
+    out_club = club_of(out_main_id, team_id_of(dp_out))
 
     return _DraftTxnSides(
         in_id=in_id,
@@ -2164,12 +2165,20 @@ async def collect_draft_recap_data(
     meaning they do on the classic collector. Clubs are read against the
     matched main-game player, so a draft pick the main game never matched
     keeps the draft bootstrap's current club -- there is no id to place him by.
+    Where the gameweek is silent, a matched pick falls back to his main-game
+    player's club, and an unmatched one to the draft game's own team id
+    translated to the main game's by club code (#423), so either is read
+    against `teams` in the right numbering. A club the main game does not
+    list is recorded as no club, and logged.
     """
     from fpl_cli.api.fpl_draft import (
         FPLDraftClient,
+        draft_player_team_id,
         is_accepted_transaction,
+        match_draft_teams_to_main,
         match_draft_to_main,
         resolve_lost_claims,
+        untranslated_draft_teams,
     )
     from fpl_cli.models.player import POSITION_MAP
 
@@ -2186,8 +2195,26 @@ async def collect_draft_recap_data(
         draft_bootstrap = await draft_client.get_bootstrap_static()
         draft_elements = draft_bootstrap.get("elements", [])
         draft_player_map = {p["id"]: p for p in draft_elements}
+        draft_teams = draft_bootstrap.get("teams", [])
+        team_id_map = match_draft_teams_to_main(draft_teams, teams.values())
+        if untranslated := untranslated_draft_teams(draft_teams, team_id_map):
+            # Written to the ledger, so said here rather than only by doctor
+            logger.warning(
+                "Draft clubs with no main-game club of the same code (%s): unmatched "
+                "players there are recorded with no club",
+                ", ".join(untranslated),
+            )
 
-        matched_main_players = match_draft_to_main(draft_elements, players)
+        matched_main_players = match_draft_to_main(
+            draft_elements, players, team_id_map=team_id_map,
+        )
+
+        def team_id_of(draft_player: dict[str, Any]) -> int | None:
+            """Today's main-game club for a draft player, matched player first."""
+            return draft_player_team_id(
+                draft_player, team_id_map,
+                main_player=matched_main_players.get(draft_player["id"]),
+            )
         draft_to_main_id = {
             draft_id: main_player.id
             for draft_id, main_player in matched_main_players.items()
@@ -2269,7 +2296,8 @@ async def collect_draft_recap_data(
                 unmatched = main_id is None
                 pts, _, red_cards = _live_player_stats(live_stats, main_id)
                 pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
-                draft_team = club_of(main_id, draft_player.get("team"))
+                draft_team_id = team_id_of(draft_player)
+                draft_team = club_of(main_id, draft_team_id)
                 team_short = draft_team.short_name if draft_team else "???"
                 squad_position = pick.get("position", 1)
                 is_bench = squad_position > 11
@@ -2298,7 +2326,7 @@ async def collect_draft_recap_data(
                     red_cards=red_cards,
                     unmatched=unmatched,
                     had_fixture=had_fixture(
-                        main_id, draft_player.get("team"),
+                        main_id, draft_team_id,
                         players_with_fixture=players_with_fixture,
                         bgw_team_ids=bgw_team_ids,
                     ),
@@ -2323,6 +2351,7 @@ async def collect_draft_recap_data(
                 draft_player_map=draft_player_map,
                 draft_to_main_id=draft_to_main_id,
                 draft_to_main_code=draft_to_main_code,
+                team_id_of=team_id_of,
                 club_of=club_of,
             )
 

@@ -175,6 +175,7 @@ def stats_command(
                             draft_owned, draft_entries, main_to_draft_id = (
                                 await get_draft_ownership_mapping(
                                     draft_client, all_players, draft_league_id,
+                                    main_teams=all_teams,
                                 )
                             )
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment

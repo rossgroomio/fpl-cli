@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping, Sequence
-from typing import Any, Self
+from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Self
 
 import httpx
 
 from fpl_cli.models.gameweek_status import GameweekStatus
 from fpl_cli.models.player import POSITION_MAP, Player, usable_code
 from fpl_cli.utils.text import strip_diacritics
+
+if TYPE_CHECKING:
+    from fpl_cli.models.team import Team
 
 logger = logging.getLogger(__name__)
 
@@ -506,14 +509,22 @@ class FPLDraftClient:
 
         return releases
 
-    def parse_player(self, player_data: dict[str, Any]) -> dict[str, Any]:
+    def parse_player(
+        self,
+        player_data: dict[str, Any],
+        team_id_map: Mapping[int, int],
+    ) -> dict[str, Any]:
         """Parse raw player data into a cleaner format.
 
         Args:
             player_data: Raw player data from the API.
+            team_id_map: Draft team id to main-game team id, from
+                `match_draft_teams_to_main`. Required rather than defaulted,
+                so no caller can emit a draft club id by forgetting it.
 
         Returns:
-            Cleaned player data.
+            Cleaned player data. `team_id` is the **main-game** team id, or
+            None for a club the main game's team list does not carry.
         """
         return {
             "id": player_data.get("id"),
@@ -526,7 +537,9 @@ class FPLDraftClient:
             "player_name": player_data.get("web_name", ""),
             "first_name": player_data.get("first_name", ""),
             "second_name": player_data.get("second_name", ""),
-            "team_id": player_data.get("team"),
+            # Translated here, once, because everything downstream (fixtures,
+            # form, FDR, matchup) is keyed by the main game's team id (#423).
+            "team_id": draft_player_team_id(player_data, team_id_map),
             "position": POSITION_MAP.get(player_data.get("element_type", 0), "???"),
             "total_points": player_data.get("total_points", 0),
             "ppg": float(player_data.get("points_per_game", 0)),
@@ -543,9 +556,86 @@ class FPLDraftClient:
         }
 
 
+def match_draft_teams_to_main(
+    draft_teams: Iterable[Mapping[str, Any]],
+    main_teams: Iterable[Team],
+) -> dict[int, int]:
+    """Map draft team ids onto the main-game team id of the same club.
+
+    Each game publishes its own `teams` list and numbers it 1-20 for the
+    season. The two numberings agree today, but nothing ties them together:
+    a draft relaunch out of step with the main game at a season change would
+    leave every draft club id naming a different main-game club, and every
+    read of one against main-game fixtures, form or team data would pick
+    that club silently. Both lists carry `code`, the club's permanent
+    identifier, so `code` is the join (#423). It is the club-level
+    counterpart of `match_draft_to_main`.
+
+    A club whose code is missing from either side is absent, so a lookup
+    finds no club rather than whichever one happens to share the number.
+    """
+    main_by_code: dict[int, int] = {}
+    for team in main_teams:
+        code = usable_code(team.code)
+        if code is not None:
+            main_by_code[code] = team.id
+
+    matched: dict[int, int] = {}
+    for team in draft_teams:
+        draft_id = team.get("id")
+        code = usable_code(team.get("code"))
+        if not isinstance(draft_id, int) or code is None:
+            continue
+        main_id = main_by_code.get(code)
+        if main_id is not None:
+            matched[draft_id] = main_id
+    return matched
+
+
+def draft_player_team_id(
+    player: Mapping[str, Any],
+    team_id_map: Mapping[int, int],
+    *,
+    main_player: Player | None = None,
+) -> int | None:
+    """The main-game team id of a raw draft player's club, or None.
+
+    The matched main-game player answers first when there is one: his
+    `team_id` is already in the main game's numbering and is the club the
+    rest of his row (live points, fixtures) is read against, so it holds
+    even when the draft list carries a club the main game has dropped.
+    Otherwise the player's `team`, the draft game's own team id, goes
+    through *team_id_map* (`match_draft_teams_to_main`). None means neither
+    can say: the raw id is never passed through, because it would name
+    whichever main-game club shares the number (#423).
+    """
+    if main_player is not None:
+        return main_player.team_id
+    team = player.get("team")
+    return team_id_map.get(team) if isinstance(team, int) else None
+
+
+def untranslated_draft_teams(
+    draft_teams: Iterable[Mapping[str, Any]],
+    team_id_map: Mapping[int, int],
+) -> list[str]:
+    """Short names of the draft clubs *team_id_map* has no main-game id for.
+
+    What a draft path warns with: a player at one of these clubs reads with
+    no club, which is right but otherwise indistinguishable from a quiet one.
+    """
+    return sorted(
+        str(team.get("short_name") or team.get("id"))
+        for team in draft_teams
+        if team.get("id") not in team_id_map
+    )
+
+
 def match_draft_to_main(
     draft_elements: Sequence[dict[str, Any]],
     main_players: Sequence[Player],
+    *,
+    team_id_map: Mapping[int, int],
 ) -> dict[int, Player]:
     """Map draft element IDs onto the main-game player they represent.
 
@@ -557,12 +647,17 @@ def match_draft_to_main(
     with no code, folded for diacritics and paired with the team so two
     players sharing a surname stay apart.
 
+    The fallback compares main-game clubs, so the element's draft team goes
+    through *team_id_map* (`match_draft_teams_to_main`) first; required, so
+    no caller pairs on a draft team id read as a main-game one by leaving it
+    out (#423). An element whose club does not translate goes unmatched.
+
     Returns only the draft IDs that matched; a missing key is a genuine miss.
     """
     by_code = {p.code: p for p in main_players if p.code}
-    by_name_team = {
-        (strip_diacritics(p.web_name).lower(), p.team_id): p for p in main_players
-    }
+    # Built on first use: every live element carries a code, so most calls
+    # never reach the fallback and need not fold ~700 names for it
+    by_name_team: dict[tuple[str, int], Player] | None = None
 
     matched: dict[int, Player] = {}
     for dp in draft_elements:
@@ -572,8 +667,12 @@ def match_draft_to_main(
         code = dp.get("code")
         main_player = by_code.get(code) if code else None
         if main_player is None:
-            name, team = dp.get("web_name"), dp.get("team")
+            name, team = dp.get("web_name"), draft_player_team_id(dp, team_id_map)
             if name and team is not None:
+                if by_name_team is None:
+                    by_name_team = {
+                        (strip_diacritics(p.web_name).lower(), p.team_id): p for p in main_players
+                    }
                 main_player = by_name_team.get((strip_diacritics(name).lower(), team))
         if main_player is not None:
             matched[draft_id] = main_player
