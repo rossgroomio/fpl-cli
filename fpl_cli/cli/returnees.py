@@ -17,6 +17,7 @@ from rich.table import Table
 
 from fpl_cli.cli._context import console, error_console, get_settings
 from fpl_cli.cli._json import emit_json, emit_json_error, output_format_option
+from fpl_cli.models.player import usable_code
 
 if TYPE_CHECKING:
     from fpl_cli.api.historical_types import PlayerProfile
@@ -667,6 +668,7 @@ def assemble(
         "departures": [
             {
                 "id": departure.player_id,
+                "code": departure.code,
                 "web_name": departure.web_name,
                 "status": departure.status,
                 "transition": departure.transition,
@@ -712,7 +714,7 @@ def _entry_data(entry: RadarEntry) -> dict[str, Any]:
     signal, quality = entry.signal, entry.quality
     return {
         "id": entry.player_id,
-        "code": entry.code,
+        "code": usable_code(entry.code),
         "web_name": entry.web_name,
         "team": entry.team_name,
         "team_id": entry.team_id,

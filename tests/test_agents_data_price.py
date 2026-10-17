@@ -318,6 +318,15 @@ class TestPriceAgentPlayerData:
         assert "form" in data
         assert "total_points" in data
 
+    def test_player_price_data_carries_code_beside_id(self, mock_teams):
+        """Ready for a JSON payload from the start: `code` rides beside the main id (#419)."""
+        agent = PriceAgent()
+        player = make_player(id=7, code=118748, team_id=mock_teams[0].id)
+
+        data = agent._player_price_data(player, {t.id: t for t in mock_teams})
+
+        assert (data["id"], data["code"]) == (7, 118748)
+
     def test_player_price_data_converts_to_millions(self, mock_players, mock_teams):
         """Test price changes are converted to millions."""
         agent = PriceAgent()

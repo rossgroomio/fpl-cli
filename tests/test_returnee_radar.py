@@ -1214,6 +1214,7 @@ def _record(
     return_date: date | None = None,
     lapsed: bool = False,
     web_name: str = "Flagged",
+    code: int | None = None,
 ) -> Any:
     return returnee_radar.SnapshotRecord(
         status=status,
@@ -1221,6 +1222,7 @@ def _record(
         return_date=return_date,
         lapsed=lapsed,
         web_name=web_name,
+        code=code,
     )
 
 
@@ -1271,6 +1273,7 @@ def test_saved_store_round_trips_through_load(tmp_path):
             gameweek=4,
             **{"7": _record(
                 status="d", chance=25, return_date=date(2026, 10, 5), web_name="Rider",
+                code=1007,
             )},
         ),
     )
@@ -1726,6 +1729,51 @@ def test_a_tracked_player_who_left_the_player_pool_is_named_from_the_snapshot():
     assert [(d.web_name, d.transition, d.reason) for d in departures] == [
         ("Gone", returnee_radar.TRANSITION_DROPPED, returnee_radar.EXCLUDED_UNKNOWN),
     ]
+
+
+def test_a_departure_carries_the_live_players_code():
+    pool = [_flagged(pid=1, status=PlayerStatus.AVAILABLE, code=4001)]
+
+    _, departures = _diff([], _snapshot(**{"1": _record(code=9999)}), players=pool)
+
+    assert [(d.player_id, d.code) for d in departures] == [(1, 4001)]
+
+
+def test_a_departure_that_left_the_pool_keeps_the_stored_code():
+    _, departures = _diff([], _snapshot(**{"1": _record(code=4001)}), players=[])
+
+    assert [(d.player_id, d.code) for d in departures] == [(1, 4001)]
+
+
+def test_a_departure_never_emits_zero_for_a_missing_code():
+    """A live player without a code (`Player.code` 0) falls back to the record, and 0 is never a key."""
+    pool = [_flagged(pid=1, status=PlayerStatus.AVAILABLE, code=0)]
+
+    _, departures = _diff([], _snapshot(**{"1": _record(code=None)}), players=pool)
+
+    assert departures[0].code is None
+
+
+def test_a_stored_zero_code_reads_back_as_none():
+    returnee_radar.save_store(_store(current=_snapshot(gameweek=2, **{"1": _record(code=0)})))
+
+    loaded = returnee_radar.load_store(season="2026-27")
+
+    assert loaded is not None and loaded.current is not None
+    assert loaded.current.players[1].code is None
+
+
+def test_a_departure_stored_before_code_was_recorded_has_none():
+    """A snapshot written before #419 has no `code`; with the player gone too there is none to give."""
+    _, departures = _diff([], _snapshot(**{"1": _record()}), players=[])
+
+    assert departures[0].code is None
+
+
+def test_the_stored_snapshot_records_each_entrys_code():
+    snapshot = returnee_radar.snapshot_from_entries([_entry(pid=3)], gameweek=4, season="2026-27")
+
+    assert snapshot.players[3].code == 1003
 
 
 def test_a_player_still_on_the_watchlist_is_never_a_departure():

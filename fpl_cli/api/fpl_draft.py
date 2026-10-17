@@ -9,7 +9,7 @@ from typing import Any, Self
 
 import httpx
 
-from fpl_cli.models.player import POSITION_MAP, Player
+from fpl_cli.models.player import POSITION_MAP, Player, usable_code
 from fpl_cli.utils.text import strip_diacritics
 
 logger = logging.getLogger(__name__)
@@ -509,7 +509,7 @@ class FPLDraftClient:
             # targets among them) is read by consumers that also hold main-game
             # ids, and the two numberings diverge for mid-season additions
             # (#209, #418). `code` is what a join across the boundary uses.
-            "code": player_data.get("code"),
+            "code": usable_code(player_data.get("code")),
             "player_name": player_data.get("web_name", ""),
             "first_name": player_data.get("first_name", ""),
             "second_name": player_data.get("second_name", ""),

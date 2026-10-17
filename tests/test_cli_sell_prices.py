@@ -315,6 +315,8 @@ class TestJsonFailurePaths:
 
     def test_a_trustworthy_scrape_comes_back_as_data(self):
         finances = _make_finances()
+        for i, player in enumerate(finances.squad, start=1):
+            player.code = 10_000 + i
         finances.squad = finances.squad * 5  # 15 players clears the heuristic
         assert not finances.is_suspect
 
@@ -323,7 +325,7 @@ class TestJsonFailurePaths:
         assert result.exit_code == 0, result.stderr
         envelope = json.loads(result.stdout)
         assert len(envelope["data"]) == 15
-        assert "warnings" not in envelope["metadata"]
+        assert envelope["metadata"]["warnings"] == []
 
 
 class TestJsonSquadOrder:

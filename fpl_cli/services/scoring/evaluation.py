@@ -249,6 +249,11 @@ class PlayerIdentity:
     """Display-only fields passed through to scoring output dicts.
 
     No scoring function reads these for arithmetic.
+
+    ``id`` is the main game's element id; ``code`` is the identifier both games
+    share, carried so every scoring row a ``--format json`` payload emits can be
+    joined to a draft command's rows (#419). None for a player without a usable
+    one (see ``usable_code``), never 0.
     """
 
     id: int
@@ -260,6 +265,7 @@ class PlayerIdentity:
     expected_goals: float = 0.0
     expected_assists: float = 0.0
     points_per_game: float = 0.0
+    code: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -371,9 +377,14 @@ def build_player_evaluation(
         gk_consistency_percentile=float(_get("gk_consistency_percentile", 0.5) or 0.5),
     )
 
-    # Build identity
+    # Build identity. `code` goes through `usable_code` rather than `int()`:
+    # this function also serves the allocator, the returnee radar and the
+    # waiver path, none of which read `code`, so a blank one must not raise.
+    from fpl_cli.models.player import usable_code
+
     identity = PlayerIdentity(
         id=int(_get("id", 0)),
+        code=usable_code(_get("code")),
         web_name=str(_get("web_name", "")),
         team_short=str(_get("team_short", "")),
         position_name=position_name,

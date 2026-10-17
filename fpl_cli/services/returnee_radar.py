@@ -133,7 +133,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from fpl_cli.api.understat import match_fpl_to_understat
-from fpl_cli.models.player import POSITION_MAP
+from fpl_cli.models.player import POSITION_MAP, usable_code
 from fpl_cli.paths import user_data_file
 from fpl_cli.season import TOTAL_GAMEWEEKS, get_season_year, season_label
 from fpl_cli.services.player_prior import MIN_MINUTES, PlayerPrior, percentile_rank
@@ -948,7 +948,9 @@ class SnapshotRecord:
     the date a later FPL update would diff as a newly stated return rather
     than a moved one; without the flag, a lapse would re-fire every week.
     `web_name` is carried so a player who has since left the player pool
-    entirely can still be named in the departure list.
+    entirely can still be named in the departure list, and `code` so that
+    departure still carries the cross-game key beside its main-game id (#419).
+    A file stored before `code` was recorded reads it as None.
     """
 
     status: str
@@ -956,6 +958,7 @@ class SnapshotRecord:
     return_date: date | None = None
     lapsed: bool = False
     web_name: str = ""
+    code: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1098,6 +1101,7 @@ def _slot_from_payload(payload: Any, *, season: str) -> RadarSnapshot | None:
             return_date=_parse_date(value.get("return_date")),
             lapsed=bool(value.get("lapsed", False)),
             web_name=str(value.get("web_name", "") or ""),
+            code=usable_code(value.get("code")),
         )
     return RadarSnapshot(season=season, gameweek=gameweek, players=records)
 
@@ -1136,6 +1140,7 @@ def _slot_payload(snapshot: RadarSnapshot | None) -> dict[str, Any] | None:
                 "return_date": record.return_date.isoformat() if record.return_date else None,
                 "lapsed": record.lapsed,
                 "web_name": record.web_name,
+                "code": record.code,
             }
             for player_id, record in sorted(snapshot.players.items())
         },
@@ -1161,6 +1166,7 @@ def snapshot_from_entries(
                 return_date=entry.signal.return_date,
                 lapsed=entry.signal.lapsed,
                 web_name=entry.web_name,
+                code=usable_code(entry.code),
             )
             for entry in entries
         },
@@ -1208,6 +1214,10 @@ class RadarDeparture:
     player is fit again, the window pushed their return out of range, or the
     quality bar stopped clearing them. `transition` separates the first from
     the other two and `reason` names which filter did it.
+
+    `player_id` is the main game's element id and `code` the cross-game key
+    (#419): from the live player pool, else the stored record for a player
+    who has left it, and None only when neither holds one.
     """
 
     player_id: int
@@ -1215,6 +1225,7 @@ class RadarDeparture:
     status: str
     transition: str
     reason: str | None = None
+    code: int | None = None
 
 
 def diff_transitions(
@@ -1316,6 +1327,7 @@ def _departure(
     """
     status = _status_code(player) if player is not None else record.status
     name = str(read_player_field(player, "web_name", "") or "") if player is not None else ""
+    live_code = usable_code(read_player_field(player, "code")) if player is not None else None
     if status == "a":
         transition, reason = TRANSITION_NOW_AVAILABLE, None
     else:
@@ -1327,6 +1339,7 @@ def _departure(
         status=status,
         transition=transition,
         reason=reason,
+        code=live_code if live_code is not None else record.code,
     )
 
 

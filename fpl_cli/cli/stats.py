@@ -93,7 +93,7 @@ def stats_command(
       fpl stats --sort ep_next --limit 5 --available-only
     """
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
+    from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus, usable_code
 
     # Resolve rolling window from CLI flag or config
     settings = get_settings(ctx)
@@ -407,6 +407,7 @@ def stats_command(
                     records = [
                         {
                             "id": p.id,
+                            "code": usable_code(p.code),
                             "name": p.web_name,
                             "team": (t.short_name if (t := team_map.get(p.team_id)) else "???"),
                             "position": p.position_name,

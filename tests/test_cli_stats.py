@@ -362,6 +362,26 @@ class TestPlayersJsonFormat:
 class TestStatsDraftOwnership:
     """Tests for auto-enabled draft ownership column based on format."""
 
+    def test_json_under_a_draft_config_carries_code_beside_the_main_id(self):
+        """`metadata.format` reads draft while `id` is the main game's, so `code` is the key to join on (#419)."""
+        players = [make_player(id=1, code=118748, web_name="Salah", team_id=1,
+                               position=PlayerPosition.MIDFIELDER, minutes=2000)]
+        client = _make_client(players, _sample_teams())
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.cli._context.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli.load_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.cli._context.resolve_format", return_value=Format.DRAFT),
+            patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
+        ):
+            result = runner.invoke(main, ["stats", "--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["metadata"]["format"] == "draft"
+        assert [(r["id"], r["code"]) for r in payload["data"]] == [(1, 118748)]
+
     def test_both_mode_no_league_id_warns(self):
         """BOTH format without draft_league_id shows warning."""
         client = _make_client(_sample_players(), _sample_teams())

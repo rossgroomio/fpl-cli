@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 MOMENTUM_WINDOW = 5
 
@@ -72,6 +72,10 @@ class GwTrendProfile:
     gw_count: int
     latest_gw: int
     first_gw: int
+    # The cross-game key for `element`, from the same season's player list the
+    # trend rows were keyed by -- never a join to the live player list, which
+    # numbers a different season's players around the summer rollover (#419).
+    code: int | None = None
 
 
 class _GwRow(TypedDict):
@@ -80,6 +84,7 @@ class _GwRow(TypedDict):
     web_name: str
     position: str
     team_name: str
+    code: NotRequired[int]  # Core-Insights only: vaastav's per-GW file carries none
 
 
 def compute_trend(values: list[float]) -> float:

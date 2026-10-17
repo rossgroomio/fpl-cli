@@ -19,6 +19,7 @@ from fpl_cli.cli._json import (
     json_output_mode,
     output_format_option,
 )
+from fpl_cli.models.player import usable_code
 from fpl_cli.services.player_prior import early_season_quality_warning
 from fpl_cli.services.scoring import VALID_FORMATIONS, normalise_score, pick_display_ceiling
 
@@ -256,6 +257,7 @@ def _emit_result(
         score_key = "single_gw_score" if horizon == 1 else "quality_score"
         entry: dict[str, Any] = {
             "id": sp.player.id,
+            "code": usable_code(sp.player.code),
             "web_name": sp.player.web_name,
             "team": team_short,
             "position": sp.position,

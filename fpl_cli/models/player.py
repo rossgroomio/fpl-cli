@@ -156,6 +156,20 @@ class Player(BaseModel):
         return 0
 
 
+def usable_code(value: object) -> int | None:
+    """A player ``code`` worth joining on, or None.
+
+    Only a positive int is a real ``code``. ``Player.code`` defaults to 0, and
+    a stored or mapping-shaped value can be missing, blank or a float, so every
+    payload normalises through this before emitting one: a 0 shared by every
+    player without a code would join them all to each other (#419). Mirrors
+    ``_as_code`` in the gw-prep ``claimable_returnees.py`` script.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value > 0 else None
+
+
 class AmbiguousPlayerError(ValueError):
     """A query matched several players *exactly*, with no way to pick between them.
 

@@ -27,7 +27,7 @@ from fpl_cli.cli._json import (
     json_output_mode,
     output_format_option,
 )
-from fpl_cli.models.player import resolve_players
+from fpl_cli.models.player import resolve_players, usable_code
 from fpl_cli.services.player_prior import (
     CUTOFF_GW,
     early_season_quality_warning,
@@ -333,6 +333,7 @@ def player_command(
                             is_gk = p.position_name == "GK"
                             info: dict = {
                                 "id": p.id,
+                                "code": usable_code(p.code),
                                 "web_name": p.web_name,
                                 "full_name": p.full_name,
                                 "team": team_name,

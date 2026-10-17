@@ -23,7 +23,7 @@ def _make_squad_result(*, status="optimal", budget=100.0, formation=(4, 4, 2)):
     players = []
     for i, (pos_name, pos_enum) in enumerate(positions):
         p = make_player(
-            id=i + 1, web_name=f"Player{i+1}",
+            id=i + 1, code=10_000 + i + 1, web_name=f"Player{i+1}",
             team_id=(i % 5) + 1, position=pos_enum,
             now_cost=60 + i * 2,
         )
@@ -140,6 +140,12 @@ class TestAllocateCommand:
         player = data["data"][0]
         for field in ("id", "web_name", "team", "position", "price", "effective_price", "quality_score", "raw_quality", "role", "captain_gws"):
             assert field in player, f"Missing field: {field}"
+
+    def test_json_rows_carry_code_beside_the_main_id(self):
+        """`code` is the key to join these rows to a draft payload on, never `id` (#419)."""
+        result = _run_allocate(_make_squad_result(), args=["--format", "json"])
+        rows = json.loads(result.output)["data"]
+        assert all(row["code"] == 10_000 + row["id"] for row in rows)
 
     def test_json_metadata(self):
         """JSON metadata includes horizon, budget, formation, solver_status."""

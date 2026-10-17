@@ -240,6 +240,7 @@ def calculate_captain_score(
     primary = matchup_scores[0] if matchup_scores else {}
     result: CaptainCandidate = {
         "id": identity.id,
+        "code": identity.code,
         "player_name": identity.web_name,
         "team_short": identity.team_short,
         "position": identity.position_name,
@@ -355,6 +356,7 @@ def calculate_bench_score(
     raw_score = round(score, 2)
     return {
         "id": identity.id,
+        "code": identity.code,
         "name": identity.web_name,
         "team": identity.team_short,
         "position": identity.position_name,
@@ -421,6 +423,7 @@ def calculate_lineup_score(
     raw_score = round(score, 2)
     return {
         "id": identity.id,
+        "code": identity.code,
         "name": identity.web_name,
         "team": identity.team_short,
         "position": identity.position_name,

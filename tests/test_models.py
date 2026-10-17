@@ -3,7 +3,7 @@
 import pytest
 
 from fpl_cli.models.fixture import Fixture
-from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
+from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus, usable_code
 from tests.conftest import make_fixture, make_player, make_team
 
 
@@ -192,6 +192,17 @@ class TestPlayer:
         """Near-zero ppg doesn't inflate appearances beyond max PL gameweeks."""
         player = make_player(total_points=5, points_per_game=0.05)
         assert player.appearances == 38
+
+
+class TestUsableCode:
+    """Only a positive int is a code worth joining on (#419)."""
+
+    def test_a_real_code_passes_through(self):
+        assert usable_code(118748) == 118748
+
+    @pytest.mark.parametrize("value", [0, -1, None, "", "118748", 1.5, float("nan"), True])
+    def test_anything_else_is_none_and_never_raises(self, value):
+        assert usable_code(value) is None
 
 
 class TestTeam:

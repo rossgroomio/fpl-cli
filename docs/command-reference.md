@@ -135,6 +135,8 @@ rival-owned). Every payload therefore follows one convention:
 - `code` is the identifier both games share, and the only field to join two commands'
   player rows on. Never join on `id`, and never on name and club: the main game renamed
   Savinho to Sávio mid-season while the draft game kept the old spelling (#168).
+- A `code` that is not known is `null`, never `0` or a guess: a shared `0` would join every
+  such player to every other.
 
 Which namespace each payload's `id` is in, and whether the row carries `code`:
 
@@ -143,18 +145,18 @@ Which namespace each payload's `id` is in, and whether the row carries `code`:
 | `waivers` | `data.pool[]`, `top_targets[]`, `targets_by_position.*[]`, `current_squad[]`, `recent_releases[]` | draft | yes |
 | `waivers` | `data.recommendations[].target` / `.drop` | no id (name, club, position) | no |
 | `returnees` | `data.entries[]` | main | yes |
-| `returnees` | `data.departures[]` | main | no (#419) |
-| `stats` | `data[]` | main, under a draft config too | no (#419) |
-| `player` | `data[].info` | main, under a draft config too | no (#419) |
-| `captain` | `top_picks[]`, `differential_picks[]`, `all_candidates[]`, `recommendation` | main | no (#419) |
-| `differentials` | `differentials.*[]`, `differential_captains[]` | main | no (#419) |
-| `targets` | `targets.*[]`, `players[]` | main | no (#419) |
-| `xg` | `players[]` | main | no (#419) |
+| `returnees` | `data.departures[]` | main | yes; null only for a player who has left the player pool and was stored before the radar recorded `code` |
+| `stats` | `data[]` | main, under a draft config too | yes |
+| `player` | `data[].info` | main, under a draft config too | yes |
+| `captain` | `top_picks[]`, `differential_picks[]`, `all_candidates[]`, `recommendation` | main | yes |
+| `differentials` | `differentials.*[]`, `differential_captains[]` | main | yes |
+| `targets` | `targets.*[]`, `players[]` | main | yes |
+| `xg` | `players[]` | main | yes |
 | `xg` | `underperformers[]`, `overperformers[]`, `value_picks[]`, `top_xgi_per_90[]` | no id | no |
-| `allocate` | `data[]` | main | no (#419) |
-| `squad sell-prices` | `data[]` | main (the picks `element`) | no (#419) |
-| `transfer-eval` | `data.out_player`, `data.in_players[]` | main, in draft format too | no (#419) |
-| `price-history` | `data[]` | main, named `element` | no (#419) |
+| `allocate` | `data[]` | main | yes |
+| `squad sell-prices` | `data[]` | main (the picks `element`) | yes; null where the scrape could not read the player list, or on a cache scraped before `code` was recorded, and `metadata.warnings` then carries `sell_prices_code_missing` (re-run `--refresh`) |
+| `transfer-eval` | `data.out_player`, `data.in_players[]` | main, in draft format too | yes |
+| `price-history` | `data[]` | main, named `element` | yes, from the trend data's own player list for the same season; null for a player missing from it |
 | `history` | `data[]` | no id | yes |
 | `league-recap` | `squad[]`, `captain`, `vice_captain`, `transfers[]`, `transactions[]`, `lost_claims[]`, `fines[].players[]` | no id | yes (`code`, `player_in_code`, `player_out_code`) |
 | `intel` | player notes, `intel resolve` rows | no id | yes, null where unresolved |
@@ -165,11 +167,14 @@ Which namespace each payload's `id` is in, and whether the row carries `code`:
 | `status` | `classic.flagged_players[]`, `draft.flagged_players[]` | no id | no |
 
 The gw-prep scripts (`bench_order.py`, `starting_xi.py`, `transfer_eval.py`) take `Name (CLUB)`
-on the command line, resolve it against the main game and emit main ids without `code`
-(#419); `validate_draft_waivers.py` matches a claim to the pool on normalised name at a
+on the command line, resolve it against the main game and emit main ids with `code` beside
+them (`optimal_order`, `availability_risks` and `formation_context.sole_coverage`;
+`starting_xi`, `bench` and `excluded_players`; `out_player` and `in_players`);
+`validate_draft_waivers.py` matches a claim to the pool on normalised name at a
 position and never reads `id`. The gw-prep skill's one cross-command join — the returnee
-radar against the waiver pool — is done by `claimable_returnees.py`, on `code`. Every row that emits `id` without `code` is
-listed in #419; a new payload with player rows carries `code` from the start.
+radar against the waiver pool — is done by `claimable_returnees.py`, on `code`. Every row
+above that emits `id` carries `code` beside it (#419), and a new payload with player rows
+carries `code` from the start.
 
 ## Player Analysis
 
@@ -348,7 +353,7 @@ fpl allocate --format json          # JSON output for scripting / skill integrat
 
 Scores ~500 eligible players, adjusts for fixture difficulty over the planning horizon, then solves for the budget-constrained optimum across all 8 valid formations. See [Squad Allocator](custom-analysis.md#squad-allocator) for scoring methodology, fixture coefficients, and solver detail.
 
-**JSON output fields (horizon >= 2):** `id`, `web_name`, `team`, `position`, `price`, `quality_score` (0-100), `raw_quality` (float), `role` (starter/bench), `captain_gws`. Metadata includes `formation`, `budget_used`, `budget_remaining`, `captain_schedule`, `solver_status`, and `warnings` — the early-season quality notice before GW10 (`early_season_prior_informed`, or `early_season_small_sample` when last season's history could not be loaded and the solver ranked on pure observation), empty otherwise and at horizon 1; table mode prints it to stderr.
+**JSON output fields (horizon >= 2):** `id`, `code`, `web_name`, `team`, `position`, `price`, `quality_score` (0-100), `raw_quality` (float), `role` (starter/bench), `captain_gws`. Metadata includes `formation`, `budget_used`, `budget_remaining`, `captain_schedule`, `solver_status`, and `warnings` — the early-season quality notice before GW10 (`early_season_prior_informed`, or `early_season_small_sample` when last season's history could not be loaded and the solver ranked on pure observation), empty otherwise and at horizon 1; table mode prints it to stderr.
 
 **JSON output fields (horizon 1):** Same as above but the score field is `single_gw_score` (0-100) instead of `quality_score`.
 
