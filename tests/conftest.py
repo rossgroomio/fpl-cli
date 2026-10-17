@@ -14,6 +14,7 @@ import yaml
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.models.fixture import Fixture
+from fpl_cli.models.gameweek_status import GameweekStatus
 from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
 from fpl_cli.models.team import Team
 from fpl_cli.paths import user_cache_dir, user_config_dir, user_data_dir
@@ -391,6 +392,30 @@ def make_team(
     )
 
 
+def make_gameweek_status(
+    gameweek: int = 10,
+    *,
+    match_days: int = 3,
+    bonus_added: bool = True,
+    leagues: str = "Updated",
+    leagues_updated: bool | None = None,
+) -> GameweekStatus:
+    """Factory for FPL's post-gameweek processing feed (`get_gameweek_status()`).
+
+    Defaults to the settled state both games showed for a finished gameweek:
+    bonus added on every match day and `leagues: "Updated"`. Pass
+    `leagues_updated` for the draft feed's per-day flag, which the classic
+    feed does not carry.
+    """
+    day: dict[str, Any] = {"event": gameweek, "bonus_added": bonus_added, "points": "r"}
+    if leagues_updated is not None:
+        day["leagues_updated"] = leagues_updated
+    return GameweekStatus.model_validate({
+        "status": [{**day, "date": f"2026-10-{10 + i:02d}"} for i in range(match_days)],
+        "leagues": leagues,
+    })
+
+
 def make_fixture(
     id: int = 1,
     gameweek: int = 10,
@@ -691,6 +716,23 @@ def mock_fpl_client(mock_bootstrap_data, sample_fixtures):
 
     client._get = AsyncMock(side_effect=mock_get)
     return client
+
+
+@pytest.fixture
+def todays_players():
+    """The player list `fpl squad sell-prices` reprices its cache against (#426).
+
+    Patches the one `FPLClient` fetch the cached path makes. Append players to
+    the list it yields to set today's prices; left empty, every cached row is
+    one it cannot check, so each comes back as scraped and warned about.
+    """
+    players: list[Player] = []
+    client = MagicMock()
+    client.get_players = AsyncMock(return_value=players)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    with patch("fpl_cli.api.fpl.FPLClient", return_value=client):
+        yield players
 
 
 # --- Agent factory ---

@@ -100,7 +100,7 @@ from fpl_cli.services.league_history_notes import (
     NoteSurface,
     SeasonPhase,
 )
-from tests.conftest import make_draft_player, make_player, make_team
+from tests.conftest import make_draft_player, make_gameweek_status, make_player, make_team
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -3370,6 +3370,7 @@ class TestLeagueRecapCommandStopCondition:
             return_value=[{"id": 5, "finished": True, "is_current": True}]
         )
         client.get_season_year = AsyncMock(return_value=2026)
+        client.get_gameweek_status = AsyncMock(return_value=make_gameweek_status(5))
         resolved = {"gw": 5, "gw_data": None, "api_current_gw_id": 5}
 
         with (

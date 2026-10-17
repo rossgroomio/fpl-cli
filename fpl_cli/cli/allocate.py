@@ -7,6 +7,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 import click
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -22,6 +23,7 @@ from fpl_cli.cli._json import (
 from fpl_cli.models.player import usable_code
 from fpl_cli.services.player_prior import early_season_quality_warning
 from fpl_cli.services.scoring import VALID_FORMATIONS, normalise_score, pick_display_ceiling
+from fpl_cli.services.sell_prices import carried_warnings
 
 if TYPE_CHECKING:
     from fpl_cli.services.squad_allocator import ScoredPlayer, SquadResult
@@ -33,12 +35,14 @@ def load_sell_prices(
     *,
     budget_from_command_line: bool,
     output_format: str = "table",
-) -> tuple[dict[int, float] | None, float]:
+) -> tuple[dict[int, float] | None, float, list[dict[str, str]]]:
     """Read sell-price overrides and resolve the budget to solve against.
 
     Without a sell-prices file the budget is returned untouched. With one, the budget is
     auto-computed as sum(sell_prices) + bank unless --budget was given explicitly, in which
     case the explicit value wins. Exits with status 1 on an unreadable or malformed file.
+    Also returns the file's warnings that some of its sell prices may be out of date, for
+    the result to repeat.
 
     *output_format* decides the channel that failure is reported on. This runs before
     the command's own `api_failure_boundary`, so without it a malformed file put prose
@@ -47,7 +51,7 @@ def load_sell_prices(
     import json as json_mod
 
     if sell_prices_path is None:
-        return None, budget
+        return None, budget, []
 
     try:
         with open(sell_prices_path, encoding="utf-8") as f:
@@ -69,7 +73,7 @@ def load_sell_prices(
         sp_bank = sp_data.get("metadata", {}).get("bank", 0.0)
         budget = sum(p["sell_price"] for p in players_list) + sp_bank
 
-    return price_overrides, budget
+    return price_overrides, budget, carried_warnings(sp_data.get("metadata", {}).get("warnings", []))
 
 
 @click.command("allocate")
@@ -95,7 +99,7 @@ def allocate_command(
 
     from click.core import ParameterSource
 
-    price_overrides, budget = load_sell_prices(
+    price_overrides, budget, sell_price_warnings = load_sell_prices(
         sell_prices_path,
         budget,
         budget_from_command_line=ctx.get_parameter_source("budget") == ParameterSource.COMMANDLINE,
@@ -198,6 +202,7 @@ def allocate_command(
 
         warnings = [quality_warning] if quality_warning else []
         warnings.extend(understat_join_warnings())
+        warnings.extend(sell_price_warnings)
 
         _emit_result(
             result, scoring_data, scored_players,
@@ -301,7 +306,7 @@ def _emit_result(
             emit_json("allocate", players_data, metadata=metadata, file=stdout)
     else:
         for warning in warnings or []:
-            error_console.print(f"[yellow]{warning['message']}[/yellow]")
+            error_console.print(f"[yellow]{rich_escape(warning['message'])}[/yellow]")
         _render_table(
             result, players_data, budget, horizon, start_gw, len(scored_players),
             bench_boost_gw=bench_boost_gw, free_transfers=free_transfers,

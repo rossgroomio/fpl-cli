@@ -40,6 +40,7 @@ from fpl_cli.utils.time import format_deadline
 if TYPE_CHECKING:
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.api.fpl_draft import FPLDraftClient
+    from fpl_cli.models.gameweek_status import GameweekStatus
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,24 @@ def _countdown(deadline_str: str) -> str:
     except (ValueError, TypeError):
         return deadline_str
 
+
+
+def _processing_note(bonus_confirmed: bool | None, league_tables_updated: bool | None) -> str:
+    """What FPL has and has not done since the gameweek finished, for beside "Finished".
+
+    A flag no feed could answer is left out rather than guessed at.
+    """
+    parts = []
+    if bonus_confirmed is not None:
+        parts.append(
+            "bonus confirmed" if bonus_confirmed else "[yellow]bonus not yet confirmed[/yellow]"
+        )
+    if league_tables_updated is not None:
+        parts.append(
+            "league tables updated" if league_tables_updated
+            else "[yellow]league tables still updating[/yellow]"
+        )
+    return f" ({', '.join(parts)})" if parts else ""
 
 
 def _ordinal(n: int | str) -> str:
@@ -215,11 +234,40 @@ def status_command(ctx: click.Context, output_format: str) -> None:
             # that overruns the July cutover must not mislead them.
             season = season_label(await client.get_season_year())
 
+            # `finished` comes before FPL's league-table refresh, which can
+            # trail it by hours (issue #424), so it cannot on its own say
+            # whether a league recap would read a settled table. Asked only
+            # of a finished gameweek: mid-gameweek the feed can report the
+            # days played so far as settled, and a flag reading "updated"
+            # then would tell a script to recap a gameweek still being
+            # played. Each game refreshes its own tables and publishes its
+            # own feed; read the ones for the games shown, the classic one
+            # alone when no format is configured.
+            from fpl_cli.cli._gameweek_status import (
+                fetch_draft_gameweek_status,
+                fetch_gameweek_status,
+                settled_flags,
+            )
+
+            bonus_confirmed: bool | None = None
+            league_tables_updated: bool | None = None
+            if current_gw and current_gw.get("finished"):
+                feed_reads: list[Awaitable[GameweekStatus | None]] = []
+                if show_classic:
+                    feed_reads.append(fetch_gameweek_status(client))
+                if show_draft and fmt is not None:
+                    feed_reads.append(fetch_draft_gameweek_status())
+                bonus_confirmed, league_tables_updated = settled_flags(
+                    await asyncio.gather(*feed_reads), current_gw["id"],
+                )
+
             # --- JSON early return ---
             if output_format == "json":
                 gw_info: dict[str, Any] = {
                     "current_gw": current_gw["id"] if current_gw else None,
                     "finished": current_gw.get("finished", False) if current_gw else None,
+                    "bonus_confirmed": bonus_confirmed,
+                    "league_tables_updated": league_tables_updated,
                     "next_gw": next_gw["id"] if next_gw else None,
                     "deadline": next_gw.get("deadline_time") if next_gw else None,
                 }
@@ -279,7 +327,10 @@ def status_command(ctx: click.Context, output_format: str) -> None:
             if current_gw:
                 gw_id = current_gw["id"]
                 finished = current_gw.get("finished", False)
-                state = "[green]Finished[/green]" if finished else "[yellow]In Progress[/yellow]"
+                state = (
+                    f"[green]Finished[/green]{_processing_note(bonus_confirmed, league_tables_updated)}"
+                    if finished else "[yellow]In Progress[/yellow]"
+                )
                 console.print(f"\n[bold]Gameweek {gw_id}[/bold] - {state}")
 
             if next_gw:
