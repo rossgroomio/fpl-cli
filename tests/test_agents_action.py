@@ -10,6 +10,7 @@ import pytest
 
 from fpl_cli.agents.action.waiver import WaiverAgent
 from fpl_cli.agents.base import AgentStatus
+from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.scoring import ConsistencySignals, ScoringContext, ScoringData
@@ -22,6 +23,7 @@ from tests.conftest import (
     make_fixture,
     make_player,
     make_team,
+    team_code_for,
 )
 
 # --- Fixtures ---
@@ -170,24 +172,28 @@ def _mock_scoring_data(
 
 @contextmanager
 def _stub_upstream_fetches(players: list[Any] | None = None, **lookups: Any):
-    """Patch the two seams that reach past the draft client.
+    """Patch the seams that reach past the draft client.
 
     Shared by every test that drives ``WaiverAgent.run`` end to end.
-    *lookups* are forwarded to ``_mock_scoring_data``.
+    *lookups* are forwarded to ``_mock_scoring_data``. The main team list is
+    patched apart from the scoring bundle because the agent reads it first,
+    to translate the draft clubs, and serves the same teams the bundle holds.
     """
+    scoring = _mock_scoring_data(players, **lookups)
     with (
         patch(
             "fpl_cli.agents.action.waiver.prepare_scoring_data",
             new_callable=AsyncMock,
-            return_value=_mock_scoring_data(players, **lookups),
+            return_value=scoring,
         ),
+        patch.object(FPLClient, "get_teams", new_callable=AsyncMock, return_value=scoring.teams),
         patch(
             "fpl_cli.agents.action.waiver.fetch_understat_lookup",
             new_callable=AsyncMock,
             return_value={},
         ),
     ):
-        yield
+        yield scoring
 
 
 @pytest.fixture
@@ -923,6 +929,110 @@ class TestWaiverAgentGkSignals:
         assert agent._main_player_map == {5: main_keeper}
 
 
+class TestWaiverAgentClubIdSpace:
+    """#423: the draft game numbers its clubs independently of the main game.
+
+    Fixtures, form and FDR are all keyed by the main game's team ids, so a
+    free agent's draft club has to be translated by club code before he is
+    scored. Here draft club 1 is main-game club 13 (MCI) and draft club 14 is
+    main-game club 1 (ARS): read raw, Haaland would be scored on Arsenal's
+    fixture and Saka on Liverpool's.
+    """
+
+    @staticmethod
+    def _bootstrap() -> dict[str, Any]:
+        return {
+            "elements": [
+                make_draft_player(id=1, code=1001, web_name="Haaland", team=1, element_type=4, minutes=1800),
+                make_draft_player(id=2, code=1002, web_name="Saka", team=14, element_type=3, minutes=1800),
+                make_draft_player(id=3, code=1003, web_name="Stranger", team=20, element_type=3, minutes=1800),
+            ],
+            "teams": [
+                make_draft_team(id=1, code=team_code_for(13), name="Man City", short_name="MCI"),
+                make_draft_team(id=14, code=team_code_for(1), name="Arsenal", short_name="ARS"),
+                # A club the main game's list does not carry
+                make_draft_team(id=20, code=999, name="Nowhere", short_name="NOW"),
+            ],
+        }
+
+    async def _run(self, *, understat: AsyncMock | None = None):
+        bootstrap = self._bootstrap()
+        agent = WaiverAgent(config={"draft_league_id": 12345})
+        with (
+            _stub_upstream_fetches() as scoring,
+            patch.object(agent.client, "get_bootstrap_static", new_callable=AsyncMock, return_value=bootstrap),
+            patch.object(
+                agent.client, "get_available_players", new_callable=AsyncMock,
+                return_value=bootstrap["elements"],
+            ),
+            patch.object(agent.client, "get_recent_releases", new_callable=AsyncMock, return_value=[]),
+            patch.object(
+                agent.client, "get_league_details", new_callable=AsyncMock,
+                return_value={"league_entries": []},
+            ),
+            patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock, return_value=[]),
+        ):
+            if understat is not None:
+                with patch("fpl_cli.agents.action.waiver.fetch_understat_lookup", understat):
+                    result = await agent.run()
+            else:
+                result = await agent.run()
+        return result, scoring
+
+    @pytest.mark.asyncio
+    async def test_targets_carry_the_main_games_team_id(self):
+        result, _ = await self._run()
+
+        assert result.status == AgentStatus.SUCCESS
+        clubs = {t["player_name"]: (t["team_id"], t["team_short"]) for t in result.data["top_targets"]}
+        assert clubs == {"Haaland": (13, "MCI"), "Saka": (1, "ARS"), "Stranger": (None, "NOW")}
+
+    @pytest.mark.asyncio
+    async def test_each_player_is_scored_on_his_own_clubs_fixture(self):
+        """MCI host TOT and ARS host LIV in the fixture's gameweek."""
+        _, scoring = await self._run()
+
+        calls = scoring.ratings_service.get_positional_fdr.call_args_list
+        assert {(c.kwargs["team"], c.kwargs["opponent"], c.kwargs["venue"]) for c in calls} == {
+            ("MCI", "TOT", "home"),
+            ("ARS", "LIV", "home"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_untranslated_club_is_left_unscored_not_guessed(self):
+        result, _ = await self._run()
+
+        stranger = next(t for t in result.data["top_targets"] if t["player_name"] == "Stranger")
+        assert "positional_fdr" not in stranger
+        assert "matchup_avg_3gw" not in stranger
+
+    @pytest.mark.asyncio
+    async def test_an_untranslated_club_is_named_in_a_warning(self):
+        """Ranked without its fixture terms, which would otherwise read as a
+        quiet fixture list rather than a failed translation."""
+        result, _ = await self._run()
+
+        warning = next(w for w in result.data["warnings"] if w["code"] == "draft_club_untranslated")
+        assert "1 player(s)" in warning["message"]
+        assert "(NOW)" in warning["message"]
+
+    @pytest.mark.asyncio
+    async def test_no_warning_when_every_club_translates(self):
+        result = await _run_waivers(_ALL_AVAILABLE)
+
+        assert all(w["code"] != "draft_club_untranslated" for w in result.data["warnings"])
+
+    @pytest.mark.asyncio
+    async def test_understat_is_asked_about_the_real_club(self):
+        """The name comes from the draft list by the draft id, so a club the
+        main game does not list is never sent to Understat as 'Unknown'."""
+        understat = AsyncMock(return_value={})
+        await self._run(understat=understat)
+
+        players, get_team_name = understat.call_args.args
+        assert sorted(get_team_name(p) for p in players) == ["Arsenal", "Man City", "Nowhere"]
+
+
 class TestWaiverAgentIdSpace:
     """#209: the pool is scored in the draft id space, the lookups arrive in the main one.
 
@@ -1306,6 +1416,62 @@ class TestWaiverAgentRecommendations:
         rec = recommendations[0]
         assert rec["target"]["name"] == "NewMID"
         assert rec["drop"]["name"] == "OldMID"
+
+    def test_drop_prefers_injured_player_built_by_draft_parser(self):
+        """An injured squad player is dropped ahead of a fit one with worse form.
+
+        The squad goes through the real draft parser and enrichment, as
+        ``run()`` builds it: the parser renames the availability field to
+        ``chance_of_playing``, and reading only the raw spelling made every
+        injured player look fit and the weakest-form fit player the drop (#436).
+        """
+        from fpl_cli.agents.common import enrich_player
+        from fpl_cli.api.fpl_draft import FPLDraftClient
+
+        client = FPLDraftClient()
+        team = make_draft_team(id=1, name="Arsenal", short_name="ARS")
+        injured = make_draft_player(
+            id=20, web_name="Injured", element_type=2, form=2.0,
+            status="i", chance_of_playing_next_round=0,
+        )
+        fit = make_draft_player(id=21, web_name="Fit", element_type=2, form=1.0)
+        squad = [
+            enrich_player(client.parse_player(raw, {1: 1}), team, include_availability=False)
+            for raw in (injured, fit)
+        ]
+
+        agent = WaiverAgent()
+        waiver_targets = [
+            {"position": "DEF", "player_name": "NewDEF", "team_short": "LIV", "form": 7.0, "waiver_score": 20, "reasons": []},
+        ]
+        squad_by_position = {"GK": [], "DEF": squad, "MID": [], "FWD": []}
+
+        recommendations = agent._generate_recommendations(waiver_targets, squad_by_position)
+
+        drop = recommendations[0]["drop"]
+        assert drop["name"] == "Injured"
+        assert drop["reason"] == "Unavailable (0%)"
+
+    @pytest.mark.parametrize("key", ["chance_of_playing", "chance_of_playing_next_round"])
+    def test_drop_priority_reads_either_availability_spelling(self, key):
+        """A doubt ranks above a fit player whichever spelling the row carries."""
+        agent = WaiverAgent()
+        doubt = {"status": "d", key: 25, "form": 6.0}
+        fit = {"status": "a", "form": 0.0}
+
+        assert agent._calculate_drop_priority(doubt) > agent._calculate_drop_priority(fit)
+
+    def test_drop_priority_reads_a_row_carrying_both_spellings(self):
+        """A parser row with no news under its own key still finds the raw one.
+
+        A key-presence test would stop at ``chance_of_playing=None`` and rank
+        the doubt as fit; only a None fall-through reaches the 25.
+        """
+        agent = WaiverAgent()
+        doubt = {"status": "d", "chance_of_playing": None, "chance_of_playing_next_round": 25, "form": 6.0}
+        fit = {"status": "a", "form": 0.0}
+
+        assert agent._calculate_drop_priority(doubt) > agent._calculate_drop_priority(fit)
 
     def test_generate_recommendations_limits_to_5(self):
         """Test recommendations are limited to 5."""

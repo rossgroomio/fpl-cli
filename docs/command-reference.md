@@ -138,6 +138,18 @@ rival-owned). Every payload therefore follows one convention:
 - A `code` that is not known is `null`, never `0` or a guess: a shared `0` would join every
   such player to every other.
 
+Clubs follow the same rule one level up. Each game publishes its own `teams` list and numbers
+its 20 clubs 1-20 for the season; the numberings agree today, but nothing ties them together,
+and a draft club id read as a main-game one would name a different club rather than missing.
+What both lists share is the club's permanent `code` (Arsenal is id 1, code 3), so every
+draft path translates the draft game's club id by `code` before reading main-game fixtures,
+form or team data (#423), and a `team_id` on any payload's player row is **the main game's**,
+`fpl waivers` included. A matched player's club is his main-game player's; an unmatched one's is
+his draft club translated by code. A club the main game does not list comes out as `null`, never
+the raw draft id, and `fpl waivers` says so with a `draft_club_untranslated` entry in
+`metadata.warnings` (stderr in table mode) naming the clubs. `fpl doctor --providers` reports a
+`Draft club ids` row that names any club the two lists disagree on.
+
 Which namespace each payload's `id` is in, and whether the row carries `code`:
 
 | Command | Player rows | `id` is | `code` |
@@ -555,7 +567,7 @@ fpl history                  # All players (compact, for squad-builder)
 fpl history --format json
 ```
 
-In `--format json`, each entry in `seasons` carries `team` as the FPL club code (`teams[].code` in the bootstrap), which is stable across seasons and the same whichever dataset served the season. It is not that season's 1-20 team id, so resolve it through the bootstrap's `code` field rather than `id`.
+In `--format json`, each entry in `seasons` carries `team_code`, the FPL club code (`teams[].code` in the bootstrap), which is stable across seasons and the same whichever dataset served the season. It is not that season's 1-20 team id, so resolve it through the bootstrap's `code` field rather than `id`. The same number is also emitted as `team`, which is **deprecated** and kept only for consumers written before `team_code` existed: every other payload's `team` is a short name like `"ARS"`, so the name misdescribes the value (#423). Read `team_code`; `team` will be removed in a future release.
 
 **Signals:**
 - **pts_per_90 trend** - Points per 90 minutes across seasons (improving/declining)
@@ -1580,7 +1592,7 @@ Each finding is classified as **broken** (wrong answers now — fix it today), *
 **`--providers`** checks the external data sources instead of the local setup. None of them version anything, and the tool degrades gracefully everywhere, so upstream drift otherwise surfaces as plausible but wrong output — a renamed stat field zeroes every player's xG without an error. Each probe asserts shape and volume, not just reachability, and where a column check is not the contract it runs the parser itself:
 
 - **FPL API** — bootstrap has 20 teams / a sane player count / 38 gameweeks, and every stat field the tool reads is present in the raw data (a missing one would silently read as 0)
-- **Draft API** — bootstrap resolves with 20 teams and a sane player count
+- **Draft API** — bootstrap resolves with 20 teams and a sane player count, and its club list agrees with the main game's by `code`. Every draft path translates a draft club id through that code (see [Player identifiers](#player-identifiers)), so a draft club with no main-game counterpart is broken: that club's players are read with no club. A main-game club missing from the draft list is named but stays OK, since no draft player can be at a club the draft game does not list, and so are clubs the two games number differently, which are translated; the numberings have agreed every season so far, so either is worth seeing. The row reports unchecked when either bootstrap could not be read or the main one carried no clubs
 - **vaastav dataset** — for each season it serves (the two oldest of the four-season window), `players_raw.csv` exists upstream, covers the columns the parser reads, and clears a row-count floor
 - **Core-Insights dataset** — same for `players.csv` and `playerstats.csv` in each season it serves (last season and the one in progress; it is the sole source for both), plus the current season's per-gameweek files at the latest finished gameweek. `players.csv` must also parse into the player lookup every other file joins on, and the per-gameweek files are run through the parsers the scoring commands use rather than a header check: the columns can all be present over values nothing survives, so the probe asserts the parse yields records and names the signals a zero costs. A file missing or parsing to nothing only for the newest gameweek is a publishing lag or a backfill in progress (stale); the same problem two gameweeks running is a layout or format change (broken). Opponent Elo is the exception: a blank one keeps its player-match records, which count unadjusted in the opponent-adjusted xG signals, so the row reports how many records lack it and whether the previous gameweek does too (an upstream gap rather than a backfill), as stale either way
 - **Understat** — league data is non-empty, and every current club resolves to rows in Understat's own data (an unresolved club silently loses xG enrichment); early in the season an unresolved name is reported as stale, since Understat only lists a club once it has ingested a match for it. The club test is the enrichment's own gate (`understat_club_rows`), called on the same league payload the scoring commands scan, so the probe and the runtime cannot reach different verdicts about the same club — a second copy of the gate written beside the probe is exactly how they diverged in #229. Resolving a club says nothing about whether its players' names line up, so a second row reports how many players FPL says have played actually join by name, naming the ones that did not — three players lost their xG enrichment to an HTML-escaped apostrophe while this probe called all 20 clubs healthy (#263). A few percent always miss and stay green; a wholesale break reads as stale early in the season and broken once the pool has settled. Players at a club that failed to resolve are excluded, since that is the row above's finding and counting them here would restate one club gap as a squad's worth of name misses

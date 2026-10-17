@@ -80,7 +80,7 @@ def player_command(
       fpl player Haaland --understat --history --format json
     """
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
+    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_teams_to_main, match_draft_to_main
 
     fmt = get_format(ctx)
     show_draft = fmt != Format.CLASSIC
@@ -146,6 +146,9 @@ def player_command(
                                 main_player.id: draft_id
                                 for draft_id, main_player in match_draft_to_main(
                                     draft_players, display,
+                                    team_id_map=match_draft_teams_to_main(
+                                        draft_bootstrap.get("teams", []), team_list,
+                                    ),
                                 ).items()
                             })
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment
@@ -1027,12 +1030,19 @@ def _build_detail_json(player_data: dict, position: str, teams: dict) -> list[di
 
 
 def _build_history_json(profile: PlayerProfile) -> dict:
-    """Build career history data for JSON output."""
+    """Build career history data for JSON output.
+
+    `team_code` is the club's permanent code. `team` carries the same number
+    for consumers written before it existed, and is deprecated: every other
+    payload's `team` is a short name like "ARS", so the name misdescribes the
+    value (#423).
+    """
     seasons = []
     for s in profile.seasons:
         seasons.append({
             "season": s.season,
-            "team": s.team_id,
+            "team_code": s.team_code,
+            "team": s.team_code,
             "total_points": s.total_points,
             "minutes": s.minutes,
             "starts": s.starts,

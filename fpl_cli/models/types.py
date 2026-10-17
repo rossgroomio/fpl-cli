@@ -98,7 +98,7 @@ class WaiverTarget(TypedDict):
     code: int | None  # cross-game key; see WaiverPoolEntry
     price: int
     position: str
-    team_id: int
+    team_id: int | None  # main-game team id, as on EnrichedPlayer
     team_name: str
     team_short: str
     form: float
@@ -142,7 +142,7 @@ class EnrichedPlayer(TypedDict):
     player_name: str
     first_name: str
     second_name: str
-    team_id: int
+    team_id: int | None  # the main game's team id, translated by club code (#423)
     position: str
     total_points: int
     ppg: float

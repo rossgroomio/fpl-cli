@@ -8,7 +8,15 @@ from click.testing import CliRunner
 
 from fpl_cli.cli.preview import preview_command
 from fpl_cli.season import get_season_year, season_label
-from tests.conftest import make_agent, make_draft_player, make_player
+from tests.conftest import (
+    make_agent,
+    make_draft_player,
+    make_draft_team,
+    make_fixture,
+    make_player,
+    make_team,
+    team_code_for,
+)
 
 
 def _make_fpl_client(gw=25, season_year=None):
@@ -376,6 +384,76 @@ class TestPreviewDraftSquadMatching:
         assert result.exit_code == 0
         assert "Mystery" in result.output
         assert "25%" not in result.output
+
+
+class TestPreviewDraftSquadClubs:
+    """#423: the draft squad reads each club in the main game's numbering.
+
+    The draft game numbers the two clubs the other way round from the main
+    game here, so a draft club id read raw names the other club. `Doku`
+    carries no code, so his name-and-club join only lands once his draft
+    club is translated; `Stranger` matches nobody, so his club and fixture
+    come from the translated draft club alone.
+    """
+
+    def _run(self):
+        main_teams = [make_team(id=1, short_name="ARS"), make_team(id=2, short_name="MCI")]
+        draft_teams = [
+            make_draft_team(id=1, code=team_code_for(2), short_name="MCI"),
+            make_draft_team(id=2, code=team_code_for(1), short_name="ARS"),
+        ]
+        doku = make_draft_player(id=403, code=0, web_name="Doku", team=1, element_type=3)
+        stranger = make_draft_player(id=404, code=999999, web_name="Stranger", team=2, element_type=3)
+        main_doku = make_player(
+            id=50, web_name="Doku", team_id=2,
+            chance_of_playing_next_round=50, news="Hamstring",
+        )
+
+        fpl_client = _make_fpl_client()
+        fpl_client.get_players = AsyncMock(return_value=[main_doku])
+        fpl_client.get_teams = AsyncMock(return_value=main_teams)
+        fpl_client.get_fixtures = AsyncMock(return_value=[
+            make_fixture(id=1, gameweek=25, home_team_id=2, away_team_id=1),
+        ])
+        draft_client = MagicMock()
+        draft_client.__aenter__ = AsyncMock(return_value=draft_client)
+        draft_client.__aexit__ = AsyncMock(return_value=False)
+        draft_client.get_bootstrap_static = AsyncMock(
+            return_value={"elements": [doku, stranger], "teams": draft_teams},
+        )
+        draft_client.get_entry_picks = AsyncMock(return_value={"picks": [
+            {"element": 403, "position": 1}, {"element": 404, "position": 2},
+        ]})
+        settings = {"custom_analysis": True, "fpl": {"draft_league_id": 1, "draft_entry_id": 1}}
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.cli.preview.is_custom_analysis_enabled", return_value=True),
+            patch("fpl_cli.cli.preview.get_settings", return_value=settings),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=fpl_client),
+            patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=_make_agent(data={})),
+            patch("fpl_cli.agents.analysis.stats.StatsAgent", return_value=_make_agent(data={})),
+            patch("fpl_cli.agents.data.price.PriceAgent", return_value=_make_agent(data={})),
+        ):
+            return runner.invoke(preview_command, [])
+
+    @staticmethod
+    def _row(output: str, name: str) -> list[str]:
+        line = next(line for line in output.splitlines() if name in line)
+        return [cell.strip() for cell in line.split("│") if cell.strip()]
+
+    def test_a_codeless_pick_joins_through_the_translated_club(self):
+        result = self._run()
+
+        assert result.exit_code == 0, result.output
+        assert self._row(result.output, "Doku")[:3] == ["Doku", "MCI", "ARS"]
+        assert "50% - Hamstring" in result.output
+
+    def test_an_unmatched_pick_reads_the_translated_club_and_its_fixture(self):
+        result = self._run()
+
+        assert result.exit_code == 0, result.output
+        assert self._row(result.output, "Stranger")[:3] == ["Stranger", "ARS", "mci"]
 
 
 class TestPreviewStatsWindow:

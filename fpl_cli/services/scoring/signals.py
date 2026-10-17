@@ -9,7 +9,8 @@ Core-Insights match records.
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any, TypeVar
+import math
+from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar
 
 from fpl_cli.services.scoring.constants import (
     ATTACKING_POSITIONS,
@@ -196,34 +197,45 @@ def compute_xgi_sustainability(
 _CONSISTENCY_MIN_MATCHES = 6
 
 
+def _usable_elo(value: object) -> TypeGuard[float]:
+    """Whether a value is an Elo the adjustment can read: a finite, positive number.
+
+    One rule for the median and the factor alike, so a record the factor
+    treats as unrated can never pull the median it is compared against.
+    """
+    return isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+
+
 def compute_median_elo(
     match_records: dict[int, list[MatchRecord]],
 ) -> float:
-    """Median opponent Elo across the match records that carry one, or 1700.0 if none do."""
+    """Median usable opponent Elo across all match records, or 1700.0 if none."""
     import statistics
 
-    all_elos = [
-        elo
-        for records in match_records.values()
-        for r in records
-        if (elo := r.get("opponent_elo")) is not None and elo > 0
-    ]
+    all_elos: list[float] = []
+    for records in match_records.values():
+        for r in records:
+            elo = r.get("opponent_elo")
+            if _usable_elo(elo):
+                all_elos.append(elo)
     return statistics.median(all_elos) if all_elos else 1700.0
 
 
 def _opponent_factor(match: MatchRecord, median_elo: float) -> float:
     """How far one match's output is scaled for the opponent's strength.
 
-    ``median_elo / opponent_elo``, capped at [0.80, 1.25] to limit
-    early-season noise. A match with no opponent Elo gets a neutral 1.0: it
-    still counts towards the window at face value rather than dropping out,
-    so while Core-Insights publishes Elo blank (#431) the adjusted figures
-    degrade towards unadjusted ones instead of vanishing.
+    ``opponent_elo / median_elo``, capped at [0.80, 1.25] to limit
+    early-season noise. A higher Elo is a stronger side, so a match against
+    one scales up and a match against a weaker side scales down: the
+    adjustment exists to take a soft schedule's inflation back out of the
+    rate, because the matchup score already credits the easy fixtures
+    (#439). A match with no usable opponent Elo (missing, null, NaN or
+    non-positive), or a median that is not usable, counts at face value.
     """
     opp_elo = match.get("opponent_elo")
-    if opp_elo is None or opp_elo <= 0:
-        return 1.0
-    return max(0.80, min(1.25, median_elo / opp_elo))
+    if _usable_elo(opp_elo) and _usable_elo(median_elo):
+        return max(0.80, min(1.25, opp_elo / median_elo))
+    return 1.0
 
 
 def _elo_adjusted_xgis(
@@ -629,8 +641,9 @@ def compute_adjusted_npxg(
 ) -> float | None:
     """Opponent-adjusted npxG/90 over a rolling 7-match/12-GW window.
 
-    Normalises each match's xG by the opponent's Elo relative to the league
-    median (``_opponent_factor``; a match with no Elo counts unadjusted).
+    Scales each match's xG by the opponent's Elo relative to the league
+    median (``_opponent_factor``: up against a stronger side, down against
+    a weaker one, capped at [0.80, 1.25]).
     npxG per match = xg - (penalties_scored + penalties_missed) * 0.76.
 
     Returns None when fewer than 4 qualifying matches (same threshold as

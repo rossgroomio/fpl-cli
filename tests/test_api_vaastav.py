@@ -84,7 +84,7 @@ class TestVaastavClientParsing:
         assert salah.end_cost == 130
         assert salah.position == "MID"
         assert salah.season == "2024-25"
-        assert salah.team_id == 14  # the club code, as Core-Insights carries it, not `team`
+        assert salah.team_code == 14  # the club code, as Core-Insights carries it, not `team`
 
     @respx.mock
     async def test_position_mapping(self, tmp_path):
@@ -614,9 +614,9 @@ class TestContractTripwires:
 
     @respx.mock
     async def test_players_raw_missing_team_code_warns_and_degrades(self, tmp_path, caplog):
-        # team_code is what makes team_id mean the club code across both
-        # sources, so its loss must be as loud as any other column's rather
-        # than every season quietly reading team_id=0.
+        # The team_code column is what gives SeasonHistory.team_code the same
+        # meaning from both sources, so its loss must be as loud as any other
+        # column's rather than every season quietly reading team_code=0.
         drifted = SAMPLE_CSV.replace("team_code", "club_code")
         respx.get(f"{BASE}/2024-25/players_raw.csv").mock(
             return_value=Response(200, text=drifted)
