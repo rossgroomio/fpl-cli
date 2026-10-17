@@ -7,6 +7,7 @@ from typing import Any, Self, cast
 import httpx
 
 from fpl_cli.models.fixture import Fixture
+from fpl_cli.models.gameweek_status import GameweekStatus
 from fpl_cli.models.player import Player
 from fpl_cli.models.team import Team
 from fpl_cli.season import resolve_season_year
@@ -276,6 +277,18 @@ class FPLClient:
             League standings data including league info and standings list.
         """
         return await self._get(f"leagues-classic/{league_id}/standings/?page_standings={page}")
+
+    async def get_gameweek_status(self) -> GameweekStatus:
+        """Get where FPL has got to in processing the latest gameweek.
+
+        Says whether bonus is confirmed for each match day and whether the
+        classic league tables have been refreshed, which can trail the
+        gameweek's `finished` flag by hours.
+
+        Returns:
+            The processing state of the gameweek the feed currently covers.
+        """
+        return GameweekStatus.model_validate(await self._get("event-status/"))
 
     async def get_dream_team(self, gameweek: int) -> dict[str, Any]:
         """Get the Dream Team (Team of the Week) for a specific gameweek.

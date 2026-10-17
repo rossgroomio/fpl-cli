@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
+from fpl_cli.scraper.fpl_prices import PlayerSellPrice, TeamFinances
 from tests.conftest import make_player, make_team
 
 
@@ -59,7 +60,7 @@ def _make_agent_result(success=True, data=None):
 
 
 _PLAYERS = [
-    make_player(id=10, web_name="Palmer", first_name="Cole", second_name="Palmer",
+    make_player(id=10, code=244851, web_name="Palmer", first_name="Cole", second_name="Palmer",
                 team_id=4, position=PlayerPosition.MIDFIELDER, now_cost=100),
     make_player(id=20, web_name="Salah", first_name="Mohamed", second_name="Salah",
                 team_id=3, position=PlayerPosition.MIDFIELDER, now_cost=130),
@@ -179,12 +180,51 @@ class TestTransferEvalTable:
 
 
 class TestTransferEvalAffordability:
-    def _make_finances(self, bank=2.0, sell_price=10.0):
-        finances = MagicMock()
-        finances.bank = bank
-        finances.squad = [MagicMock(name="Palmer", sell_price=sell_price)]
-        finances.squad[0].name = "Palmer"
-        return finances
+    def _make_finances(self, bank=2.0, sell_price=10.0, price_at_scrape=10.0):
+        palmer = PlayerSellPrice(
+            name="Palmer", sell_price=sell_price, position="MID", purchase_price=sell_price,
+            element_id=10, code=244851, price_at_scrape=price_at_scrape,
+        )
+        return TeamFinances(bank=bank, free_transfers=1, squad=[palmer])
+
+    def test_sell_price_follows_a_price_change_since_the_scrape(self):
+        """Bought and scraped at 9.6, Palmer is 10.0 today: half the 0.4 rise is his (#426)."""
+        finances = self._make_finances(bank=2.0, sell_price=9.6, price_at_scrape=9.6)
+        result = _run_cmd(["--out", "Palmer", "--in", "Mbeumo", "--format", "json"], finances=finances)
+
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.stdout)
+        assert envelope["data"]["out_player"]["sell_price"] == 9.8
+        assert envelope["data"]["in_players"][1]["itb"] == 4.3  # 2.0 bank + 9.8 sell - 7.5 Mbeumo
+        assert envelope["metadata"]["warnings"] == []
+
+    def test_an_unchecked_sell_price_is_warned_about_beside_the_affordability(self):
+        """Scraped at 9.8 for a sell of 9.6 bought at 9.6: the rule says 9.7, so it is not trusted."""
+        finances = self._make_finances(bank=2.0, sell_price=9.6, price_at_scrape=9.8)
+        result = _run_cmd(["--out", "Palmer", "--in", "Mbeumo", "--format", "json"], finances=finances)
+
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.stdout)
+        assert envelope["data"]["out_player"]["sell_price"] == 9.6
+        [warning] = envelope["metadata"]["warnings"]
+        assert warning["code"] == "sell_prices_as_scraped"
+        assert warning["message"].startswith("Palmer's sell price could not be checked")
+
+        table = _run_cmd(["--out", "Palmer", "--in", "Mbeumo"], finances=finances)
+        assert "Palmer's sell price could not be checked" in table.stderr.replace("\n", " ")
+
+    def test_an_out_player_missing_from_the_cache_says_why_affordability_is_absent(self):
+        finances = TeamFinances(
+            bank=2.0, free_transfers=1,
+            squad=[PlayerSellPrice(name="Salah", sell_price=13.0, element_id=20, price_at_scrape=13.0)],
+        )
+        result = _run_cmd(["--out", "Palmer", "--in", "Mbeumo", "--format", "json"], finances=finances)
+
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.stdout)
+        assert envelope["data"]["out_player"]["sell_price"] is None
+        [warning] = envelope["metadata"]["warnings"]
+        assert warning["code"] == "sell_prices_player_not_cached"
 
     def test_budget_shown_when_cache_available(self):
         finances = self._make_finances(bank=2.0, sell_price=10.0)
@@ -201,38 +241,34 @@ class TestTransferEvalAffordability:
         assert "ITB" in result.output
 
 
-class TestFindSellPriceDiacritics:
-    """Verify _find_sell_price matches accented names across sources."""
+class TestFindSellPrice:
+    """The OUT player's cache row is found on id and `code`, never on name (#426)."""
 
     @staticmethod
-    def _make_finances(name: str, sell_price: float = 10.0):
-        finances = MagicMock()
-        finances.bank = 2.0
-        sp = MagicMock()
-        sp.name = name
-        sp.sell_price = sell_price
-        finances.squad = [sp]
-        return finances
-
-    def test_accented_scraper_ascii_query(self):
+    def _find(rows, out):
         from fpl_cli.cli.transfer_eval import _find_sell_price
-        finances = self._make_finances("Gyökeres", sell_price=11.5)
-        assert _find_sell_price(finances, "Gyokeres") == 11.5
+        return _find_sell_price(TeamFinances(bank=2.0, free_transfers=1, squad=rows), out)
 
-    def test_ascii_scraper_accented_query(self):
-        from fpl_cli.cli.transfer_eval import _find_sell_price
-        finances = self._make_finances("Gyokeres", sell_price=11.5)
-        assert _find_sell_price(finances, "Gyökeres") == 11.5
+    def test_a_name_inside_an_earlier_squadmates_does_not_take_their_price(self):
+        rows = [
+            PlayerSellPrice(name="Gabriel M.", sell_price=7.0, element_id=11, code=1011),
+            PlayerSellPrice(name="Gabriel", sell_price=6.0, element_id=12, code=1012),
+        ]
+        assert self._find(rows, make_player(id=12, code=1012, web_name="Gabriel")) == 6.0
 
-    def test_both_accented(self):
-        from fpl_cli.cli.transfer_eval import _find_sell_price
-        finances = self._make_finances("Raúl", sell_price=5.0)
-        assert _find_sell_price(finances, "Raúl") == 5.0
+    def test_a_row_under_the_same_name_but_another_id_is_not_the_player(self):
+        rows = [PlayerSellPrice(name="Palmer", sell_price=10.0, element_id=77, code=1077)]
+        assert self._find(rows, make_player(id=10, code=244851, web_name="Palmer")) is None
 
-    def test_substring_match_with_diacritics(self):
-        from fpl_cli.cli.transfer_eval import _find_sell_price
-        finances = self._make_finances("L. Díaz", sell_price=7.0)
-        assert _find_sell_price(finances, "Diaz") == 7.0
+    def test_an_earlier_seasons_row_under_the_same_id_is_not_the_player(self):
+        rows = [PlayerSellPrice(name="Palmer", sell_price=10.0, element_id=10, code=1077)]
+        assert self._find(rows, make_player(id=10, code=244851, web_name="Palmer")) is None
+
+    def test_a_row_cached_before_codes_were_stored_matches_on_id_and_name(self):
+        rows = [PlayerSellPrice(name="Palmer", sell_price=10.0, element_id=10)]
+        assert self._find(rows, make_player(id=10, code=244851, web_name="Palmer")) == 10.0
+        # Last season's row under an id someone else holds now.
+        assert self._find(rows, make_player(id=10, code=1077, web_name="Saka")) is None
 
 
 class TestTransferEvalQualityValue:

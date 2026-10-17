@@ -10,7 +10,7 @@ from click.testing import CliRunner
 from fpl_cli.api.historical_types import GwTrendProfile
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
-from tests.conftest import make_player, make_team
+from tests.conftest import assert_player_rows_carry_code, make_player, make_team
 
 
 def _make_trend(
@@ -279,8 +279,10 @@ class TestPriceHistoryJson:
     def test_json_rows_carry_the_trend_sources_code(self):
         """`code` names the same player as `element`: both come from the trend source (#419)."""
         result = _run(["--format", "json"])
-        codes = {row["element"]: row["code"] for row in json.loads(result.output)["data"]}
+        data = json.loads(result.output)["data"]
+        codes = {row["element"]: row["code"] for row in data}
         assert codes == {100: 118748, 200: 223094, 300: 169187}
+        assert_player_rows_carry_code(data, command="price-history")
 
     def test_json_code_is_never_borrowed_from_the_live_player_list(self):
         """Around the summer rollover the live list numbers a different season: element 400

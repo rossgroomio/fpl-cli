@@ -29,6 +29,7 @@ import fpl_cli
 from fpl_cli.cli import main
 from fpl_cli.cli._context import _deep_merge, fpl_config, resolve_format, settings_block
 from fpl_cli.paths import SHIPPED_CONFIG_DIR
+from tests.conftest import make_gameweek_status
 
 # The settings blocks the shipped defaults do not carry, so `_deep_merge` has
 # no default to preserve and `None` reaches the reader intact. Every other
@@ -116,6 +117,7 @@ def _invoke(argv: list[str]):
     client.get_current_gameweek = AsyncMock(return_value={"id": 3})
     client.get_next_gameweek = AsyncMock(return_value={"id": 4})
     client.get_season_year = AsyncMock(return_value=2026)
+    client.get_gameweek_status = AsyncMock(return_value=make_gameweek_status(3))
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
 

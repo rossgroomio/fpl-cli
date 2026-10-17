@@ -10,7 +10,7 @@ from click.testing import CliRunner
 from fpl_cli.cli import main
 from fpl_cli.cli._context import CLIContext, Format
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
-from tests.conftest import make_player, make_team
+from tests.conftest import assert_player_rows_carry_code, make_player, make_team
 
 
 @pytest.fixture(autouse=True)
@@ -381,6 +381,7 @@ class TestStatsDraftOwnership:
         payload = json.loads(result.stdout)
         assert payload["metadata"]["format"] == "draft"
         assert [(r["id"], r["code"]) for r in payload["data"]] == [(1, 118748)]
+        assert_player_rows_carry_code(payload["data"], command="stats")
 
     def test_both_mode_no_league_id_warns(self):
         """BOTH format without draft_league_id shows warning."""

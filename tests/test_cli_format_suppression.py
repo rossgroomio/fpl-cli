@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from click.testing import CliRunner
 
 from fpl_cli.cli._context import CLIContext, Format
-from tests.conftest import make_agent
+from tests.conftest import make_agent, make_gameweek_status
 
 # ---------------------------------------------------------------------------
 # league.py - section gating
@@ -119,6 +119,13 @@ class TestStatusFormatSuppression:
         client.get_manager_history = AsyncMock(return_value={"current": [], "chips": []})
         return client
 
+    def _mock_draft_feed_client(self):
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_gameweek_status = AsyncMock(return_value=make_gameweek_status(25))
+        return client
+
     def test_no_form_table_or_draft_column(self):
         from fpl_cli.cli.status import status_command
 
@@ -127,6 +134,8 @@ class TestStatusFormatSuppression:
                 "fpl": {"draft_league_id": 999},
             }),
             patch("fpl_cli.api.fpl.FPLClient", return_value=self._mock_fpl_client()),
+            # A draft-format status reads the draft game's processing feed (#424).
+            patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=self._mock_draft_feed_client()),
         ):
             runner = CliRunner()
             result = runner.invoke(

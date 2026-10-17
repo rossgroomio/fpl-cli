@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import click
+import httpx
 from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
@@ -22,11 +24,19 @@ from fpl_cli.cli._json import (
     output_format_option,
 )
 from fpl_cli.scraper.fpl_prices import TeamFinances, ordered_squad
+from fpl_cli.services.sell_prices import AS_SCRAPED, reprice_squad
+
+if TYPE_CHECKING:
+    from fpl_cli.models.player import Player
 
 COMMAND = "sell-prices"
 
 # `metadata.warnings` code for rows that carry an id but no cross-game key.
 CODE_MISSING = "sell_prices_code_missing"
+
+# Seconds to wait for today's prices. Short: the lookup only refines the
+# cached view, which used to need no network at all, and is shown either way.
+_PRICE_LOOKUP_TIMEOUT = 10.0
 
 # Chromium error codes a TLS-inspecting proxy rejecting the ClientHello can surface as,
 # depending on whether it RSTs the connection or just drops/hangs it.
@@ -78,12 +88,23 @@ def sell_prices_command(ctx: click.Context, refresh: bool, visible: bool, output
                     output_format,
                 )
             if is_json:
-                _emit_json_finances(cached)
+                # Before the price lookup, which is wasted on a payload refused anyway.
+                _require_player_ids(cached)
+            else:
+                console.print(Panel.fit("[bold blue]Squad Budget[/bold blue]"))
+                if cached.scraped_at:
+                    console.print(f"[dim]Data from {_cache_age_str(cached.scraped_at)}[/dim]\n")
+            finances, notes, warnings = _at_todays_prices(cached)
+            # On stderr under --format json too, as the --refresh path's warnings
+            # are: the skills write the envelope to a file and see only this stream.
+            for note in notes:
+                error_console.print(rich_escape(note), style="dim")
+            for warning in warnings:
+                error_console.print(rich_escape(f"Warning: {warning['message']}"), style="yellow")
+            if is_json:
+                _emit_json_finances(finances, warnings)
                 return
-            console.print(Panel.fit("[bold blue]Squad Budget[/bold blue]"))
-            if cached.scraped_at:
-                console.print(f"[dim]Data from {_cache_age_str(cached.scraped_at)}[/dim]\n")
-            _display_finances(cached)
+            _display_finances(finances)
             return
 
         scraper = FPLPriceScraper()
@@ -191,6 +212,50 @@ def _save_cache_or_fail(
         )
 
 
+def _at_todays_prices(
+    cached: TeamFinances,
+) -> tuple[TeamFinances, list[str], list[dict[str, str]]]:
+    """Bring the cached sell prices forward to today's prices (#426).
+
+    Returns the squad to show, a note naming the sell prices that moved, and
+    `metadata.warnings` entries for any left as scraped. A failed lookup
+    leaves them all as scraped rather than failing the command: the cache is
+    still the best figure to hand, and showing it needed no network before.
+    """
+    from fpl_cli.api.fpl import FPLClient
+
+    async def _run() -> list[Player]:
+        async with FPLClient(timeout=_PRICE_LOOKUP_TIMEOUT) as client:
+            return await client.get_players()
+
+    try:
+        players = asyncio.run(_run())
+    # Unreachable, or a reply that is not the player list: a maintenance page
+    # fails the JSON decode (ValueError), a body without `elements` raises
+    # KeyError (TypeError if it is not an object), and pydantic's
+    # ValidationError is a ValueError too.
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+        return cached, [], [_lookup_failed_warning(exc)]
+    repricing = reprice_squad(cached, players)
+    return repricing.finances, repricing.notes(), repricing.warnings()
+
+
+def _lookup_failed_warning(exc: Exception) -> dict[str, str]:
+    """A fixed phrase naming the failure, never its text: an empty timeout
+    message and a status error's multi-line advice both read badly here."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        detail = f"HTTP {exc.response.status_code}"
+    else:
+        detail = type(exc).__name__
+    return {
+        "code": AS_SCRAPED,
+        "message": (
+            f"Could not fetch today's prices ({detail}), so every sell price is as"
+            " scraped and may be out of date."
+        ),
+    }
+
+
 def _cache_age_str(scraped_at: str) -> str:
     """Format scraped_at timestamp as human-readable age."""
     try:
@@ -216,8 +281,8 @@ def _format_pl(value: float) -> str:
     return "[dim]\u2014[/dim]"
 
 
-def _emit_json_finances(finances: TeamFinances) -> None:
-    """Emit sell-prices data as JSON. Errors if any player lacks element_id."""
+def _require_player_ids(finances: TeamFinances) -> None:
+    """Refuse a payload any player is missing an id from (a DOM-fallback scrape)."""
     if any(p.element_id is None for p in finances.squad):
         # No `json_output_mode()` here: the command body holds it open, and
         # both emitters already fall back to the real stdout (#159 review).
@@ -227,6 +292,15 @@ def _emit_json_finances(finances: TeamFinances) -> None:
             "Re-run with --refresh to capture IDs from the FPL API.",
         )
 
+
+def _emit_json_finances(finances: TeamFinances, warnings: Sequence[dict[str, str]] = ()) -> None:
+    """Emit sell-prices data as JSON. Errors if any player lacks element_id.
+
+    `sell_price` is the figure to budget on; `scraped_sell_price` is FPL's own
+    from the scrape, which differs where a price change since has moved it.
+    """
+    _require_player_ids(finances)
+
     squad_data = [
         {
             "id": p.element_id,
@@ -234,6 +308,7 @@ def _emit_json_finances(finances: TeamFinances) -> None:
             "name": p.name,
             "position": p.position,
             "sell_price": p.sell_price,
+            "scraped_sell_price": p.scraped_sell_price,
         }
         for p in ordered_squad(finances.squad)
     ]
@@ -243,7 +318,7 @@ def _emit_json_finances(finances: TeamFinances) -> None:
         "total_sell_value": sell_total,
         "free_transfers": finances.free_transfers,
         "scraped_at": finances.scraped_at,
-        "warnings": _code_warnings(finances),
+        "warnings": [*_code_warnings(finances), *warnings],
     })
 
 

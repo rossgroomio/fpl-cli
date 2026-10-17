@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
-from tests.conftest import make_fixture, make_player, make_team
+from tests.conftest import assert_player_rows_carry_code, make_fixture, make_player, make_team
 
 
 def _make_mocks():
@@ -1389,8 +1389,9 @@ class TestDraftFetchDeferral:
             result = runner.invoke(main, ["player", "Salah", "--format", "json"])
 
         assert result.exit_code == 0, result.output
-        info = json.loads(result.output)["data"][0]["info"]
-        assert (info["id"], info["code"]) == (1, 118748)
+        data = json.loads(result.output)["data"]
+        assert (data[0]["info"]["id"], data[0]["info"]["code"]) == (1, 118748)
+        assert_player_rows_carry_code(data, command="player")
 
     def test_league_details_fetched_once_and_reused(self):
         """get_league_details is not memoised on the client, so it is passed through."""

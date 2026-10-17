@@ -127,6 +127,9 @@ Transfer hits in the GW before a phase starts don't count against the phase scor
 
 **H2H Knock-out:** Optional final stage (up to 3 GWs). Average team replaced by next-placed team. Tiebreaks: most goals scored > fewest conceded > coin toss.
 
+### When the Tables Update
+Not documented by FPL; this is the common understanding. After a gameweek's last match: full time (fixture `finished_provisional`), then bonus confirmed (fixture `finished`, and once every fixture is, the gameweek's `finished`), then FPL's data checks and the league-table refresh (`data_checked`, and `leagues: "Updated"` in the `event-status` feed). The refresh can trail `finished` by hours, and classic and draft refresh their tables separately, each reporting it in its own feed. Until it lands, league standings can still describe the gameweek without its last match day.
+
 ## Cups
 Knockout competition running alongside leagues. Overall Cup: GW15-GW38. League Cups auto-created for Invitational Classic leagues (start date depends on league size). Fan League and Country Cups also auto-entered. All finals in GW38.
 
@@ -149,7 +152,7 @@ Unlimited free transfers before your first deadline. After that: 1 free transfer
 Does not apply in 2026-27. AFCON is biennial: the 2025 edition ran Dec 2025 into Jan 2026 and fell inside the 2025-26 season, and the next is Jun-Jul 2027, in the off-season. There is no mid-season top-up to 5 free transfers this year.
 
 ### Player Prices
-Prices fluctuate based on transfer market popularity (changes begin when the season starts). Selling price includes a **50% sell-on fee** (rounded up to nearest £0.1m) on any profit.
+Prices fluctuate based on transfer market popularity (changes begin when the season starts). Selling price includes a **50% sell-on fee** (rounded up to nearest £0.1m) on any profit, so the seller keeps half of a rise rounded down: bought at £5.0m, a player sells for £5.0m at £5.1m and £5.1m at £5.2m. A fall below the purchase price is taken in full: the selling price is the current price.
 
 ### Chips
 One chip per GW. Each chip is available **twice per season**, split at the GW19 deadline:

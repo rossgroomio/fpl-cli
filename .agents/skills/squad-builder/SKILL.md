@@ -108,7 +108,7 @@ For Draft format modes, omit chip-related lines (Chips, BB passthrough, Availabl
 For Season Start Draft mode, also ask: "How many managers in your draft league?" The answer determines snake draft pick pairing calculations in the output.
 
 ### A3. Export Sell Prices JSON (Wildcard / Free Hit only)
-Run `fpl squad sell-prices --format json > /tmp/sell-prices.json` (add `--refresh` if data is stale). This single command produces the sell-prices file for the allocator and is the source of truth for budget (`metadata.bank` + `metadata.total_sell_value`) and free transfers (`metadata.free_transfers`). No separate Rich-format call is needed.
+Run `fpl squad sell-prices --format json > /tmp/sell-prices.json` (add `--refresh` if data is stale). This single command produces the sell-prices file for the allocator and is the source of truth for budget (`metadata.bank` + `metadata.total_sell_value`) and free transfers (`metadata.free_transfers`). No separate Rich-format call is needed. A cached run brings sell prices up to date for price changes since the scrape; if stderr or `metadata.warnings` carries `sell_prices_as_scraped`, some could not be, so re-run with `--refresh` before budgeting on them.
 
 ## Phase B: Data Gathering
 Issue all reads and CLI commands in a **single parallel tool-call block**:
