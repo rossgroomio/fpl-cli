@@ -1086,8 +1086,9 @@ things: with `--summarise`, the narrative gets the season totals every week and 
 into a paragraph where it sharpens what happened ("Bob's fourth last-place of the season"),
 taking the numbers verbatim and repeating any qualification the tally carries. It is offered
 as optional colour, never a required beat, so a gameweek the total adds nothing to simply
-goes unmentioned. Each total names the gameweeks behind it (`Bob: 2 (2 last-place; fined in
-GW3, GW10)`), and this gameweek's own fines are handed over with their place in the season
+goes unmentioned. Each total carries its breakdown but not the gameweeks behind it (`Bob: 2
+(2 last-place)`), since the editorial copied that list whole and by the run-in it would run to
+a dozen gameweeks, and this gameweek's own fines are handed over with their place in the season
 already worked out — "this gameweek's last-place fine is Bob's first of the season" — so the
 narrative never has to count fines itself to say whether one is a repeat. That ordinal is
 only stated where every earlier gameweek actually ruled that rule against that manager;

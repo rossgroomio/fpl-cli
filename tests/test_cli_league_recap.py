@@ -4143,7 +4143,8 @@ class TestSeasonFinesSurfaces:
         text = format_recap_season_fines_context(tally)
 
         assert f"Season fine totals, GW{CHIP_SPLIT_GW} through GW{CHIP_SPLIT_GW}" in text
-        assert f"- Bob: 1 (1 last-place; fined in GW{CHIP_SPLIT_GW})" in text
+        assert "- Bob: 1 (1 last-place)" in text
+        assert "fined in" not in text
         assert "Not fined so far: Alice" in text
         assert "Coverage:" in text
 
@@ -4216,7 +4217,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         assert "Alice" in user_prompt
         assert "gameweeks on top of the league" in user_prompt
         assert "Season phase:" in user_prompt
-        assert "Stick to what happened this gameweek, with two exceptions" in system_prompt
+        assert "Stick to what happened this gameweek. The only facts spanning more than this gameweek" in system_prompt
         assert "season phase" in system_prompt.lower()
 
     def test_a_dry_run_writes_a_prompt_with_the_transfer_roster(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -4328,8 +4329,8 @@ class TestEndToEndPromptThroughTheFullCommand:
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
 
         assert "## Season Fines" in user_prompt
-        assert f"Bob: 1 (1 last-place; fined in GW{CHIP_SPLIT_GW})" in user_prompt
-        assert "NEVER add up fines yourself" in system_prompt
+        assert "Bob: 1 (1 last-place)" in user_prompt
+        assert 'Season fine totals come from the "## Season Fines" section exactly' in system_prompt
         # This fixture's ledger holds only the gameweek under recap, so the
         # ordinal the model kept inventing cannot be asserted -- and the
         # section refuses it outright rather than guessing (issue #233).
@@ -4353,7 +4354,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
 
         assert "## Season Fines" in user_prompt
-        assert "Bob: 1 (1 last-place; fined in GW5)" in user_prompt
+        assert "Bob: 1 (1 last-place)" in user_prompt
         assert "the ledger records 1 last-place fine against Bob" in user_prompt
         assert "Do not number this fine." in user_prompt
         # ...and it is offered, never demanded.
