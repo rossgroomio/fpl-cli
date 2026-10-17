@@ -29,7 +29,7 @@ from collections.abc import Collection, Iterable
 from typing import TYPE_CHECKING, Any
 
 from fpl_cli.services.scoring.constants import MINS_FACTOR_START_GW
-from fpl_cli.services.scoring.evaluation import read_player_field
+from fpl_cli.services.scoring.evaluation import read_chance_of_playing, read_player_field
 
 if TYPE_CHECKING:
     from fpl_cli.services.player_prior import PlayerPrior
@@ -103,9 +103,7 @@ def unavailable_player_ids(players: Iterable[Any], next_gw_id: int) -> set[int]:
         if pid is None:
             continue
         if is_known_unavailable(
-            chance_of_playing=_first_present(
-                player, "chance_of_playing", "chance_of_playing_next_round",
-            ),
+            chance_of_playing=read_chance_of_playing(player),
             minutes=_first_present(player, "minutes"),
             next_gw_id=next_gw_id,
         ):
