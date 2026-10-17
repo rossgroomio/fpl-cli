@@ -1429,14 +1429,14 @@ class TestWaiverAgentRecommendations:
         from fpl_cli.api.fpl_draft import FPLDraftClient
 
         client = FPLDraftClient()
-        team_map = {1: make_draft_team(id=1, name="Arsenal", short_name="ARS")}
+        team = make_draft_team(id=1, name="Arsenal", short_name="ARS")
         injured = make_draft_player(
             id=20, web_name="Injured", element_type=2, form=2.0,
             status="i", chance_of_playing_next_round=0,
         )
         fit = make_draft_player(id=21, web_name="Fit", element_type=2, form=1.0)
         squad = [
-            enrich_player(client.parse_player(raw), team_map, include_availability=False)
+            enrich_player(client.parse_player(raw, {1: 1}), team, include_availability=False)
             for raw in (injured, fit)
         ]
 
