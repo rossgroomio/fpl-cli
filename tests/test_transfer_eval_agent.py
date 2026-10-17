@@ -21,7 +21,7 @@ from fpl_cli.services.scoring import (
     calculate_player_quality_score,
     normalise_score,
 )
-from tests.conftest import make_fixture, make_player, make_team
+from tests.conftest import assert_player_rows_carry_code, make_fixture, make_player, make_team
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -181,6 +181,10 @@ class TestTransferEvalAgent:
             assert "gw_delta" in inp
             assert isinstance(inp["outlook_delta"], int)
             assert isinstance(inp["gw_delta"], int)
+
+        # `fpl transfer-eval` and the gw-prep `transfer_eval.py` both emit
+        # this data as it comes back (#422).
+        assert_player_rows_carry_code(result.data, command="transfer-eval")
 
     async def test_sorted_by_outlook_delta_descending(self, standard_data):
         players, scoring_data = standard_data

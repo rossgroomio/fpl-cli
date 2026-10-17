@@ -16,7 +16,7 @@ from fpl_cli.cli.doctor import _season_year_of_timestamp
 from fpl_cli.paths import SHIPPED_CONFIG_DIR
 from fpl_cli.season import get_season_year, season_label
 from fpl_cli.services.returnee_radar import SNAPSHOT_FILENAME
-from tests.conftest import make_team
+from tests.conftest import make_gameweek_status, make_team
 
 CURRENT_YEAR = get_season_year()
 CURRENT_SEASON = season_label()
@@ -210,6 +210,8 @@ class TestSeasonResolution:
         client.get_next_gameweek = AsyncMock(
             return_value={"id": 38, "deadline_time": f"{CURRENT_YEAR}-07-12T17:30:00Z"}
         )
+        # Status also reads FPL's processing feed beside `finished` (#424).
+        client.get_gameweek_status = AsyncMock(return_value=make_gameweek_status(37))
         doctor = _run(client, args=["--format", "json"])
         status = _run(client, args=["--format", "json"], command="status")
         doctor_season = json.loads(doctor.output)["metadata"]["season"]

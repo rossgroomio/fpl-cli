@@ -5,7 +5,7 @@ import pytest
 
 from fpl_cli.agents.analysis.stats import StatsAgent
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
-from tests.conftest import make_player, make_team
+from tests.conftest import assert_player_rows_carry_code, make_player, make_team
 
 
 @pytest.fixture
@@ -545,6 +545,32 @@ class TestStatsAgentUnderstatJoinWarning:
     async def test_no_notice_when_every_club_joined(self):
         result = await _run_stats({"value_picks"})
         assert result.data["warnings"] == []
+
+
+class TestStatsAgentPlayerRowsCarryCode:
+    """Every row these three commands emit with an `id` carries `code` (#422).
+
+    `fpl targets` and `fpl xg` emit the agent's data as it comes back, and
+    `fpl differentials` lifts its `differentials` across whole, so the agent
+    is where a new row could leave `code` out. Each case asks for the views
+    its command's JSON mode asks for, `xg` with custom analysis on. The
+    command names stay literal: `tests/test_cli_json_contract.py` reads them
+    from source to tell which payloads have a check.
+    """
+
+    async def test_targets(self):
+        result = await _run_stats({"targets"})
+        assert_player_rows_carry_code(result.data, command="targets")
+
+    async def test_differentials(self):
+        result = await _run_stats({"differentials"})
+        assert_player_rows_carry_code(result.data, command="differentials")
+
+    async def test_xg(self):
+        result = await _run_stats(
+            {"underperformers", "overperformers", "value_picks", "top_xgi_per_90"},
+        )
+        assert_player_rows_carry_code(result.data, command="xg")
 
 
 class TestStatsAgentMinutesFloor:

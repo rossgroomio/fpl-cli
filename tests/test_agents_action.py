@@ -15,6 +15,7 @@ from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.player_prior import PlayerPrior
 from fpl_cli.services.scoring import ConsistencySignals, ScoringContext, ScoringData
 from tests.conftest import (
+    assert_player_rows_carry_code,
     make_draft_league_entry,
     make_draft_player,
     make_draft_standing,
@@ -466,6 +467,7 @@ async def _run_waivers(
     available_ids: list[int],
     entry_id: int | None = None,
     picks: list[int] | None = None,
+    released_ids: list[int] | None = None,
 ):
     """Drive ``WaiverAgent.run`` over ``_wide_bootstrap`` with every seam stubbed."""
     bootstrap = _wide_bootstrap()
@@ -487,7 +489,13 @@ async def _run_waivers(
             agent.client, "get_available_players", new_callable=AsyncMock,
             return_value=[by_id[i] for i in available_ids],
         ),
-        patch.object(agent.client, "get_recent_releases", new_callable=AsyncMock, return_value=[]),
+        patch.object(
+            agent.client, "get_recent_releases", new_callable=AsyncMock,
+            return_value=[
+                {"player": by_id[i], "dropped_by": 100, "gameweek": 24}
+                for i in released_ids or []
+            ],
+        ),
         patch.object(agent.client, "get_league_details", new_callable=AsyncMock, return_value=league_details),
         patch.object(agent.client, "get_game_state", new_callable=AsyncMock, return_value={"current_event": 25}),
         patch.object(
@@ -556,6 +564,21 @@ class TestWaiverAgentPool:
 
         assert result.data["top_targets"] == golden["top_targets"]
         assert result.data["targets_by_position"] == golden["targets_by_position"]
+
+    @pytest.mark.asyncio
+    async def test_every_row_with_a_draft_id_carries_code(self):
+        """Pool, ranked targets, squad and releases alike (#422).
+
+        `fpl waivers` emits this data as it comes back, so a new list of
+        players added here is held to the rule the moment it is filled.
+        """
+        result = await _run_waivers(
+            [1, 2, 3, 99], entry_id=100, picks=[50], released_ids=[99],
+        )
+
+        rows = assert_player_rows_carry_code(result.data, command="waivers")
+        assert result.data["current_squad"] and result.data["recent_releases"]
+        assert {row["id"] for row in rows} >= {1, 2, 3, 50, 99}
 
     @pytest.mark.asyncio
     async def test_empty_available_list_yields_empty_pool(self):

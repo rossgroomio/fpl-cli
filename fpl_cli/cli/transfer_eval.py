@@ -26,9 +26,9 @@ from fpl_cli.cli._json import (
     json_output_mode,
     output_format_option,
 )
-from fpl_cli.utils.text import strip_diacritics
 
 if TYPE_CHECKING:
+    from fpl_cli.models.player import Player
     from fpl_cli.scraper.fpl_prices import TeamFinances
 
 
@@ -62,6 +62,7 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
         resolve_players_or_report,
     )
     from fpl_cli.scraper.fpl_prices import load_cache
+    from fpl_cli.services.sell_prices import out_player_warnings, reprice_squad
 
     fmt = get_format(ctx)
     # Resolved here rather than inside the renderer: the settings live on the
@@ -134,9 +135,15 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
 
         data = result.data
 
-        # Affordability (Classic only)
+        # Affordability (Classic only), at today's prices rather than the scrape's
         finances = load_cache() if fmt != Format.DRAFT else None
-        sell_price = _find_sell_price(finances, out_resolved.web_name) if finances else None
+        if finances:
+            repricing = reprice_squad(finances, all_players)
+            finances = repricing.finances
+            # The early-season notice's channels: `metadata.warnings` or stderr.
+            if sell_warnings := out_player_warnings(repricing, out_resolved):
+                data = {**data, "warnings": [*data.get("warnings", []), *sell_warnings]}
+        sell_price = _find_sell_price(finances, out_resolved)
 
         if output_format == "json":
             _emit_json_output(data, finances, sell_price, fmt)
@@ -156,16 +163,11 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
             asyncio.run(_run())
 
 
-def _find_sell_price(finances: TeamFinances | None, out_name: str) -> float | None:
-    """Find the sell price of the OUT player from scraper cache."""
-    if not finances or not finances.squad:
+def _find_sell_price(finances: TeamFinances | None, out_player: Player) -> float | None:
+    """Find the sell price of the OUT player from scraper cache, matched on id and `code`."""
+    if not finances:
         return None
-    out_norm = strip_diacritics(out_name).lower()
-    for sp in finances.squad:
-        sp_norm = strip_diacritics(sp.name).lower()
-        if sp_norm == out_norm or out_norm in sp_norm:
-            return sp.sell_price
-    return None
+    return next((sp.sell_price for sp in finances.squad if sp.is_player(out_player)), None)
 
 
 def _compute_budget(finances: TeamFinances | None, sell_price: float | None, in_price: float) -> float | None:

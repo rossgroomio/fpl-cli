@@ -19,6 +19,8 @@ from fpl_cli.paths import user_data_file
 if TYPE_CHECKING:
     from playwright.async_api import Page
 
+    from fpl_cli.models.player import Player
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,6 +33,19 @@ class PlayerSellPrice:
     purchase_price: float = 0.0
     element_id: int | None = None
     code: int | None = None  # cross-game key; None on a cache scraped before it was stored
+    # The player's price when the scrape ran, so `reprice_squad`
+    # (`services/sell_prices.py`) can check the sell-on rule against FPL's own
+    # figure before trusting it with a later price. None on a cache scraped
+    # before it was stored.
+    price_at_scrape: float | None = None
+    # FPL's figure, kept by `reprice_squad` when it moves `sell_price` on to
+    # today's. Read it through `scraped_sell_price`.
+    _scraped: float | None = None
+
+    @property
+    def scraped_sell_price(self) -> float:
+        """FPL's own sell price from the scrape, whatever `sell_price` has since moved on to."""
+        return self.sell_price if self._scraped is None else self._scraped
 
     @property
     def profit_loss(self) -> float:
@@ -38,6 +53,21 @@ class PlayerSellPrice:
         if self.purchase_price == 0.0:
             return 0.0
         return self.sell_price - self.purchase_price
+
+    def is_player(self, player: Player) -> bool:
+        """Whether this row is *player*: the same id, and the same footballer by `code`.
+
+        On id, never on name alone: a name match let an outgoing player whose
+        name sits inside a squadmate's take that squadmate's price (#426). The
+        second check stops a cache from an earlier season, which numbered its
+        players differently, matching whoever holds the id now; a row scraped
+        before `code` was stored makes it on the name instead.
+        """
+        if self.element_id is None or self.element_id != player.id:
+            return False
+        if self.code is None:
+            return self.name == player.web_name
+        return self.code == usable_code(player.code)
 
 
 _POSITION_ORDER = {"GKP": 0, "GK": 0, "DEF": 1, "MID": 2, "FWD": 3}
@@ -105,11 +135,14 @@ class TeamFinances:
             "squad": [
                 {
                     "name": p.name,
-                    "sell_price": p.sell_price,
+                    # FPL's figure, never a repriced one: the next load checks
+                    # the sell-on rule against it.
+                    "sell_price": p.scraped_sell_price,
                     "position": p.position,
                     "purchase_price": p.purchase_price,
                     "element_id": p.element_id,
                     "code": p.code,
+                    "price_at_scrape": p.price_at_scrape,
                 }
                 for p in ordered_squad(self.squad)
             ],
@@ -129,6 +162,7 @@ class TeamFinances:
                 purchase_price=p.get("purchase_price", 0.0),
                 element_id=p.get("element_id"),
                 code=usable_code(p.get("code")),
+                price_at_scrape=p.get("price_at_scrape"),
             )
             for p in data.get("squad", [])
         ]
@@ -493,8 +527,9 @@ class FPLPriceScraper:
         """Build TeamFinances from intercepted /api/my-team/ response data."""
         # A failed player-list fetch still yields a usable squad (ids and sell
         # prices come from the picks), so it is recorded rather than refused:
-        # without it the names, positions and `code` are all missing, and the
-        # cache would otherwise keep them missing with no reason on record.
+        # without it the names, positions, `code` and scrape-time prices are
+        # all missing, and the cache would otherwise keep them missing with no
+        # reason on record.
         extraction_errors: list[str] = []
         try:
             bootstrap = await page.evaluate("""
@@ -511,7 +546,7 @@ class FPLPriceScraper:
         except Exception as e:  # noqa: BLE001 — scraper resilience
             logger.debug("Failed to fetch bootstrap data: %s", e)
             extraction_errors.append(
-                f"Player list fetch failed ({type(e).__name__}): names, positions and codes are missing",
+                f"Player list fetch failed ({type(e).__name__}): names, positions, codes and prices are missing",
             )
             elements = {}
             element_types = {}
@@ -530,6 +565,7 @@ class FPLPriceScraper:
             name = player.get("web_name", f"Player {element_id}")
             pos_id = player.get("element_type", 0)
             position = element_types.get(pos_id, "")
+            now_cost = player.get("now_cost")
             squad.append(PlayerSellPrice(
                 name=name,
                 sell_price=sell_price,
@@ -537,6 +573,7 @@ class FPLPriceScraper:
                 purchase_price=purchase_price,
                 element_id=element_id,
                 code=usable_code(player.get("code")),
+                price_at_scrape=now_cost / 10.0 if isinstance(now_cost, int) else None,
             ))
 
         if not squad:

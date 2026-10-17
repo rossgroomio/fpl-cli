@@ -3,15 +3,31 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
 from click.testing import CliRunner
 
 from fpl_cli.cli import main
 from fpl_cli.cli._context import CLIContext, Format
 from fpl_cli.cli.sell_prices import sell_prices_command
 from fpl_cli.cli.squad import squad_group
+from fpl_cli.models.player import PlayerPosition
 from fpl_cli.scraper.fpl_prices import PlayerSellPrice, TeamFinances, ordered_squad
+from tests.conftest import make_player
+
+# Each player at the price `_make_finances` records them scraped at.
+_TODAY = [
+    make_player(id=355, code=223094, web_name="Haaland", position=PlayerPosition.FORWARD, now_cost=145),
+    make_player(id=1, code=154561, web_name="Raya", position=PlayerPosition.GOALKEEPER, now_cost=59),
+    make_player(id=253, code=118748, web_name="Salah", position=PlayerPosition.MIDFIELDER, now_cost=132),
+]
+
+
+@pytest.fixture(autouse=True)
+def _prices_unchanged_since_the_scrape(todays_players):
+    todays_players.extend(_TODAY)
 
 
 def _make_finances(
@@ -26,18 +42,27 @@ def _make_finances(
             sell_price=14.5,
             position="FWD",
             purchase_price=14.6 if with_purchase else 0.0,
+            element_id=355,
+            code=223094,
+            price_at_scrape=14.5,
         ),
         PlayerSellPrice(
             name="Raya",
             sell_price=5.8,
             position="GKP",
             purchase_price=5.7 if with_purchase else 0.0,
+            element_id=1,
+            code=154561,
+            price_at_scrape=5.9,
         ),
         PlayerSellPrice(
             name="Salah",
             sell_price=13.0,
             position="MID",
             purchase_price=12.8 if with_purchase else 0.0,
+            element_id=253,
+            code=118748,
+            price_at_scrape=13.2,
         ),
     ]
     return TeamFinances(
@@ -100,6 +125,50 @@ class TestCachedDisplay:
         salah_idx = next(i for i, l in enumerate(player_lines) if "Salah" in l)
         haaland_idx = next(i for i, l in enumerate(player_lines) if "Haaland" in l)
         assert raya_idx < salah_idx < haaland_idx
+
+
+class TestPriceChangesSinceTheScrape:
+    """A cached sell price follows the player's price after the scrape (#426)."""
+
+    def test_the_table_shows_todays_sell_price_and_stderr_says_which_moved(self, todays_players):
+        # Raya: bought 5.7, scraped at 5.9 (sell 5.8), now 6.1, so half of 0.4.
+        todays_players[1] = todays_players[1].model_copy(update={"now_cost": 61})
+        with patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=_make_finances(with_purchase=True)):
+            result = CliRunner().invoke(sell_prices_command)
+
+        assert result.exit_code == 0, result.output
+        assert "\u00a35.9m" in result.stdout
+        note = result.stderr.replace("\n", " ")  # Rich wraps at the terminal width
+        assert "1 sell price updated for price changes since the scrape" in note
+        assert "Raya \u00a35.8m \u2192 \u00a35.9m" in note
+        assert "updated for price changes" not in result.stdout
+
+    def test_a_price_it_cannot_check_is_warned_about_on_stderr(self, todays_players):
+        # Haaland is missing from today's list, so his price cannot be looked up.
+        del todays_players[0]
+        with patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=_make_finances()):
+            result = CliRunner().invoke(sell_prices_command)
+
+        assert result.exit_code == 0, result.output
+        warning = result.stderr.replace("\n", " ")  # Rich wraps at the terminal width
+        assert "1 of 3 sell prices could not be checked" in warning
+        assert "Haaland" in warning
+        assert "could not be checked" not in result.stdout
+
+
+    def test_a_failed_lookup_still_shows_the_cache(self):
+        client = MagicMock()
+        client.get_players = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        with patch("fpl_cli.api.fpl.FPLClient", return_value=client), \
+             patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=_make_finances()):
+            result = CliRunner().invoke(sell_prices_command)
+
+        assert result.exit_code == 0, result.output
+        assert "Squad Budget" in result.stdout
+        assert "Haaland" in result.stdout
+        assert "Could not fetch today's prices (ConnectError)" in result.stderr.replace("\n", " ")
 
 
 class TestNoCache:
@@ -326,6 +395,8 @@ class TestJsonFailurePaths:
         envelope = json.loads(result.stdout)
         assert len(envelope["data"]) == 15
         assert envelope["metadata"]["warnings"] == []
+        # Scraped just now, so the figure to budget on is FPL's own.
+        assert all(row["scraped_sell_price"] == row["sell_price"] for row in envelope["data"])
 
 
 class TestJsonSquadOrder:

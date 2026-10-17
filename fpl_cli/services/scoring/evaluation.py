@@ -13,6 +13,7 @@ import dataclasses
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+from fpl_cli.models.player import usable_code
 from fpl_cli.services.scoring.constants import (
     GK_SAMPLE_RAMP_MINUTES,
     GK_XGC_QUALITY_ANCHOR,
@@ -386,8 +387,6 @@ def build_player_evaluation(
     # Build identity. `code` goes through `usable_code` rather than `int()`:
     # this function also serves the allocator, the returnee radar and the
     # waiver path, none of which read `code`, so a blank one must not raise.
-    from fpl_cli.models.player import usable_code
-
     identity = PlayerIdentity(
         id=int(_get("id", 0)),
         code=usable_code(_get("code")),

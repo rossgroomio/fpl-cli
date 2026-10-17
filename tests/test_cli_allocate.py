@@ -9,7 +9,7 @@ from click.testing import CliRunner
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.squad_allocator import ScoredPlayer, SquadResult
-from tests.conftest import make_player
+from tests.conftest import assert_player_rows_carry_code, make_player
 
 
 def _make_squad_result(*, status="optimal", budget=100.0, formation=(4, 4, 2)):
@@ -146,6 +146,7 @@ class TestAllocateCommand:
         result = _run_allocate(_make_squad_result(), args=["--format", "json"])
         rows = json.loads(result.output)["data"]
         assert all(row["code"] == 10_000 + row["id"] for row in rows)
+        assert_player_rows_carry_code(rows, command="allocate")
 
     def test_json_metadata(self):
         """JSON metadata includes horizon, budget, formation, solver_status."""
@@ -291,6 +292,27 @@ class TestAllocateCommand:
         )
         assert result.exit_code == 0, result.output
         assert json.loads(result.output)["metadata"]["warnings"] == []
+
+    def test_a_sell_prices_file_warning_that_prices_may_be_stale_is_repeated(self, tmp_path):
+        """The solver budgets on the file's sell prices, so their caveat travels with the squad."""
+        stale = {"code": "sell_prices_as_scraped", "message": "1 of 2 sell prices could not be checked: Salah."}
+        path = tmp_path / "sell-prices.json"
+        path.write_text(json.dumps({
+            "command": "sell-prices",
+            "data": [{"id": 1, "name": "Salah", "position": "MID", "sell_price": 12.5}],
+            "metadata": {"bank": 1.5, "warnings": [stale, {"code": "sell_prices_code_missing", "message": "x"}]},
+        }), encoding="utf-8")
+        mid_season = _make_scoring_data(next_gw_id=20)
+        mid_season.player_priors = {}
+
+        result = _run_allocate(
+            _make_squad_result(), ["--sell-prices", str(path), "--format", "json"], scoring_data=mid_season,
+        )
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["metadata"]["warnings"] == [stale]
+
+        table = _run_allocate(_make_squad_result(), ["--sell-prices", str(path)], scoring_data=mid_season)
+        assert "could not be checked: Salah" in table.stderr
 
     def test_table_mode_prints_the_early_season_notice(self):
         early = _make_scoring_data(next_gw_id=3)
