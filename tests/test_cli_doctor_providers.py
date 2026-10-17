@@ -99,6 +99,11 @@ def _csv(
 
 BLANK_ELO = frozenset({"home_team_elo", "away_team_elo"})
 
+# The #142 shape on the columns a match row cannot do without, so every row
+# drops out of the join. Elo was this shape until #431 made a blank one
+# unknown rather than fatal.
+UNJOINABLE = frozenset({"gameweek", "home_team"})
+
 
 def _understat_players(team_names: list[str], player_names: list[str] | None = None) -> dict:
     return {
@@ -201,9 +206,9 @@ def _register_routes(
             )
         )
     overridden = gw_texts or {}
-    for gw in {finished_gws, finished_gws - 1}:
-        if gw < 1:
-            continue
+    # Every finished gameweek, not only the two the per-GW probe compares:
+    # the Elo check scans the window scoring reads.
+    for gw in range(1, finished_gws + 1):
         tournament = f"{CI_BASE}/{CI_SEASON}/By Tournament/Premier League/GW{gw}"
         gw_files = (
             ("matches.csv", f"{tournament}/matches.csv", MATCHES_REQUIRED_COLUMNS),
@@ -461,15 +466,16 @@ class TestParseDrift:
     """
 
     @respx.mock
-    def test_blank_elo_at_first_finished_gw_is_not_ok(self, monkeypatch):
-        # The reported shape: GW1 complete, Elo columns present but empty, so
-        # every row drops out of the match join. Nothing earlier in the season
-        # to compare against, so it reads as a backfill still in progress.
+    def test_unjoinable_matches_at_first_finished_gw_is_not_ok(self, monkeypatch):
+        # The reported shape: GW1 complete, every column present but the
+        # match keys empty, so every row drops out of the match join. Nothing
+        # earlier in the season to compare against, so it reads as a backfill
+        # still in progress.
         monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
         _register_routes(
             finished_gws=1,
             gw_texts={
-                (1, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+                (1, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=UNJOINABLE)
             },
         )
         result = _run()
@@ -481,12 +487,12 @@ class TestParseDrift:
         assert "all per-GW files present" not in flat
 
     @respx.mock
-    def test_blank_elo_is_stale_while_the_previous_gw_parses(self, monkeypatch):
+    def test_unjoinable_matches_are_stale_while_the_previous_gw_parses(self, monkeypatch):
         monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
         _register_routes(
             finished_gws=5,
             gw_texts={
-                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=UNJOINABLE)
             },
         )
         result = _run()
@@ -496,10 +502,10 @@ class TestParseDrift:
         assert "self-corrects" in flat
 
     @respx.mock
-    def test_blank_elo_two_gameweeks_running_is_broken(self, monkeypatch):
+    def test_unjoinable_matches_two_gameweeks_running_is_broken(self, monkeypatch):
         # Not a backfill in progress: the join is gone for good.
         monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
-        blank = _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+        blank = _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=UNJOINABLE)
         _register_routes(
             finished_gws=5,
             gw_texts={(5, "matches.csv"): blank, (4, "matches.csv"): blank},
@@ -560,7 +566,7 @@ class TestParseDrift:
             finished_gws=5,
             gw_404=frozenset({(4, "matches.csv")}),
             gw_texts={
-                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=UNJOINABLE)
             },
         )
         result = _run()
@@ -575,7 +581,7 @@ class TestParseDrift:
         # per-GW file failing at the comparison gameweek must not turn that
         # into "could not check".
         monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
-        blank = _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+        blank = _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=UNJOINABLE)
         _register_routes(
             finished_gws=5,
             gw_texts={(5, "matches.csv"): blank, (4, "matches.csv"): blank},
@@ -596,7 +602,7 @@ class TestParseDrift:
         _register_routes(
             finished_gws=5,
             gw_texts={
-                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=UNJOINABLE)
             },
             gw_errors=frozenset({(4, "matches.csv")}),
         )
@@ -619,7 +625,7 @@ class TestParseDrift:
         _register_routes(
             finished_gws=5,
             gw_texts={
-                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO),
+                (5, "matches.csv"): _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=UNJOINABLE),
                 (4, "matches.csv"): renamed,
             },
         )
@@ -632,7 +638,7 @@ class TestParseDrift:
     @respx.mock
     def test_json_reports_the_parse_failure_as_broken(self, monkeypatch):
         monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
-        blank = _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+        blank = _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=UNJOINABLE)
         _register_routes(
             finished_gws=5,
             gw_texts={(5, "matches.csv"): blank, (4, "matches.csv"): blank},
@@ -646,6 +652,144 @@ class TestParseDrift:
             if c["name"] == "Core-Insights per-GW files"
         )
         assert row["status"] == "broken"
+
+
+class TestEloGap:
+    """#431: blank Elo keeps the match join, so the row has to name it.
+
+    Before, blank Elo emptied the join and the row said only that no row
+    survived. Now the records survive with a neutral opponent factor, and a
+    row that read ok would hide that the opponent adjustment is gone. It is
+    judged across the window scoring reads, not the newest gameweek alone.
+    """
+
+    @staticmethod
+    def _blank(gws) -> dict:
+        blank = _csv(MATCHES_REQUIRED_COLUMNS, rows=5, blank=BLANK_ELO)
+        return {(gw, "matches.csv"): blank for gw in gws}
+
+    @staticmethod
+    def _row(result) -> dict:
+        payload = json.loads(result.output)
+        return next(
+            c for c in payload["data"]["providers"] if c["name"] == "Core-Insights per-GW files"
+        )
+
+    @respx.mock
+    def test_blank_elo_at_the_first_finished_gw_is_a_backfill(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(finished_gws=1, gw_texts=self._blank([1]))
+        result = _run()
+        assert result.exit_code == 0
+        flat = _flat(result)
+        assert "opponent Elo is missing for 1 of 1 matches in GW1" in flat
+        assert "count unadjusted in the opponent-adjusted xG signals" in flat
+        assert "only GW1 lacks it, so this is likely a backfill in progress" in flat
+        assert "parse to 0 records" not in flat
+        assert "all per-GW files present" not in flat
+
+    @respx.mock
+    def test_most_of_the_window_blank_is_an_upstream_gap(self, monkeypatch):
+        # The 2026-27 shape: Elo for the first gameweeks, blank since. Still
+        # stale rather than broken, because nothing reads wrong: the scores
+        # lose the opponent adjustment, and the Monday probe stays free to
+        # fail on real drift.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(finished_gws=5, gw_texts=self._blank([3, 4, 5]))
+        result = _run(["--format", "json"])
+        assert result.exit_code == 0
+        row = self._row(result)
+        assert row["status"] == "stale"
+        assert "missing for 3 of 5 matches in GW1-5, the window scoring reads" in row["detail"]
+        assert "every match from GW3 lacks it" in row["detail"]
+        assert "upstream gap rather than a backfill in progress" in row["detail"]
+
+    @respx.mock
+    def test_blanks_left_behind_in_earlier_gameweeks_still_count(self, monkeypatch):
+        # Upstream fixed the newest gameweek and left the rest blank: the
+        # runtime still scores those matches unadjusted, so it is not ok.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(finished_gws=5, gw_texts=self._blank([1, 2, 3, 4]))
+        result = _run(["--format", "json"])
+        assert result.exit_code == 0
+        row = self._row(result)
+        assert row["status"] == "stale"
+        assert "missing for 4 of 5 matches" in row["detail"]
+        assert "upstream gap" in row["detail"]
+        assert "every match from" not in row["detail"]
+
+    @respx.mock
+    def test_a_minority_without_elo_is_a_note_on_an_ok_row(self, monkeypatch):
+        # One gameweek of five: the adjustment still holds for most matches,
+        # so the row stays ok and only says how many count unadjusted.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(finished_gws=5, gw_texts=self._blank([5]))
+        result = _run(["--format", "json"])
+        assert result.exit_code == 0
+        row = self._row(result)
+        assert row["status"] == "ok"
+        assert "all per-GW files present" in row["detail"]
+        assert "1 of 5 matches in GW1-5 carry no opponent Elo and count unadjusted" in (
+            row["detail"]
+        )
+
+    @respx.mock
+    def test_elo_gap_rides_along_a_lag_on_the_other_unit(self, monkeypatch):
+        # The gameweek stats lagging must not hide the Elo gap beside it.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            finished_gws=5,
+            gw_404=frozenset({(5, "player_gameweek_stats.csv")}),
+            gw_texts=self._blank([3, 4, 5]),
+        )
+        result = _run()
+        assert result.exit_code == 0
+        flat = _flat(result)
+        assert "player_gameweek_stats.csv not published upstream yet" in flat
+        assert "opponent Elo is missing for 3 of 5 matches" in flat
+
+
+class TestThinJoin:
+    """A join that keeps rows, but under half of them, is not ok (#431 review).
+
+    The runtime warns on it; a probe that only tested for zero records read
+    it as healthy, the probe-and-runtime divergence #229 was about.
+    """
+
+    @staticmethod
+    def _thin_stats() -> str:
+        # One row joins; three name a player players.csv does not carry.
+        cols = sorted(PLAYERMATCHSTATS_REQUIRED_COLUMNS)
+        good = ",".join("1" for _ in cols)
+        bad = ",".join("999" if col == "player_id" else "1" for col in cols)
+        return "\n".join([",".join(cols), good, bad, bad, bad]) + "\n"
+
+    @respx.mock
+    def test_thin_join_at_the_newest_gameweek_is_stale(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(
+            finished_gws=5, gw_texts={(5, "playermatchstats.csv"): self._thin_stats()}
+        )
+        result = _run()
+        assert result.exit_code == 0
+        flat = _flat(result)
+        assert "keep only 1 of 4 player-match rows" in flat
+        assert "self-corrects; broken if it persists" in flat
+        assert "all per-GW files present" not in flat
+
+    @respx.mock
+    def test_thin_join_two_gameweeks_running_is_broken(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        thin = self._thin_stats()
+        _register_routes(
+            finished_gws=5,
+            gw_texts={(5, "playermatchstats.csv"): thin, (4, "playermatchstats.csv"): thin},
+        )
+        result = _run()
+        assert result.exit_code == 1
+        flat = _flat(result)
+        assert "keep only 1 of 4 player-match rows" in flat
+        assert "GW4 is no better, so this is not publishing lag" in flat
 
 
 class TestLagAndUnreachability:

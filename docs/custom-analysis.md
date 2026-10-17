@@ -436,11 +436,11 @@ Fixture-adjusted npxG normalises historical xG by the Elo strength of each oppon
 For each completed match within a 7-match / 12-GW rolling window:
 
 1. **npxG approximation**: `xg - (penalties_scored + penalties_missed) × 0.76` (removes penalty xG from the Core-Insights match total)
-2. **Adjustment factor**: `opponent_elo / median_elo`, capped at [0.80, 1.25] — a higher Elo is a stronger side, so at a 1700 median a match against a 1900-Elo side is scaled up (× 1.12) and one against a 1500-Elo side is scaled down (× 0.88). The direction is the point: xG earned against weak opposition is worth less than the same xG against a median side, and the easy fixtures ahead are already credited by the matchup score, so scaling it up would reward a soft schedule twice (#439)
+2. **Adjustment factor**: `opponent_elo / median_elo`, capped at [0.80, 1.25] — a higher Elo is a stronger side, so at a 1700 median a match against a 1900-Elo side is scaled up (× 1.12) and one against a 1500-Elo side is scaled down (× 0.88). The direction is the point: xG earned against weak opposition is worth less than the same xG against a median side, and the easy fixtures ahead are already credited by the matchup score, so scaling it up would reward a soft schedule twice (#439). A match with no opponent Elo gets a neutral factor of 1.0 and still counts
 3. **Adjusted per-90**: `(npxg × factor) / minutes × 90` per match, averaged over qualifying matches
 4. Players with fewer than 4 qualifying matches fall back to raw Understat npxG/90
 
-The median Elo is computed fresh from the season's match data each run. Elo ratings come from per-gameweek `matches.csv` files in the Core-Insights dataset (`By Tournament/Premier League/GW{n}/`).
+The median Elo is computed fresh each run from the matches in the last 12 gameweeks that carry one, the same match data the window draws on, and falls back to 1700 when none do. Elo ratings come from per-gameweek `matches.csv` files in the Core-Insights dataset (`By Tournament/Premier League/GW{n}/`). Core-Insights publishes an Elo it has not filled in as a blank cell, as it did for every match from GW3 of 2026-27. While a gap like that lasts, a player with 4 or more qualifying matches still gets adj. npxG/90, with the matches that lack Elo counted unadjusted, rather than switching back to Understat's season average; one with fewer falls back as step 4 says. `fpl doctor --providers` flags the gap on its `Core-Insights per-GW files` row once most matches in that 12-gameweek window lack Elo.
 
 ### Display
 

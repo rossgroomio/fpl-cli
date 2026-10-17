@@ -87,6 +87,7 @@ from fpl_cli.services.scoring.signals import (
     _assign_percentile_ranks,
     _opponent_factor,
     _rolling_window,
+    build_npxg_lookup_from_records,
     compute_median_elo,
 )
 from tests.conftest import make_player
@@ -3607,7 +3608,7 @@ def _make_match(
     gameweek: int,
     xg: float,
     minutes_played: int,
-    opponent_elo: float,
+    opponent_elo: float | None,
     penalties_scored: int = 0,
     penalties_missed: int = 0,
     xa: float = 0.0,
@@ -3869,6 +3870,49 @@ class TestBuildAdjustedNpxgLookup:
         result = build_adjusted_npxg_lookup(records, current_gw=10, median_elo=MEDIAN_ELO)
         assert 100 in result
         assert 999 not in result
+
+
+class TestUnknownOpponentElo:
+    """#431: a match with no Elo counts at face value instead of vanishing."""
+
+    def test_known_elo_still_adjusts_beside_unknown(self):
+        # Four unknown at face value, three against a 2500 side capped at 1.25.
+        records = (
+            [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=None)
+             for gw in range(1, 5)]
+            + [_make_match(gw, xg=0.50, minutes_played=90, opponent_elo=2500.0)
+               for gw in range(5, 8)]
+        )
+        result = compute_adjusted_npxg(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx((4 * 0.50 + 3 * 0.50 * 1.25) / 7, abs=1e-6)
+
+    def test_unknown_elo_counts_unadjusted_in_cv_xgi(self):
+        unknown = [_make_match(gw, xg=x, xa=0.1, minutes_played=90, opponent_elo=None)
+                   for gw, x in zip(range(1, 8), [0.1, 0.5, 0.2, 0.6, 0.3, 0.4, 0.2])]
+        neutral = [_make_match(gw, xg=x, xa=0.1, minutes_played=90, opponent_elo=MEDIAN_ELO)
+                   for gw, x in zip(range(1, 8), [0.1, 0.5, 0.2, 0.6, 0.3, 0.4, 0.2])]
+        result = compute_cv_xgi(unknown, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result is not None
+        assert result == pytest.approx(
+            compute_cv_xgi(neutral, current_gw=10, median_elo=MEDIAN_ELO)
+        )
+
+    def test_lookup_survives_a_season_of_blank_elo(self):
+        # The live shape: Elo for the first two gameweeks, blank after. The
+        # lookup used to come back empty because the blank rows never arrived.
+        # The two rated matches differ, so the value depends on the median
+        # being taken over them alone (1800), on each being adjusted against
+        # it, and on the four unrated ones counting at face value.
+        elo = {1: 1600.0, 2: 2000.0}
+        xg = {1: 0.60, 2: 0.30}
+        records = {
+            100: [_make_match(gw, xg=xg.get(gw, 0.40), minutes_played=90,
+                              opponent_elo=elo.get(gw))
+                  for gw in range(1, 7)],
+        }
+        lookup = build_npxg_lookup_from_records(records, current_gw=7)
+        expected = (0.60 * 1600 / 1800 + 0.30 * 2000 / 1800 + 4 * 0.40) / 6
+        assert lookup[100] == pytest.approx(expected, abs=1e-6)
 
 
 class TestApplyAdjustedNpxg:
