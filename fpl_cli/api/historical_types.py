@@ -25,7 +25,10 @@ class SeasonHistory:
     end_cost: int
     position: str
     web_name: str
-    team_id: int  # FPL club code (bootstrap teams[].code): stable across seasons and sources
+    # The FPL club code (bootstrap teams[].code), stable across seasons and
+    # sources -- never a 1-20 team id, which means nothing outside its own
+    # season's bootstrap and would name a different club if looked up as one
+    team_code: int
     # Defensive and goalkeeping rates, already per 90 minutes at source. Only
     # Core-Insights publishes them; vaastav's archive has no equivalent columns
     # and leaves them None, as does any season predating the column upstream

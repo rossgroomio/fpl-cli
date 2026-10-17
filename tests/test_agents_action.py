@@ -21,6 +21,7 @@ from tests.conftest import (
     make_fixture,
     make_player,
     make_team,
+    team_code_for,
 )
 
 # --- Fixtures ---
@@ -898,6 +899,88 @@ class TestWaiverAgentGkSignals:
 
         assert result.status == AgentStatus.SUCCESS
         assert agent._main_player_map == {5: main_keeper}
+
+
+class TestWaiverAgentClubIdSpace:
+    """#423: the draft game numbers its clubs independently of the main game.
+
+    Fixtures, form and FDR are all keyed by the main game's team ids, so a
+    free agent's draft club has to be translated by club code before he is
+    scored. Here draft club 1 is main-game club 13 (MCI) and draft club 14 is
+    main-game club 1 (ARS): read raw, Haaland would be scored on Arsenal's
+    fixture and Saka on Liverpool's.
+    """
+
+    @staticmethod
+    def _bootstrap() -> dict[str, Any]:
+        return {
+            "elements": [
+                make_draft_player(id=1, code=1001, web_name="Haaland", team=1, element_type=4, minutes=1800),
+                make_draft_player(id=2, code=1002, web_name="Saka", team=14, element_type=3, minutes=1800),
+                make_draft_player(id=3, code=1003, web_name="Stranger", team=20, element_type=3, minutes=1800),
+            ],
+            "teams": [
+                make_draft_team(id=1, code=team_code_for(13), name="Man City", short_name="MCI"),
+                make_draft_team(id=14, code=team_code_for(1), name="Arsenal", short_name="ARS"),
+                # A club the main game's list does not carry
+                make_draft_team(id=20, code=999, name="Nowhere", short_name="NOW"),
+            ],
+        }
+
+    async def _run(self):
+        bootstrap = self._bootstrap()
+        scoring = _mock_scoring_data()
+        agent = WaiverAgent(config={"draft_league_id": 12345})
+        with (
+            patch(
+                "fpl_cli.agents.action.waiver.prepare_scoring_data",
+                new_callable=AsyncMock, return_value=scoring,
+            ),
+            patch(
+                "fpl_cli.agents.action.waiver.fetch_understat_lookup",
+                new_callable=AsyncMock, return_value={},
+            ),
+            patch.object(agent.client, "get_bootstrap_static", new_callable=AsyncMock, return_value=bootstrap),
+            patch.object(
+                agent.client, "get_available_players", new_callable=AsyncMock,
+                return_value=bootstrap["elements"],
+            ),
+            patch.object(agent.client, "get_recent_releases", new_callable=AsyncMock, return_value=[]),
+            patch.object(
+                agent.client, "get_league_details", new_callable=AsyncMock,
+                return_value={"league_entries": []},
+            ),
+            patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock, return_value=[]),
+        ):
+            result = await agent.run()
+        return result, scoring
+
+    @pytest.mark.asyncio
+    async def test_targets_carry_the_main_games_team_id(self):
+        result, _ = await self._run()
+
+        assert result.status == AgentStatus.SUCCESS
+        clubs = {t["player_name"]: (t["team_id"], t["team_short"]) for t in result.data["top_targets"]}
+        assert clubs == {"Haaland": (13, "MCI"), "Saka": (1, "ARS"), "Stranger": (None, "???")}
+
+    @pytest.mark.asyncio
+    async def test_each_player_is_scored_on_his_own_clubs_fixture(self):
+        """MCI host TOT and ARS host LIV in the fixture's gameweek."""
+        _, scoring = await self._run()
+
+        calls = scoring.ratings_service.get_positional_fdr.call_args_list
+        assert {(c.kwargs["team"], c.kwargs["opponent"], c.kwargs["venue"]) for c in calls} == {
+            ("MCI", "TOT", "home"),
+            ("ARS", "LIV", "home"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_untranslated_club_is_left_unscored_not_guessed(self):
+        result, _ = await self._run()
+
+        stranger = next(t for t in result.data["top_targets"] if t["player_name"] == "Stranger")
+        assert "positional_fdr" not in stranger
+        assert "matchup_avg_3gw" not in stranger
 
 
 class TestWaiverAgentIdSpace:

@@ -12,7 +12,7 @@ from fpl_cli.agents.common import (
     rekey_for_draft,
 )
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
+from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_teams_to_main, match_draft_to_main
 from fpl_cli.models.player import Player
 from fpl_cli.models.types import EnrichedPlayer, WaiverPoolEntry, WaiverTarget
 from fpl_cli.services.player_prior import early_season_quality_warning
@@ -85,8 +85,23 @@ class WaiverAgent(Agent):
         try:
             # Fetch data
             bootstrap = await self.client.get_bootstrap_static()
+
+            # Fixture data and the shared scoring context, fetched first because
+            # its team list is what translates the draft game's club ids
+            data = await prepare_scoring_data(
+                self.fpl_client, include_players=True,
+                include_history=True, include_prior=True,
+                include_match_data=True,
+            )
+            next_gw_id = data.next_gw_id
+            scoring_ctx = data.scoring_ctx
+
+            # Every parsed player carries the main game's team id, since that
+            # is what fixtures, form and FDR are keyed by (#423), so the club
+            # names are re-keyed onto the same ids for enrich_player to find.
             teams_data = bootstrap.get("teams", [])
-            team_map = {t["id"]: t for t in teams_data}
+            team_ids = match_draft_teams_to_main(teams_data, data.teams)
+            team_map = {team_ids[t["id"]]: t for t in teams_data if t.get("id") in team_ids}
 
             # Get available players
             available = await self.client.get_available_players(league_id, bootstrap)
@@ -105,7 +120,7 @@ class WaiverAgent(Agent):
                 }
                 recent_releases = [
                     {
-                        **enrich_player(self.client.parse_player(r["player"]), team_map),
+                        **enrich_player(self.client.parse_player(r["player"], team_ids), team_map),
                         "dropped_by": entry_name_map.get(r["dropped_by"], str(r["dropped_by"])),
                         "gameweek": r["gameweek"],
                     }
@@ -116,7 +131,7 @@ class WaiverAgent(Agent):
 
             # Parse players
             parsed_available = [
-                enrich_player(self.client.parse_player(p), team_map, include_availability=False)
+                enrich_player(self.client.parse_player(p, team_ids), team_map, include_availability=False)
                 for p in available
             ]
 
@@ -163,7 +178,7 @@ class WaiverAgent(Agent):
                         for pid in player_ids:
                             if pid in player_map:
                                 player = enrich_player(
-                                    self.client.parse_player(player_map[pid]),
+                                    self.client.parse_player(player_map[pid], team_ids),
                                     team_map,
                                     include_availability=False,
                                 )
@@ -176,20 +191,13 @@ class WaiverAgent(Agent):
                 except Exception as e:  # noqa: BLE001 — best-effort enrichment
                     self.log_warning(f"Could not fetch current squad: {e}")
 
-            # Fetch fixture data and build shared scoring context
-            data = await prepare_scoring_data(
-                self.fpl_client, include_players=True,
-                include_history=True, include_prior=True,
-                include_match_data=True,
-            )
-            next_gw_id = data.next_gw_id
-            scoring_ctx = data.scoring_ctx
-
             # The draft bootstrap carries neither saves nor expected goals
             # conceded, so a keeper's three scoring signals only exist on the
             # main game's player. Joined on `code`, never on (web_name,
             # team_id) — a mid-season rename breaks the name join (#168).
-            self._main_player_map = match_draft_to_main(available, data.players or [])
+            self._main_player_map = match_draft_to_main(
+                available, data.players or [], team_ids=team_ids,
+            )
 
             # Every lookup below arrives keyed by the main game's element id,
             # and the pool scored from here on is keyed by the draft's, so
@@ -214,7 +222,11 @@ class WaiverAgent(Agent):
             # Enrich available players with matchup and FDR
             matchup_cache: dict[tuple[int, str], float] = {}
             for player in parsed_available:
-                tid = player.get("team_id", 0)
+                tid = player.get("team_id")
+                if tid is None:
+                    # No main-game club to read fixtures for: unscored
+                    # rather than scored on whichever club shares the id
+                    continue
                 pos = player.get("position", "MID")
                 matchup_avg_3gw, positional_fdr = compute_aggregate_matchup(
                     tid, pos, scoring_ctx, matchup_cache=matchup_cache,

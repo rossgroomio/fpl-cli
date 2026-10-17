@@ -374,12 +374,21 @@ def fdr_command(
                 if not entry_id:
                     error_console.print("[yellow]draft_entry_id not configured[/yellow]")
                 else:
-                    from fpl_cli.api.fpl_draft import FPLDraftClient
+                    from fpl_cli.api.fpl_draft import (
+                        FPLDraftClient,
+                        draft_element_team_id,
+                        match_draft_teams_to_main,
+                    )
+                    async with FPLClient() as client:
+                        main_teams = await client.get_teams()
                     async with FPLDraftClient() as draft_client:
                         game_data = await draft_client.get_game_state()
                         current_gw = game_data.get("current_event", 1)
                         bootstrap = await draft_client.get_bootstrap_static()
                         draft_player_map = {p["id"]: p for p in bootstrap.get("elements", [])}
+                        # The blanks and doubles are keyed by the main game's
+                        # team ids, the squad's clubs by the draft game's (#423)
+                        team_ids = match_draft_teams_to_main(bootstrap.get("teams", []), main_teams)
                         try:
                             picks_data = await draft_client.get_entry_picks(entry_id, current_gw)
                         except Exception:  # noqa: BLE001 — best-effort enrichment
@@ -387,7 +396,7 @@ def fdr_command(
                         pick_ids = [p["element"] for p in picks_data.get("picks", [])]
                         squad = [
                             {
-                                "team_id": draft_player_map[pid]["team"],
+                                "team_id": draft_element_team_id(draft_player_map[pid], team_ids),
                                 "element_type": draft_player_map[pid]["element_type"],
                                 "web_name": draft_player_map[pid]["web_name"],
                             }

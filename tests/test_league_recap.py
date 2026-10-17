@@ -100,11 +100,20 @@ from fpl_cli.services.league_history_notes import (
     NoteSurface,
     SeasonPhase,
 )
-from tests.conftest import make_draft_player, make_player, make_team
+from tests.conftest import make_draft_player, make_draft_team, make_player, make_team, team_code_for
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# The draft game's club numbering for the draft collector's club tests,
+# deliberately the main game's reversed (#423): draft club 1 is main-game
+# club 2 and draft club 2 is main-game club 1, joined by club code. A draft
+# id read as a main-game one then names the other club rather than missing.
+_SWAPPED_DRAFT_TEAMS = [
+    make_draft_team(id=1, code=team_code_for(2)),
+    make_draft_team(id=2, code=team_code_for(1)),
+]
 
 
 def _make_manager(
@@ -1311,8 +1320,8 @@ class TestFirstGameweekHasNoPreviousPosition:
         """One live draft manager. `last_rank=None` omits the field, which is
         what sends the collector to its derived-movement fallback instead of
         trusting the league's own figure."""
-        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
-        main_player = make_player(id=5, web_name="Star", team_id=1)
+        draft_player = make_draft_player(id=900, code=4900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, code=4900, web_name="Star", team_id=1)
         client = MagicMock()
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
@@ -2062,12 +2071,16 @@ class TestFormatStandingsBlockUnavailable:
 
 
 class TestDraftPointInTimeReconstruction:
-    def _make_draft_client(self, league_details, bootstrap_elements, txns, picks_by_entry):
+    def _make_draft_client(
+        self, league_details, bootstrap_elements, txns, picks_by_entry, draft_teams=(),
+    ):
         client = MagicMock()
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
         client.get_league_details = AsyncMock(return_value=league_details)
-        client.get_bootstrap_static = AsyncMock(return_value={"elements": bootstrap_elements})
+        client.get_bootstrap_static = AsyncMock(
+            return_value={"elements": bootstrap_elements, "teams": list(draft_teams)},
+        )
         client.get_league_transactions = AsyncMock(return_value={"transactions": txns})
         client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks_by_entry[entry_id])
         return client
@@ -2078,8 +2091,8 @@ class TestDraftPointInTimeReconstruction:
     async def test_ae1_computed_points_override_standings_event_total(self):
         """Covers AE1: event_total is always-current; the squad summed
         against live stats is the point-in-time truth."""
-        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
-        main_player = make_player(id=5, web_name="Star", team_id=1)
+        draft_player = make_draft_player(id=900, code=4900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, code=4900, web_name="Star", team_id=1)
         league_details = self._league_details(
             standings=[{"league_entry": 10, "event_total": 70, "total": 500}],
             entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
@@ -2099,8 +2112,8 @@ class TestDraftPointInTimeReconstruction:
     async def test_ae8_replay_leaves_total_and_position_unavailable(self):
         """Covers AE8: no ledger exists yet in Phase A, so a replay can never
         reconstruct a cumulative total or a league position for draft."""
-        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
-        main_player = make_player(id=5, web_name="Star", team_id=1)
+        draft_player = make_draft_player(id=900, code=4900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, code=4900, web_name="Star", team_id=1)
         league_details = self._league_details(
             standings=[{"league_entry": 10, "event_total": 52, "total": 500}],
             entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
@@ -2121,8 +2134,8 @@ class TestDraftPointInTimeReconstruction:
         assert "total unavailable" in block
 
     async def test_reconciliation_silent_when_computed_matches_standings(self):
-        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
-        main_player = make_player(id=5, web_name="Star", team_id=1)
+        draft_player = make_draft_player(id=900, code=4900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, code=4900, web_name="Star", team_id=1)
         league_details = self._league_details(
             standings=[{"league_entry": 10, "event_total": 52, "total": 500}],
             entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
@@ -2139,8 +2152,8 @@ class TestDraftPointInTimeReconstruction:
         assert data["managers"][0]["total_points"] == 500
 
     async def test_reconciliation_raises_on_divergence_naming_manager(self):
-        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
-        main_player = make_player(id=5, web_name="Star", team_id=1)
+        draft_player = make_draft_player(id=900, code=4900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, code=4900, web_name="Star", team_id=1)
         league_details = self._league_details(
             standings=[{"league_entry": 10, "event_total": 999, "total": 500}],
             entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
@@ -2182,19 +2195,23 @@ class TestDraftPointInTimeReconstruction:
 
     async def test_an_unmatched_draft_player_falls_back_to_his_club_for_the_blank(self):
         """issue #169: with no main-game id there is nothing to look up in the
-        gameweek's live data, so the club is all that is left to answer with."""
-        draft_player = make_draft_player(id=900, web_name="Mystery", team=2, element_type=3)
+        gameweek's live data, so the club is all that is left to answer with.
+
+        His draft club 1 is the main game's blanking club 2 (#423)."""
+        draft_player = make_draft_player(id=900, web_name="Mystery", team=1, element_type=3)
         league_details = self._league_details(
             standings=[{"league_entry": 10, "event_total": 0, "total": 500}],
             entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
         )
         picks = {1: {"picks": [{"element": 900, "position": 1}], "subs": []}}
-        client = self._make_draft_client(league_details, [draft_player], [], picks)
+        client = self._make_draft_client(
+            league_details, [draft_player], [], picks, draft_teams=_SWAPPED_DRAFT_TEAMS,
+        )
 
         with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
             data = await collect_draft_recap_data(
                 {"fpl": {"draft_league_id": 1}}, gw=15, live_stats={},
-                players=[], teams={}, is_live_gw=True,
+                players=[], teams={1: make_team(id=1), 2: make_team(id=2)}, is_live_gw=True,
                 bgw_team_ids=frozenset({2}), players_with_fixture=frozenset({900}),
             )
         squad_player = data["managers"][0]["squad"][0]
@@ -2206,9 +2223,9 @@ class TestDraftPointInTimeReconstruction:
         construction. That is a known gap in the mapping, not the wrong
         field, so the live gameweek falls back to the standings number
         instead of killing the whole recap."""
-        matched = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
+        matched = make_draft_player(id=900, code=4900, web_name="Star", team=1, element_type=3)
         mystery = make_draft_player(id=901, web_name="Mystery", team=1, element_type=3)
-        main_player = make_player(id=5, web_name="Star", team_id=1)
+        main_player = make_player(id=5, code=4900, web_name="Star", team_id=1)
         league_details = self._league_details(
             standings=[{"league_entry": 10, "event_total": 70, "total": 500}],
             entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
@@ -2232,8 +2249,8 @@ class TestDraftPointInTimeReconstruction:
         """Draft h2h scores league points, so ties on `total` are common and
         the API breaks them on its own tiebreaks. A live capture uses the
         league's rank/last_rank rather than re-sorting `total`."""
-        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
-        main_player = make_player(id=5, web_name="Star", team_id=1)
+        draft_player = make_draft_player(id=900, code=4900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, code=4900, web_name="Star", team_id=1)
         league_details = self._league_details(
             standings=[
                 {"league_entry": 10, "event_total": 52, "total": 6, "rank": 2, "last_rank": 1},
@@ -2262,8 +2279,8 @@ class TestDraftPointInTimeReconstruction:
         assert by_name["C D"]["previous_rank"] == 3
 
     async def test_standings_without_ranks_still_derive_movement(self):
-        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
-        main_player = make_player(id=5, web_name="Star", team_id=1)
+        draft_player = make_draft_player(id=900, code=4900, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, code=4900, web_name="Star", team_id=1)
         league_details = self._league_details(
             standings=[{"league_entry": 10, "event_total": 52, "total": 500}],
             entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
@@ -5045,7 +5062,7 @@ class TestCollectorLedgerContract:
         assert [f["manager_key"] for f in fines] == [11]
 
     async def test_draft_keys_two_unclaimed_teams_distinctly(self):
-        draft_player = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
+        draft_player = make_draft_player(id=900, code=555, web_name="Star", team=1, element_type=3)
         main_player = make_player(id=5, code=555, web_name="Star", team_id=1)
         league_details = {
             "league": {"name": "Draft League"},
@@ -5078,7 +5095,7 @@ class TestCollectorLedgerContract:
         assert data["league_id"] == 3
 
     async def test_draft_unmatched_player_carries_no_code(self):
-        matched = make_draft_player(id=900, web_name="Star", team=1, element_type=3)
+        matched = make_draft_player(id=900, code=555, web_name="Star", team=1, element_type=3)
         stranger = make_draft_player(id=901, web_name="Nobody", team=1, element_type=3)
         main_player = make_player(id=5, code=555, web_name="Star", team_id=1)
         league_details = {
@@ -5206,7 +5223,8 @@ class TestCollectorGameweekClubs:
         assert transfer["player_in_team_name"] == "Alpha"
 
     async def _draft_data(self, **kwargs):
-        draft_player = make_draft_player(id=900, code=555, web_name="Star", team=2, element_type=3)
+        # Draft club 1 is main-game club 2, BET (#423)
+        draft_player = make_draft_player(id=900, code=555, web_name="Star", team=1, element_type=3)
         main_player = make_player(id=5, code=555, web_name="Star", team_id=2)
         league_details = {
             "league": {"name": "Draft League"},
@@ -5220,7 +5238,9 @@ class TestCollectorGameweekClubs:
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
         client.get_league_details = AsyncMock(return_value=league_details)
-        client.get_bootstrap_static = AsyncMock(return_value={"elements": [draft_player]})
+        client.get_bootstrap_static = AsyncMock(
+            return_value={"elements": [draft_player], "teams": _SWAPPED_DRAFT_TEAMS},
+        )
         client.get_league_transactions = AsyncMock(return_value={"transactions": []})
         client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])
         with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
@@ -5323,8 +5343,10 @@ class TestCollectorGameweekClubs:
             )
 
     async def test_an_unmatched_draft_player_keeps_the_draft_bootstraps_club(self):
-        """No main-game id, so nothing to look the gameweek's answer up by."""
-        stranger = make_draft_player(id=901, code=777, web_name="Nobody", team=2, element_type=3)
+        """No main-game id, so nothing to look the gameweek's answer up by.
+
+        His draft club 1 is main-game club 2, BET (#423)."""
+        stranger = make_draft_player(id=901, code=777, web_name="Nobody", team=1, element_type=3)
         main_player = make_player(id=5, code=555, web_name="Star", team_id=2)
         league_details = {
             "league": {"name": "Draft League"},
@@ -5338,7 +5360,9 @@ class TestCollectorGameweekClubs:
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
         client.get_league_details = AsyncMock(return_value=league_details)
-        client.get_bootstrap_static = AsyncMock(return_value={"elements": [stranger]})
+        client.get_bootstrap_static = AsyncMock(
+            return_value={"elements": [stranger], "teams": _SWAPPED_DRAFT_TEAMS},
+        )
         client.get_league_transactions = AsyncMock(return_value={"transactions": []})
         client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])
 
@@ -5369,9 +5393,11 @@ class TestDraftLostClaims:
         row the bucketing actually keeps -- an entry absent from
         `league_entries` is dropped before any of this runs.
         """
-        elanga = make_draft_player(id=900, code=555, web_name="Elanga", team=1, element_type=3)
-        savio = make_draft_player(id=901, code=666, web_name="Savio", team=2, element_type=3)
-        keeper = make_draft_player(id=902, code=777, web_name="Keeper", team=1, element_type=1)
+        # Draft clubs swapped against the main game's (#423): Elanga's draft
+        # club 2 is main-game club 1, ALP, and Savio's 1 is main-game 2, BET
+        elanga = make_draft_player(id=900, code=555, web_name="Elanga", team=2, element_type=3)
+        savio = make_draft_player(id=901, code=666, web_name="Savio", team=1, element_type=3)
+        keeper = make_draft_player(id=902, code=777, web_name="Keeper", team=2, element_type=1)
         main_elanga = make_player(id=5, code=555, web_name="Elanga", team_id=1)
         main_savio = make_player(id=6, code=666, web_name="Savio", team_id=2)
         main_keeper = make_player(id=7, code=777, web_name="Keeper", team_id=1)
@@ -5397,7 +5423,7 @@ class TestDraftLostClaims:
         client.__aexit__ = AsyncMock(return_value=False)
         client.get_league_details = AsyncMock(return_value=league_details)
         client.get_bootstrap_static = AsyncMock(
-            return_value={"elements": [elanga, savio, keeper]}
+            return_value={"elements": [elanga, savio, keeper], "teams": _SWAPPED_DRAFT_TEAMS}
         )
         client.get_league_transactions = AsyncMock(return_value={"transactions": txns})
         client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])

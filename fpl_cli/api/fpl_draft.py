@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping, Sequence
-from typing import Any, Self
+from collections.abc import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Self
 
 import httpx
 
 from fpl_cli.models.player import POSITION_MAP, Player, usable_code
 from fpl_cli.utils.text import strip_diacritics
+
+if TYPE_CHECKING:
+    from fpl_cli.models.team import Team
 
 logger = logging.getLogger(__name__)
 
@@ -493,14 +496,22 @@ class FPLDraftClient:
 
         return releases
 
-    def parse_player(self, player_data: dict[str, Any]) -> dict[str, Any]:
+    def parse_player(
+        self,
+        player_data: dict[str, Any],
+        team_ids: Mapping[int, int],
+    ) -> dict[str, Any]:
         """Parse raw player data into a cleaner format.
 
         Args:
             player_data: Raw player data from the API.
+            team_ids: Draft team id to main-game team id, from
+                `match_draft_teams_to_main`. Required rather than defaulted,
+                so no caller can emit a draft club id by forgetting it.
 
         Returns:
-            Cleaned player data.
+            Cleaned player data. `team_id` is the **main-game** team id, or
+            None for a club the main game's team list does not carry.
         """
         return {
             "id": player_data.get("id"),
@@ -513,7 +524,9 @@ class FPLDraftClient:
             "player_name": player_data.get("web_name", ""),
             "first_name": player_data.get("first_name", ""),
             "second_name": player_data.get("second_name", ""),
-            "team_id": player_data.get("team"),
+            # Translated here, once, because everything downstream (fixtures,
+            # form, FDR, matchup) is keyed by the main game's team id (#423).
+            "team_id": draft_element_team_id(player_data, team_ids),
             "position": POSITION_MAP.get(player_data.get("element_type", 0), "???"),
             "total_points": player_data.get("total_points", 0),
             "ppg": float(player_data.get("points_per_game", 0)),
@@ -530,9 +543,62 @@ class FPLDraftClient:
         }
 
 
+def match_draft_teams_to_main(
+    draft_teams: Iterable[Mapping[str, Any]],
+    main_teams: Iterable[Team],
+) -> dict[int, int]:
+    """Map draft team ids onto the main-game team id of the same club.
+
+    Each game publishes its own `teams` list and numbers it 1-20 for the
+    season. The two numberings agree today, but nothing ties them together:
+    a draft relaunch out of step with the main game at a season change would
+    leave every draft club id naming a different main-game club, and every
+    read of one against main-game fixtures, form or team data would pick
+    that club silently. Both lists carry `code`, the club's permanent
+    identifier, so `code` is the join (#423). It is the club-level
+    counterpart of `match_draft_to_main`.
+
+    A club whose code is missing from either side is absent, so a lookup
+    finds no club rather than whichever one happens to share the number.
+    """
+    main_by_code: dict[int, int] = {}
+    for team in main_teams:
+        code = usable_code(team.code)
+        if code is not None:
+            main_by_code[code] = team.id
+
+    matched: dict[int, int] = {}
+    for team in draft_teams:
+        draft_id = team.get("id")
+        code = usable_code(team.get("code"))
+        if not isinstance(draft_id, int) or code is None:
+            continue
+        main_id = main_by_code.get(code)
+        if main_id is not None:
+            matched[draft_id] = main_id
+    return matched
+
+
+def draft_element_team_id(
+    element: Mapping[str, Any],
+    team_ids: Mapping[int, int],
+) -> int | None:
+    """The main-game team id of a raw draft element's club, or None.
+
+    A draft element's `team` is the draft game's own team id. *team_ids* is
+    `match_draft_teams_to_main`'s output, and None means the club has no
+    main-game counterpart: the raw id is never passed through, because it
+    would name whichever main-game club shares the number.
+    """
+    team = element.get("team")
+    return team_ids.get(team) if isinstance(team, int) else None
+
+
 def match_draft_to_main(
     draft_elements: Sequence[dict[str, Any]],
     main_players: Sequence[Player],
+    *,
+    team_ids: Mapping[int, int] | None = None,
 ) -> dict[int, Player]:
     """Map draft element IDs onto the main-game player they represent.
 
@@ -543,6 +609,11 @@ def match_draft_to_main(
     every other field (#168). Names survive only as a fallback for an element
     with no code, folded for diacritics and paired with the team so two
     players sharing a surname stay apart.
+
+    The fallback's team is the main game's, so it runs only when *team_ids*
+    (`match_draft_teams_to_main`) can translate the element's draft team.
+    Without it a code-less element goes unmatched rather than being paired
+    on a draft team id read as a main-game one (#423).
 
     Returns only the draft IDs that matched; a missing key is a genuine miss.
     """
@@ -558,8 +629,8 @@ def match_draft_to_main(
             continue
         code = dp.get("code")
         main_player = by_code.get(code) if code else None
-        if main_player is None:
-            name, team = dp.get("web_name"), dp.get("team")
+        if main_player is None and team_ids is not None:
+            name, team = dp.get("web_name"), draft_element_team_id(dp, team_ids)
             if name and team is not None:
                 main_player = by_name_team.get((strip_diacritics(name).lower(), team))
         if main_player is not None:

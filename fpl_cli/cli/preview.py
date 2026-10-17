@@ -55,7 +55,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
     from fpl_cli.agents.data.price import PriceAgent
     from fpl_cli.agents.orchestration.report import ReportAgent
     from fpl_cli.api.fpl import FPLClient
-    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_to_main
+    from fpl_cli.api.fpl_draft import FPLDraftClient, match_draft_teams_to_main, match_draft_to_main
     from fpl_cli.services.team_ratings import fdr_columns_footer
     from fpl_cli.utils.time import format_deadline, format_generated_at, format_kickoff
 
@@ -239,6 +239,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                     # O(1) lookup for draft→main FPL player mapping
                     matched_main = match_draft_to_main(
                         draft_bootstrap.get("elements", []), all_players,
+                        team_ids=match_draft_teams_to_main(draft_bootstrap.get("teams", []), teams),
                     )
                     draft_squad = []
                     for pick in picks:

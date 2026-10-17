@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
-from tests.conftest import make_fixture, make_player, make_team
+from tests.conftest import make_draft_team, make_fixture, make_player, make_team, team_code_for
 
 
 def _make_mocks():
@@ -128,7 +128,7 @@ class TestPlayerHistory:
         mock_profile.minutes_per_start = [89.7, 90.3]
         mock_profile.seasons = [
             MagicMock(
-                season="2023-24", team_id=1, total_points=230, minutes=2600,
+                season="2023-24", team_code=1, total_points=230, minutes=2600,
                 starts=29, goals=15, assists=11,
                 expected_goal_involvements=23.0, start_cost=125, end_cost=125, position="MID",
             ),
@@ -640,7 +640,7 @@ class TestPlayerJsonOutput:
         mock_profile = MagicMock()
         mock_profile.seasons = [
             MagicMock(
-                season="2023-24", team_id=1, total_points=230, minutes=2600,
+                season="2023-24", team_code=1, total_points=230, minutes=2600,
                 starts=29, goals=15, assists=11,
                 expected_goal_involvements=23.0, start_cost=125, end_cost=125,
             ),
@@ -671,6 +671,7 @@ class TestPlayerJsonOutput:
         player_data = json.loads(result.output)["data"][0]
         assert "history" in player_data
         assert player_data["history"]["seasons"][0]["season"] == "2023-24"
+        assert player_data["history"]["seasons"][0]["team_code"] == 1
         assert "trends" in player_data["history"]
 
     def test_json_set_pieces_present_when_assigned(self):
@@ -1305,7 +1306,12 @@ class TestUnderstatFetchDeferral:
 
 
 def _make_draft_client():
-    """FPLDraftClient mock owning Salah (draft id 99) via entry 7."""
+    """FPLDraftClient mock owning Salah (draft id 99) via entry 7.
+
+    The element carries no code, so it joins on name and club, and its club
+    is draft team 5, which is main-game team 1 by club code: the join only
+    lands if the draft club is translated first (#423).
+    """
     mock = MagicMock()
     mock.get_league_details = AsyncMock(return_value={
         "league_entries": [
@@ -1313,7 +1319,8 @@ def _make_draft_client():
         ],
     })
     mock.get_bootstrap_static = AsyncMock(return_value={
-        "elements": [{"id": 99, "web_name": "Salah", "team": 1}],
+        "elements": [{"id": 99, "web_name": "Salah", "team": 5}],
+        "teams": [make_draft_team(id=5, code=team_code_for(1), short_name="LIV")],
     })
     mock.get_league_ownership = AsyncMock(return_value={99: 7})
     mock.__aenter__ = AsyncMock(return_value=mock)

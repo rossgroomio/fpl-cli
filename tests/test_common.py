@@ -124,9 +124,11 @@ class TestEnrichPlayer:
         """Integration test using real draft API parse flow."""
         from fpl_cli.api.fpl_draft import FPLDraftClient
         client = FPLDraftClient()
-        team_map = {14: make_draft_team(id=14, name="Liverpool", short_name="LIV")}
+        # Keyed by the main-game id parse_player emits: draft club 14 is
+        # main-game club 12 here (#423)
+        team_map = {12: make_draft_team(id=14, name="Liverpool", short_name="LIV")}
         raw = make_draft_player(id=1, web_name="Salah", team=14, element_type=3, minutes=1800)
-        player = client.parse_player(raw)
+        player = client.parse_player(raw, {14: 12})
         result = enrich_player(player, team_map)
 
         assert result["team_name"] == "Liverpool"
@@ -256,7 +258,14 @@ class TestGetActualSquadPicks:
 
 
 class TestGetDraftSquadPlayersDiacritics:
-    """Verify draft-to-main mapping handles accented name mismatches."""
+    """Verify draft-to-main mapping handles accented name mismatches.
+
+    The join is `code`, so a spelling difference between the two games
+    cannot break it (#168). The name fallback for an element with no code
+    needs the draft club translated to the main game's numbering (#423),
+    which this helper cannot do from main-game players alone, so such an
+    element is reported unmapped rather than paired on a guessed club.
+    """
 
     @staticmethod
     def _mock_draft_client(draft_elements: list[dict], picks: list[dict]):
@@ -271,8 +280,8 @@ class TestGetDraftSquadPlayersDiacritics:
 
     async def test_accented_main_ascii_draft(self):
         """Main FPL has 'Gyökeres', Draft API has 'Gyokeres' - should match."""
-        main_players = [make_player(id=10, web_name="Gyökeres", team_id=1)]
-        draft_elements = [{"id": 100, "web_name": "Gyokeres", "team": 1}]
+        main_players = [make_player(id=10, code=4010, web_name="Gyökeres", team_id=1)]
+        draft_elements = [{"id": 100, "code": 4010, "web_name": "Gyokeres", "team": 1}]
         picks = [{"element": 100}]
 
         client = self._mock_draft_client(draft_elements, picks)
@@ -282,8 +291,8 @@ class TestGetDraftSquadPlayersDiacritics:
 
     async def test_ascii_main_accented_draft(self):
         """Main FPL has 'Raul', Draft API has 'Raúl' - should match."""
-        main_players = [make_player(id=20, web_name="Raul", team_id=3)]
-        draft_elements = [{"id": 200, "web_name": "Raúl", "team": 3}]
+        main_players = [make_player(id=20, code=4020, web_name="Raul", team_id=3)]
+        draft_elements = [{"id": 200, "code": 4020, "web_name": "Raúl", "team": 3}]
         picks = [{"element": 200}]
 
         client = self._mock_draft_client(draft_elements, picks)
@@ -293,14 +302,27 @@ class TestGetDraftSquadPlayersDiacritics:
 
     async def test_non_accented_still_matches(self):
         """Plain ASCII names still match as before."""
-        main_players = [make_player(id=30, web_name="Haaland", team_id=2)]
-        draft_elements = [{"id": 300, "web_name": "Haaland", "team": 2}]
+        main_players = [make_player(id=30, code=4030, web_name="Haaland", team_id=2)]
+        draft_elements = [{"id": 300, "code": 4030, "web_name": "Haaland", "team": 2}]
         picks = [{"element": 300}]
 
         client = self._mock_draft_client(draft_elements, picks)
         squad = await get_draft_squad_players(client, main_players, 1, 1)
         assert len(squad) == 1
         assert squad[0].id == 30
+
+    async def test_a_codeless_element_is_reported_not_paired_on_its_club(self):
+        """Draft club 2 need not be main-game club 2, so the namesake there
+        is not evidence of the same player (#423)."""
+        main_players = [make_player(id=30, web_name="Haaland", team_id=2)]
+        draft_elements = [{"id": 300, "web_name": "Haaland", "team": 2}]
+        logged: list[str] = []
+
+        client = self._mock_draft_client(draft_elements, [{"element": 300}])
+        squad = await get_draft_squad_players(client, main_players, 1, 1, log=logged.append)
+
+        assert squad == []
+        assert logged == ["Draft: could not map 'Haaland' to main FPL data"]
 
 
 class TestGetDraftOwnershipMapping:
@@ -312,7 +334,7 @@ class TestGetDraftOwnershipMapping:
             ],
         })
         client.get_bootstrap_static = AsyncMock(return_value={
-            "elements": [{"id": 99, "web_name": "Salah", "team": 1}],
+            "elements": [{"id": 99, "code": 118748, "web_name": "Salah", "team": 1}],
         })
         client.get_league_ownership = AsyncMock(return_value={99: 7})
         return client
@@ -331,7 +353,7 @@ class TestGetDraftOwnershipMapping:
         client = self._make_client()
 
         owned, entries, main_to_draft = await get_draft_ownership_mapping(
-            client, [make_player(id=1, web_name="Salah", team_id=1)], 12345,
+            client, [make_player(id=1, code=118748, web_name="Salah", team_id=1)], 12345,
         )
 
         assert owned == {99: 7}

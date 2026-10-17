@@ -164,6 +164,13 @@ class TestFdrFormatAwareSquad:
         client.get_entry_picks = AsyncMock(return_value=picks_data)
         return client
 
+    def _mock_main_client(self):
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_teams = AsyncMock(return_value=[])
+        return client
+
     def test_draft_format_auto_selects_draft_squad(self):
         """--my-squad in draft format uses draft squad without --draft flag."""
         from fpl_cli.cli.fdr import fdr_command
@@ -187,6 +194,7 @@ class TestFdrFormatAwareSquad:
             patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
             patch("fpl_cli.cli.fdr.get_settings", return_value={"fpl": {"draft_entry_id": 999}}),
             patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=self._mock_main_client()),
             patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
             patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
             patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,

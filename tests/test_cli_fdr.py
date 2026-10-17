@@ -8,17 +8,33 @@ from click.testing import CliRunner
 
 from fpl_cli.cli.fdr import fdr_command
 from fpl_cli.services.fixture_predictions import BlankPrediction, Confidence
-from tests.conftest import make_agent, make_draft_player, make_fixture, make_team
+from tests.conftest import make_agent, make_draft_player, make_draft_team, make_fixture, make_team
 
 
-def _make_draft_client(picks_data: dict, bootstrap_elements: list, current_gw: int = 25):
+def _make_draft_client(
+    picks_data: dict,
+    bootstrap_elements: list,
+    current_gw: int = 25,
+    teams: list | None = None,
+):
     """Build a minimal FPLDraftClient context-manager mock."""
     client = MagicMock()
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     client.get_game_state = AsyncMock(return_value={"current_event": current_gw})
-    client.get_bootstrap_static = AsyncMock(return_value={"elements": bootstrap_elements})
+    client.get_bootstrap_static = AsyncMock(
+        return_value={"elements": bootstrap_elements, "teams": teams or []},
+    )
     client.get_entry_picks = AsyncMock(return_value=picks_data)
+    return client
+
+
+def _make_main_teams_client(teams: list):
+    """FPLClient mock serving only the team list the draft squad path reads."""
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get_teams = AsyncMock(return_value=teams)
     return client
 
 
@@ -35,11 +51,32 @@ def mock_fixture_agent():
 
 
 def test_fdr_my_squad_draft_builds_context(mock_fixture_agent):
-    """Draft squad dicts are built correctly from bootstrap elements."""
+    """Draft squad dicts carry the main game's team ids (#423).
+
+    The blanks and doubles the squad is checked against are keyed by the main
+    game's numbering, and the two games number clubs independently: here
+    draft club 14 is main-game club 12 and draft 13 is main-game 11, joined by
+    club code. A squad carrying the raw draft id would be checked against
+    whichever club holds that number in the main game.
+    """
     player_a = make_draft_player(id=10, web_name="Salah", team=14, element_type=3)
     player_b = make_draft_player(id=11, web_name="Haaland", team=13, element_type=4)
-    picks_data = {"picks": [{"element": 10}, {"element": 11}]}
-    draft_client = _make_draft_client(picks_data, [player_a, player_b], current_gw=25)
+    player_c = make_draft_player(id=12, web_name="Stranger", team=20, element_type=2)
+    picks_data = {"picks": [{"element": 10}, {"element": 11}, {"element": 12}]}
+    draft_client = _make_draft_client(
+        picks_data, [player_a, player_b, player_c], current_gw=25,
+        teams=[
+            make_draft_team(id=13, code=43, short_name="MCI"),
+            make_draft_team(id=14, code=14, short_name="LIV"),
+            make_draft_team(id=20, code=999, short_name="XXX"),
+        ],
+    )
+    main_client = _make_main_teams_client([
+        make_team(id=11, code=43, short_name="MCI"),
+        make_team(id=12, code=14, short_name="LIV"),
+        make_team(id=13, code=7, short_name="AVL"),
+        make_team(id=14, code=90, short_name="BUR"),
+    ])
 
     captured_context: list = []  # use list to capture from closure
 
@@ -55,6 +92,7 @@ def test_fdr_my_squad_draft_builds_context(mock_fixture_agent):
         patch("fpl_cli.cli.fdr.custom_analysis_enabled", return_value=True),
         patch("fpl_cli.cli.fdr.get_settings", return_value={"fpl": {"draft_entry_id": 999}}),
         patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+        patch("fpl_cli.api.fpl.FPLClient", return_value=main_client),
         patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=mock_fixture_agent),
         patch("fpl_cli.services.team_ratings.TeamRatingsService") as mock_ratings,
         patch("fpl_cli.cli.fdr.FixturePredictionsService") as mock_preds,
@@ -70,9 +108,12 @@ def test_fdr_my_squad_draft_builds_context(mock_fixture_agent):
     assert result.exit_code == 0, result.output
     assert len(captured_context) == 1
     squad = captured_context[0]["squad"]
-    assert len(squad) == 2
-    assert {"team_id": 14, "element_type": 3, "web_name": "Salah"} in squad
-    assert {"team_id": 13, "element_type": 4, "web_name": "Haaland"} in squad
+    assert squad == [
+        {"team_id": 12, "element_type": 3, "web_name": "Salah"},
+        {"team_id": 11, "element_type": 4, "web_name": "Haaland"},
+        # A club the main game does not list is no club, never the raw id
+        {"team_id": None, "element_type": 2, "web_name": "Stranger"},
+    ]
 
 
 def test_fdr_surfaces_ratings_warning_from_agent(mock_fixture_agent):

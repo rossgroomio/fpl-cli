@@ -358,7 +358,8 @@ def build_player_evaluation(
         ownership=float(_get("ownership", 0) or _get("selected_by_percent", 0) or 0),
         status=_extract_status(_get("status", "a")),
         chance_of_playing=chance_of_playing,
-        team_id=int(_get("team_id", 0)),
+        # None for a draft club the main game does not list (#423)
+        team_id=int(_get("team_id", 0) or 0),
         team_short=str(_get("team_short", "")),
         penalties_order=_get("penalties_order"),
         corners_and_indirect_freekicks_order=_get("corners_and_indirect_freekicks_order"),
