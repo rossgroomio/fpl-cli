@@ -6,8 +6,7 @@ import json
 import logging
 import os
 import shlex
-from collections.abc import Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -34,13 +33,19 @@ class PlayerSellPrice:
     purchase_price: float = 0.0
     element_id: int | None = None
     code: int | None = None  # cross-game key; None on a cache scraped before it was stored
-    # The player's price when the scrape ran, so `reprice_squad` can check the
-    # sell-on rule against FPL's own figure before trusting it with a later
-    # price. None on a cache scraped before it was stored.
+    # The player's price when the scrape ran, so `reprice_squad`
+    # (`services/sell_prices.py`) can check the sell-on rule against FPL's own
+    # figure before trusting it with a later price. None on a cache scraped
+    # before it was stored.
     price_at_scrape: float | None = None
-    # Set by `reprice_squad` to the scraped figure, which `sell_price` may since
-    # have moved on from; None on a row it has not repriced. Never cached.
-    scraped_sell_price: float | None = None
+    # FPL's figure, kept by `reprice_squad` when it moves `sell_price` on to
+    # today's. Read it through `scraped_sell_price`.
+    _scraped: float | None = None
+
+    @property
+    def scraped_sell_price(self) -> float:
+        """FPL's own sell price from the scrape, whatever `sell_price` has since moved on to."""
+        return self.sell_price if self._scraped is None else self._scraped
 
     @property
     def profit_loss(self) -> float:
@@ -52,14 +57,17 @@ class PlayerSellPrice:
     def is_player(self, player: Player) -> bool:
         """Whether this row is *player*: the same id, and the same footballer by `code`.
 
-        On id and `code`, never name: a name match let an outgoing player whose
+        On id, never on name alone: a name match let an outgoing player whose
         name sits inside a squadmate's take that squadmate's price (#426). The
-        `code` check stops a cache from an earlier season, which numbered its
-        players differently, matching whoever holds the id now.
+        second check stops a cache from an earlier season, which numbered its
+        players differently, matching whoever holds the id now; a row scraped
+        before `code` was stored makes it on the name instead.
         """
         if self.element_id is None or self.element_id != player.id:
             return False
-        return self.code is None or self.code == usable_code(player.code)
+        if self.code is None:
+            return self.name == player.web_name
+        return self.code == usable_code(player.code)
 
 
 _POSITION_ORDER = {"GKP": 0, "GK": 0, "DEF": 1, "MID": 2, "FWD": 3}
@@ -127,7 +135,9 @@ class TeamFinances:
             "squad": [
                 {
                     "name": p.name,
-                    "sell_price": p.sell_price,
+                    # FPL's figure, never a repriced one: the next load checks
+                    # the sell-on rule against it.
+                    "sell_price": p.scraped_sell_price,
                     "position": p.position,
                     "purchase_price": p.purchase_price,
                     "element_id": p.element_id,
@@ -164,86 +174,6 @@ class TeamFinances:
             scraped_at=data.get("scraped_at", ""),
             extraction_errors=data.get("extraction_errors", []),
         )
-
-
-def selling_price(purchase: int, current: int) -> int:
-    """FPL's sell price for a player bought at *purchase* and now priced at *current*.
-
-    Both in £0.1m units. A fall is taken in full; of a rise the seller keeps
-    half, rounded down, since the 50% sell-on fee rounds up (`docs/fpl-rules.md`).
-    """
-    if current <= purchase:
-        return current
-    return purchase + (current - purchase) // 2
-
-
-def _tenths(millions: float) -> int:
-    return round(millions * 10)
-
-
-def _sell_price_today(row: PlayerSellPrice, player: Player | None) -> float | None:
-    """*row*'s sell price at *player*'s price today, or None if it cannot be vouched for."""
-    if player is None or not row.is_player(player):
-        return None
-    scraped = _tenths(row.sell_price)
-    purchase = _tenths(row.purchase_price)
-    today = player.now_cost
-    if row.price_at_scrape is not None:
-        at_scrape = _tenths(row.price_at_scrape)
-        if today == at_scrape:
-            return row.sell_price
-        # The rule is trusted for this row only if it reproduces what FPL
-        # itself said at the scrape. A purchase price of 0 is unknown.
-        if purchase and selling_price(purchase, at_scrape) == scraped:
-            return selling_price(purchase, today) / 10
-        return None
-    # A cache from before scrape-time prices were stored has nothing to check
-    # the rule against, so it is never repriced; the scraped figure stands
-    # only where today's price still gives it.
-    if purchase and selling_price(purchase, today) == scraped:
-        return row.sell_price
-    return None
-
-
-@dataclass
-class Repricing:
-    """A cached squad brought forward to today's prices by `reprice_squad`."""
-    finances: TeamFinances
-    # Rows whose sell price changed with a price change since the scrape.
-    updated: list[PlayerSellPrice] = field(default_factory=list)
-    # Rows left as scraped because they could not be checked: they may be out of date.
-    unverified: list[PlayerSellPrice] = field(default_factory=list)
-
-
-def reprice_squad(finances: TeamFinances, players: Iterable[Player]) -> Repricing:
-    """Recompute each cached sell price from its purchase price and today's price.
-
-    Prices move overnight, so a cached sell price goes stale on the first price
-    change after the scrape, while the squad, bank and free transfers stay
-    right until the next transfer. The rule is plain arithmetic, but it is
-    applied to a row only once it has reproduced FPL's own figure at the
-    scrape; a row it cannot check keeps the scraped price and is listed in
-    `unverified`. The result is a view for this run: the cache keeps FPL's
-    figures, which the next load checks the rule against again.
-    """
-    by_id = {p.id: p for p in players}
-    squad: list[PlayerSellPrice] = []
-    updated: list[PlayerSellPrice] = []
-    unverified: list[PlayerSellPrice] = []
-    for row in finances.squad:
-        player = by_id.get(row.element_id) if row.element_id is not None else None
-        today = _sell_price_today(row, player)
-        repriced = replace(
-            row,
-            sell_price=row.sell_price if today is None else today,
-            scraped_sell_price=row.sell_price,
-        )
-        squad.append(repriced)
-        if today is None:
-            unverified.append(repriced)
-        elif _tenths(today) != _tenths(row.sell_price):
-            updated.append(repriced)
-    return Repricing(replace(finances, squad=squad), updated, unverified)
 
 
 def cache_file() -> Path:

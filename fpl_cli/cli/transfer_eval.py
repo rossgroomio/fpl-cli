@@ -61,7 +61,8 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
         resolve_player_or_report,
         resolve_players_or_report,
     )
-    from fpl_cli.scraper.fpl_prices import load_cache, reprice_squad
+    from fpl_cli.scraper.fpl_prices import load_cache
+    from fpl_cli.services.sell_prices import out_player_warnings, reprice_squad
 
     fmt = get_format(ctx)
     # Resolved here rather than inside the renderer: the settings live on the
@@ -137,7 +138,11 @@ def transfer_eval_command(ctx: click.Context, out_player: str, in_players: str, 
         # Affordability (Classic only), at today's prices rather than the scrape's
         finances = load_cache() if fmt != Format.DRAFT else None
         if finances:
-            finances = reprice_squad(finances, all_players).finances
+            repricing = reprice_squad(finances, all_players)
+            finances = repricing.finances
+            # The early-season notice's channels: `metadata.warnings` or stderr.
+            if sell_warnings := out_player_warnings(repricing, out_resolved):
+                data = {**data, "warnings": [*data.get("warnings", []), *sell_warnings]}
         sell_price = _find_sell_price(finances, out_resolved)
 
         if output_format == "json":

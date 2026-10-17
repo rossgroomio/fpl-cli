@@ -150,15 +150,57 @@ class TestSellPricesAtTodaysPrices:
         assert "Salah" in warning["message"]
         assert "--refresh" in warning["message"]
 
-    def test_an_unreachable_api_leaves_every_price_as_scraped_with_a_warning(self):
+    @pytest.mark.parametrize(("failure", "detail"), [
+        (httpx.ConnectError("connection refused"), "ConnectError"),
+        (httpx.ReadTimeout(""), "ReadTimeout"),
+        (
+            httpx.HTTPStatusError(
+                "503", request=httpx.Request("GET", "https://x/"), response=httpx.Response(503),
+            ),
+            "HTTP 503",
+        ),
+        # A 200 that is not the player list: a maintenance page, a body without `elements`.
+        (json.JSONDecodeError("Expecting value", "<html>", 0), "JSONDecodeError"),
+        (KeyError("elements"), "KeyError"),
+    ])
+    def test_a_failed_lookup_leaves_every_price_as_scraped_with_a_warning(self, failure, detail):
         client = MagicMock()
-        client.get_players = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+        client.get_players = AsyncMock(side_effect=failure)
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
-        with patch("fpl_cli.api.fpl.FPLClient", return_value=client):
-            envelope = _run_json(_make_finances())
+        with patch("fpl_cli.api.fpl.FPLClient", return_value=client), \
+             patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=_make_finances()):
+            result = CliRunner().invoke(sell_prices_command, ["--format", "json"], catch_exceptions=False)
 
+        assert result.exit_code == 0, result.stderr
+        envelope = json.loads(result.stdout)
         assert [row["sell_price"] for row in envelope["data"]] == [13.0, 14.5]
         [warning] = envelope["metadata"]["warnings"]
         assert warning["code"] == "sell_prices_as_scraped"
-        assert "Could not fetch today's prices" in warning["message"]
+        assert warning["message"] == (
+            f"Could not fetch today's prices ({detail}), so every sell price is as"
+            " scraped and may be out of date."
+        )
+
+    def test_the_note_and_warning_reach_stderr_under_json_too(self, today):
+        """The skills write the envelope to a file, so stderr is what they see."""
+        finances = _make_finances()
+        finances.squad[1].purchase_price = 0.0  # Haaland can no longer be checked
+        today[:] = _today(salah=137, haaland=147)
+        with patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=finances):
+            result = CliRunner().invoke(sell_prices_command, ["--format", "json"], catch_exceptions=False)
+
+        stderr = result.stderr.replace("\n", " ")  # Rich wraps at the terminal width
+        assert "1 sell price updated for price changes since the scrape: Salah" in stderr
+        assert "1 of 2 sell prices could not be checked" in stderr
+        assert json.loads(result.stdout)["command"] == "sell-prices"
+
+    def test_a_cache_without_player_ids_is_refused_before_any_lookup(self):
+        client = MagicMock()
+        with patch("fpl_cli.api.fpl.FPLClient", return_value=client), \
+             patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=_make_finances(with_element_ids=False)):
+            result = CliRunner().invoke(sell_prices_command, ["--format", "json"])
+
+        assert result.exit_code == 1
+        assert "player IDs" in json.loads(result.stdout)["error"]
+        client.get_players.assert_not_called()

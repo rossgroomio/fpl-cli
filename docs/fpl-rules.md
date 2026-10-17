@@ -149,7 +149,7 @@ Unlimited free transfers before your first deadline. After that: 1 free transfer
 Does not apply in 2026-27. AFCON is biennial: the 2025 edition ran Dec 2025 into Jan 2026 and fell inside the 2025-26 season, and the next is Jun-Jul 2027, in the off-season. There is no mid-season top-up to 5 free transfers this year.
 
 ### Player Prices
-Prices fluctuate based on transfer market popularity (changes begin when the season starts). Selling price includes a **50% sell-on fee** (rounded up to nearest £0.1m) on any profit.
+Prices fluctuate based on transfer market popularity (changes begin when the season starts). Selling price includes a **50% sell-on fee** (rounded up to nearest £0.1m) on any profit, so the seller keeps half of a rise rounded down: bought at £5.0m, a player sells for £5.0m at £5.1m and £5.1m at £5.2m. A fall below the purchase price is taken in full: the selling price is the current price.
 
 ### Chips
 One chip per GW. Each chip is available **twice per season**, split at the GW19 deadline:

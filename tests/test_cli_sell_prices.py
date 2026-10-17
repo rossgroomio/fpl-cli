@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
@@ -153,6 +154,21 @@ class TestPriceChangesSinceTheScrape:
         assert "1 of 3 sell prices could not be checked" in warning
         assert "Haaland" in warning
         assert "could not be checked" not in result.stdout
+
+
+    def test_a_failed_lookup_still_shows_the_cache(self):
+        client = MagicMock()
+        client.get_players = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        with patch("fpl_cli.api.fpl.FPLClient", return_value=client), \
+             patch("fpl_cli.scraper.fpl_prices.load_cache", return_value=_make_finances()):
+            result = CliRunner().invoke(sell_prices_command)
+
+        assert result.exit_code == 0, result.output
+        assert "Squad Budget" in result.stdout
+        assert "Haaland" in result.stdout
+        assert "Could not fetch today's prices (ConnectError)" in result.stderr.replace("\n", " ")
 
 
 class TestNoCache:

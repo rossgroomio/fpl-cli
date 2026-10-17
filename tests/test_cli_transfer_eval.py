@@ -193,9 +193,38 @@ class TestTransferEvalAffordability:
         result = _run_cmd(["--out", "Palmer", "--in", "Mbeumo", "--format", "json"], finances=finances)
 
         assert result.exit_code == 0, result.output
-        data = json.loads(result.stdout)["data"]
-        assert data["out_player"]["sell_price"] == 9.8
-        assert data["in_players"][1]["itb"] == 4.3  # 2.0 bank + 9.8 sell - 7.5 Mbeumo
+        envelope = json.loads(result.stdout)
+        assert envelope["data"]["out_player"]["sell_price"] == 9.8
+        assert envelope["data"]["in_players"][1]["itb"] == 4.3  # 2.0 bank + 9.8 sell - 7.5 Mbeumo
+        assert envelope["metadata"]["warnings"] == []
+
+    def test_an_unchecked_sell_price_is_warned_about_beside_the_affordability(self):
+        """Scraped at 9.8 for a sell of 9.6 bought at 9.6: the rule says 9.7, so it is not trusted."""
+        finances = self._make_finances(bank=2.0, sell_price=9.6, price_at_scrape=9.8)
+        result = _run_cmd(["--out", "Palmer", "--in", "Mbeumo", "--format", "json"], finances=finances)
+
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.stdout)
+        assert envelope["data"]["out_player"]["sell_price"] == 9.6
+        [warning] = envelope["metadata"]["warnings"]
+        assert warning["code"] == "sell_prices_as_scraped"
+        assert warning["message"].startswith("Palmer's sell price could not be checked")
+
+        table = _run_cmd(["--out", "Palmer", "--in", "Mbeumo"], finances=finances)
+        assert "Palmer's sell price could not be checked" in table.stderr.replace("\n", " ")
+
+    def test_an_out_player_missing_from_the_cache_says_why_affordability_is_absent(self):
+        finances = TeamFinances(
+            bank=2.0, free_transfers=1,
+            squad=[PlayerSellPrice(name="Salah", sell_price=13.0, element_id=20, price_at_scrape=13.0)],
+        )
+        result = _run_cmd(["--out", "Palmer", "--in", "Mbeumo", "--format", "json"], finances=finances)
+
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.stdout)
+        assert envelope["data"]["out_player"]["sell_price"] is None
+        [warning] = envelope["metadata"]["warnings"]
+        assert warning["code"] == "sell_prices_player_not_cached"
 
     def test_budget_shown_when_cache_available(self):
         finances = self._make_finances(bank=2.0, sell_price=10.0)
@@ -235,9 +264,11 @@ class TestFindSellPrice:
         rows = [PlayerSellPrice(name="Palmer", sell_price=10.0, element_id=10, code=1077)]
         assert self._find(rows, make_player(id=10, code=244851, web_name="Palmer")) is None
 
-    def test_a_row_cached_before_codes_were_stored_matches_on_id(self):
+    def test_a_row_cached_before_codes_were_stored_matches_on_id_and_name(self):
         rows = [PlayerSellPrice(name="Palmer", sell_price=10.0, element_id=10)]
         assert self._find(rows, make_player(id=10, code=244851, web_name="Palmer")) == 10.0
+        # Last season's row under an id someone else holds now.
+        assert self._find(rows, make_player(id=10, code=1077, web_name="Saka")) is None
 
 
 class TestTransferEvalQualityValue:
