@@ -86,6 +86,7 @@ from fpl_cli.services.scoring.signals import (
     _assign_percentile_ranks,
     _opponent_factor,
     _rolling_window,
+    compute_median_elo,
 )
 from tests.conftest import make_player
 
@@ -3653,6 +3654,51 @@ class TestOpponentFactor:
         match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=1800.0)
         assert _opponent_factor(match, 0.0) == 1.0
 
+    def test_null_opponent_elo_is_neutral(self):
+        # A null where a number belongs counts at face value rather than raising.
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=None)
+        assert _opponent_factor(match, MEDIAN_ELO) == 1.0
+
+    def test_nan_opponent_elo_is_neutral(self):
+        # NaN fails every comparison, so without a finiteness check it slid
+        # past a `<= 0` guard and landed on the 1.25 cap.
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=float("nan"))
+        assert _opponent_factor(match, MEDIAN_ELO) == 1.0
+
+    def test_missing_opponent_elo_is_neutral(self):
+        match = _make_match(1, xg=0.5, minutes_played=90, opponent_elo=1800.0)
+        del match["opponent_elo"]
+        assert _opponent_factor(match, MEDIAN_ELO) == 1.0
+
+
+class TestComputeMedianElo:
+    def test_median_of_usable_elos(self):
+        records = {
+            1: [_make_match(1, xg=0.5, minutes_played=90, opponent_elo=1600.0)],
+            2: [_make_match(1, xg=0.5, minutes_played=90, opponent_elo=1800.0)],
+        }
+        assert compute_median_elo(records) == pytest.approx(1700.0)
+
+    def test_unusable_elos_do_not_pull_the_median(self):
+        # The factor reads these as unrated, so the median they are compared
+        # against must not count them: a 0 here used to drag the median down
+        # and make every real opponent look stronger than it was.
+        records = {
+            1: [_make_match(1, xg=0.5, minutes_played=90, opponent_elo=1600.0),
+                _make_match(2, xg=0.5, minutes_played=90, opponent_elo=0.0)],
+            2: [_make_match(1, xg=0.5, minutes_played=90, opponent_elo=1800.0),
+                _make_match(2, xg=0.5, minutes_played=90, opponent_elo=float("nan")),
+                _make_match(3, xg=0.5, minutes_played=90, opponent_elo=None)],
+        }
+        assert compute_median_elo(records) == pytest.approx(1700.0)
+
+    def test_falls_back_when_no_match_has_a_usable_elo(self):
+        records = {1: [_make_match(1, xg=0.5, minutes_played=90, opponent_elo=0.0)]}
+        assert compute_median_elo(records) == 1700.0
+
+    def test_empty_falls_back(self):
+        assert compute_median_elo({}) == 1700.0
+
 
 class TestComputeAdjustedNpxg:
     def test_adjustment_scales_up_against_strong_opponent(self):
@@ -4143,6 +4189,27 @@ class TestComputeFloorXgi:
             for gw in range(1, 4)
         ]
         assert compute_floor_xgi(records, current_gw=10, median_elo=MEDIAN_ELO) is None
+
+    def test_floor_reads_a_dip_against_a_strong_side_at_median_strength(self):
+        """The floor is the 25th percentile of output read against median
+        opposition, so a dip against a strong side is lifted, not deepened.
+
+        Output that tracks opponent strength exactly adjusts to one value,
+        which is then the floor; scaled the other way the strong-side
+        matches sink further and the floor reads below it (#439).
+        """
+        records = [
+            _make_match(
+                gw,
+                xg=0.35 if gw % 2 else 0.30,
+                xa=0.10,
+                minutes_played=90,
+                opponent_elo=1600.0 if gw % 2 else 1800.0,
+            )
+            for gw in range(1, 8)
+        ]
+        result = compute_floor_xgi(records, current_gw=10, median_elo=MEDIAN_ELO)
+        assert result == pytest.approx(0.45 * 1600.0 / 1700.0, abs=1e-9)
 
 
 class TestComputeFloorXgiFallback:

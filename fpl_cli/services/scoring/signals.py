@@ -9,7 +9,8 @@ Core-Insights match records.
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any, TypeVar
+import math
+from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar
 
 from fpl_cli.services.scoring.constants import (
     ATTACKING_POSITIONS,
@@ -196,17 +197,27 @@ def compute_xgi_sustainability(
 _CONSISTENCY_MIN_MATCHES = 6
 
 
+def _usable_elo(value: object) -> TypeGuard[float]:
+    """Whether a value is an Elo the adjustment can read: a finite, positive number.
+
+    One rule for the median and the factor alike, so a record the factor
+    treats as unrated can never pull the median it is compared against.
+    """
+    return isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+
+
 def compute_median_elo(
     match_records: dict[int, list[MatchRecord]],
 ) -> float:
-    """Median opponent Elo across all match records, or 1700.0 if empty."""
+    """Median usable opponent Elo across all match records, or 1700.0 if none."""
     import statistics
 
-    all_elos = [
-        r["opponent_elo"]
-        for records in match_records.values()
-        for r in records
-    ]
+    all_elos: list[float] = []
+    for records in match_records.values():
+        for r in records:
+            elo = r.get("opponent_elo")
+            if _usable_elo(elo):
+                all_elos.append(elo)
     return statistics.median(all_elos) if all_elos else 1700.0
 
 
@@ -218,13 +229,13 @@ def _opponent_factor(match: MatchRecord, median_elo: float) -> float:
     one scales up and a match against a weaker side scales down: the
     adjustment exists to take a soft schedule's inflation back out of the
     rate, because the matchup score already credits the easy fixtures
-    (#439). A match whose opponent Elo is missing or non-positive, or a
-    median that is, counts at face value.
+    (#439). A match with no usable opponent Elo (missing, null, NaN or
+    non-positive), or a median that is not usable, counts at face value.
     """
-    opp_elo = match.get("opponent_elo", median_elo)
-    if opp_elo <= 0 or median_elo <= 0:
-        return 1.0
-    return max(0.80, min(1.25, opp_elo / median_elo))
+    opp_elo = match.get("opponent_elo")
+    if _usable_elo(opp_elo) and _usable_elo(median_elo):
+        return max(0.80, min(1.25, opp_elo / median_elo))
+    return 1.0
 
 
 def _elo_adjusted_xgis(
