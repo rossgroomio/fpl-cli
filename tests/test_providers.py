@@ -407,6 +407,41 @@ class TestAnthropicProvider:
         payload = await self._payload(provider, mock_response)
         assert "output_config" not in payload
 
+    @pytest.mark.parametrize("model", [
+        "claude-haiku-4-5", "claude-sonnet-4-5-20250929", "claude-opus-4-1", "claude-sonnet-4-20250514",
+        "claude-3-5-haiku-latest",
+    ])
+    async def test_the_effort_pin_is_left_off_a_model_that_predates_it(self, monkeypatch, mock_response, model):
+        # PR #451 review: these models answer `effort` with a 400, so the
+        # shipped pin would have cost every synthesis call on them. The rest
+        # of the block still goes.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        provider = AnthropicProvider(
+            model=model, query_defaults={"output_config": {"effort": "high", "format": {"type": "text"}}},
+        )
+        payload = await self._payload(provider, mock_response)
+        assert payload["output_config"] == {"format": {"type": "text"}}
+
+    @pytest.mark.parametrize("model", ["claude-opus-4-5", "claude-sonnet-4-6", "claude-opus-5-5", "claude-haiku-5-5"])
+    async def test_the_effort_pin_reaches_every_model_that_takes_it(self, monkeypatch, mock_response, model):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        provider = AnthropicProvider(model=model, query_defaults={"output_config": {"effort": "high"}})
+        payload = await self._payload(provider, mock_response)
+        assert payload["output_config"] == {"effort": "high"}
+
+    @pytest.mark.parametrize("configured", ["high", ["effort", "high"], 3])
+    async def test_a_malformed_output_config_is_refused_by_name(self, monkeypatch, mock_response, configured):
+        # PR #451 review: ignoring it would leave effort at the model's
+        # default with nothing said -- the drift the pin exists to stop.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        provider = AnthropicProvider(query_defaults={"output_config": configured})
+        provider._http = AsyncMock()
+        provider._http.post = AsyncMock(return_value=_make_httpx_response(mock_response))
+
+        with pytest.raises(ProviderError, match="output_config must be a mapping"):
+            await provider.query("test")
+        provider._http.post.assert_not_called()
+
     async def test_the_max_tokens_fallback_leaves_room_to_think(self, provider, mock_response):
         # #450: 1024 was spent on thinking before any text arrived (#316's
         # shape), reachable via FPL_RESEARCH_PROVIDER=anthropic, whose role

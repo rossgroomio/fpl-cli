@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 from typing import Any, ClassVar, Self
 
 import httpx
@@ -18,6 +20,18 @@ from fpl_cli.api.providers._models import (
 
 _BASE_URL = "https://api.anthropic.com/v1"
 _PROVIDER_LABEL = "Anthropic"
+
+logger = logging.getLogger(__name__)
+
+# Models that predate `output_config.effort` (it arrived with Claude Opus 4.5)
+# and answer it with a 400: Claude 3.x and older, Opus/Sonnet 4.0 and 4.1,
+# Sonnet 4.5 and Haiku 4.5, bare or date-suffixed. A closed set -- every model
+# since takes effort -- so unlike an allowlist this cannot go stale and
+# silently drop the pin on the next model, which is the drift pinning it
+# exists to stop (#450).
+_PRE_EFFORT_MODEL_RE = re.compile(
+    r"^claude-(?:[0-3]\b|instant|(?:opus|sonnet)-4(?:-[01])?(?:-\d{8})?$|(?:sonnet|haiku)-4-5\b)"
+)
 
 
 class AnthropicProvider:
@@ -81,15 +95,9 @@ class AnthropicProvider:
         }
         if system_prompt:
             payload["system"] = system_prompt
-        # Effort lives here, so pinning it is a `settings.yaml` edit rather
-        # than whatever the model's own default happens to be (#450). A key
-        # set to null is dropped, which is how a user unpins one for a model
-        # that rejects it; an empty block sends nothing.
-        output_config = merged.get("output_config")
-        if isinstance(output_config, dict):
-            output_config = {k: v for k, v in output_config.items() if v is not None}
-            if output_config:
-                payload["output_config"] = output_config
+        output_config = self._output_config(merged.get("output_config"))
+        if output_config:
+            payload["output_config"] = output_config
 
         headers = {
             "x-api-key": self.api_key,
@@ -140,6 +148,31 @@ class AnthropicProvider:
         log_abnormal_stop(response, _PROVIDER_LABEL)
         log_textless_response(response, _PROVIDER_LABEL, non_text_blocks)
         return response
+
+    def _output_config(self, configured: Any) -> dict[str, Any]:
+        """The `output_config` block to send, from the merged query defaults.
+
+        Effort lives here, so pinning it is a `settings.yaml` edit rather than
+        whatever the model's own default happens to be (#450). A key set to
+        null is dropped, which is how a user unpins one; an empty block sends
+        nothing. The shipped `effort` pin is left off for a model that
+        predates the parameter rather than turning every call into a 400.
+        A block that is not a mapping is refused by name: ignoring it would
+        leave effort at the model's default with nothing said, the very
+        drift the pin is there to prevent.
+        """
+        if configured is None:
+            return {}
+        if not isinstance(configured, dict):
+            raise ProviderError(
+                "query_defaults.output_config must be a mapping such as"
+                f" `output_config: {{effort: high}}`, not {configured!r}"
+            )
+        block = {k: v for k, v in configured.items() if v is not None}
+        if "effort" in block and _PRE_EFFORT_MODEL_RE.match(self.model):
+            logger.debug("%s predates output_config.effort -- not sending it", self.model)
+            del block["effort"]
+        return block
 
     def post_process(self, content: str) -> str:
         return content

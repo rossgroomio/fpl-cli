@@ -40,6 +40,9 @@ class TokenUsage:
     input_tokens: int
     output_tokens: int
 
+    def __add__(self, other: TokenUsage) -> TokenUsage:
+        return TokenUsage(self.input_tokens + other.input_tokens, self.output_tokens + other.output_tokens)
+
 
 # The stop reasons that mean the model finished on its own terms. Anthropic
 # reports `stop_reason`, OpenAI-compatible APIs report `finish_reason`; the two

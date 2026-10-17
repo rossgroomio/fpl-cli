@@ -1330,14 +1330,31 @@ class TestEditorialTelemetry:
         assert result.exit_code == 0, result.stderr
         metadata = json.loads(result.stdout)["metadata"]
         assert metadata["synthesis_attempts"] == 1
+        assert metadata["synthesis_shipped_attempt"] == 1
         assert metadata["synthesis_usage"] == {"input_tokens": 10, "output_tokens": 20}
 
-    def test_a_retried_editorial_counts_two_attempts(self):
+    def test_a_better_retry_ships_and_both_drafts_are_costed(self):
         _, provider = _queued_provider(("Alice ran away with it, and then", "max_tokens"), self._WHOLE)
         with provider:
             result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
 
-        assert json.loads(result.stdout)["metadata"]["synthesis_attempts"] == 2
+        metadata = json.loads(result.stdout)["metadata"]
+        assert metadata["synthesis_attempts"] == 2
+        assert metadata["synthesis_shipped_attempt"] == 2
+        assert metadata["synthesis_usage"] == {"input_tokens": 20, "output_tokens": 40}
+
+    def test_a_retry_that_ranks_no_better_leaves_the_first_shipped(self):
+        # PR #451 review: two drafts judged does not mean the second shipped.
+        _, provider = _queued_provider(
+            ("Alice ran away with it, and then", "max_tokens"), ("Alice", "max_tokens"),
+        )
+        with provider:
+            result = _invoke_recap(_recap_data(), ["--summarise", "--format", "json"])
+
+        metadata = json.loads(result.stdout)["metadata"]
+        assert metadata["synthesis_attempts"] == 2
+        assert metadata["synthesis_shipped_attempt"] == 1
+        assert "Alice ran away with it, and then" in metadata["synthesis_summary"]
 
     @pytest.mark.parametrize("args", [[], ["--dry-run"]])
     def test_null_when_no_editorial_came_back(self, args, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1347,6 +1364,7 @@ class TestEditorialTelemetry:
         assert result.exit_code == 0, result.stderr
         metadata = json.loads(result.stdout)["metadata"]
         assert metadata["synthesis_attempts"] is None
+        assert metadata["synthesis_shipped_attempt"] is None
         assert metadata["synthesis_usage"] is None
 
     def test_a_failed_call_records_no_attempt(self):
@@ -1358,6 +1376,7 @@ class TestEditorialTelemetry:
 
         metadata = json.loads(result.stdout)["metadata"]
         assert metadata["synthesis_attempts"] is None
+        assert metadata["synthesis_shipped_attempt"] is None
         assert metadata["synthesis_usage"] is None
 
     def test_debug_saves_the_prompt_that_drew_the_shipped_editorial(

@@ -66,7 +66,7 @@ RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
 RECAP_WARNING_LEAGUE_TABLES_UPDATING = "league_tables_updating"
 
 if TYPE_CHECKING:
-    from fpl_cli.api.providers import LLMResponse
+    from fpl_cli.api.providers import LLMResponse, TokenUsage
     from fpl_cli.cli._synthesis_retry import SynthesisAttempt
 
 logger = logging.getLogger(__name__)
@@ -631,11 +631,13 @@ def league_recap_command(
                             if capture_result.fines_tally is not None else None
                         ),
                         "synthesis_summary": collected_data.get("synthesis_summary"),
-                        # Which draft shipped (1, or 2 after a retry) and the
-                        # tokens it spent; null whenever no editorial came
-                        # back -- not asked for, a dry run, or a failed call
-                        # (#450).
+                        # Drafts judged (1, or 2 after a retry), which of them
+                        # shipped -- a retry only ships when it ranks better --
+                        # and the tokens every judged draft spent; null
+                        # whenever no editorial came back: not asked for, a
+                        # dry run, or a failed call (#450).
                         "synthesis_attempts": collected_data.get("synthesis_attempts"),
+                        "synthesis_shipped_attempt": collected_data.get("synthesis_shipped_attempt"),
                         "synthesis_usage": collected_data.get("synthesis_usage"),
                         # The skipped editorial rides the same channel as the
                         # capture's own warnings: `synthesis_summary` being
@@ -949,12 +951,12 @@ async def _editorial_with_data_checks(
     prompt: str,
     system_prompt: str,
     collected_data: LeagueRecapData,
-) -> tuple[SynthesisAttempt[dict[str, list[str]]], int]:
+) -> tuple[SynthesisAttempt[dict[str, list[str]]], int, TokenUsage]:
     """Query the editorial, retrying once if it contradicts its own data or
     the provider cut it off at its token ceiling.
 
-    Returns the attempt that ships and the number of answers judged, as
-    `synthesise_with_retry` does. The attempt's verdict is its problems keyed
+    Returns the attempt that ships, the number of answers judged and the
+    tokens they spent between them, as `synthesise_with_retry` does. The attempt's verdict is its problems keyed
     by warning code as `check_recap_editorial()` returns them, and its prompt
     is the one that drew it, so `--debug` saves a pair that replays (#450).
     The attempt loop is the one `review` shares (`synthesise_with_retry`):
@@ -1093,7 +1095,7 @@ async def _recap_llm_summarise(
     elif synthesis_provider:
         try:
             console.print("[dim]  Generating league editorial...[/dim]")
-            shipped, attempts = await _editorial_with_data_checks(
+            shipped, attempts, usage = await _editorial_with_data_checks(
                 synthesis_provider,
                 prompt=user_prompt,
                 system_prompt=system_prompt,
@@ -1102,13 +1104,14 @@ async def _recap_llm_summarise(
             summary, problems, synthesis_result = shipped.text, shipped.verdict, shipped.response
             shipped_prompt = shipped.prompt
             collected_data["synthesis_summary"] = summary
-            # Which draft shipped and what it cost, so a recap that "feels
-            # different" can be read against the last one rather than
-            # guessed at (#450).
+            # How many drafts were judged, which one shipped, and what they
+            # cost between them, so a recap that "feels different" can be
+            # read against the last one rather than guessed at (#450).
             collected_data["synthesis_attempts"] = attempts
+            collected_data["synthesis_shipped_attempt"] = shipped.number
             collected_data["synthesis_usage"] = {
-                "input_tokens": synthesis_result.usage.input_tokens,
-                "output_tokens": synthesis_result.usage.output_tokens,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
             }
             if problems:
                 # Kept, not scrubbed: the rest of the editorial is sound, and

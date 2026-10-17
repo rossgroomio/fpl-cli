@@ -435,11 +435,13 @@ class LeagueRecapData(TypedDict):
     # `stop_details.category`), so every surface that says "refused" can say
     # which check declined it (#450). Absent for every other stop.
     synthesis_stop_category: NotRequired[str]
-    # How many answers were judged before the editorial shipped (1, or 2
-    # after a retry), and the shipped answer's token usage as
-    # `{"input_tokens", "output_tokens"}`. Present only when an editorial
-    # came back, so a recap can be read against the last one (#450).
+    # How many answers were judged (1, or 2 after a retry), which of them
+    # shipped (the retry only when it ranked strictly better), and the tokens
+    # every judged answer spent between them as `{"input_tokens",
+    # "output_tokens"}`. Present only when an editorial came back, so a recap
+    # can be read against the last one (#450).
     synthesis_attempts: NotRequired[int]
+    synthesis_shipped_attempt: NotRequired[int]
     synthesis_usage: NotRequired[dict[str, int]]
     # Every claim the editorial makes that its own data contradicts, keyed by
     # the warning code of the check that caught it and worded as
