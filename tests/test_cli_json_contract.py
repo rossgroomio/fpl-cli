@@ -526,15 +526,18 @@ COMMANDS_WITH_A_PLAYER_ID = set().union(*(
 ))
 
 
-def _checked_surfaces() -> dict[str, list[str]]:
+def _checked_surfaces() -> tuple[dict[str, list[str]], list[str]]:
     """Every `command=` the test suite passes the check, with where it does.
 
     Read from source rather than collected at run time, so the answer does not
     depend on which tests a run selected. A `command` that is not a string
-    literal cannot be read this way, so it is reported rather than skipped.
+    literal cannot be read this way, so its call site is returned beside the
+    rest for `test_every_check_names_its_command_literally` to report: raising
+    here, at import, would error every test in this module at collection.
     This module is left out: its calls test the check, not a surface.
     """
     found: dict[str, list[str]] = {}
+    unreadable: list[str] = []
     for path in sorted(TESTS_DIR.rglob("*.py")):
         if path == Path(__file__).resolve():
             continue
@@ -548,16 +551,23 @@ def _checked_surfaces() -> dict[str, list[str]]:
                 continue
             command = next((kw.value for kw in node.keywords if kw.arg == "command"), None)
             where = f"{path.relative_to(TESTS_DIR)}:{node.lineno}"
-            if not (isinstance(command, ast.Constant) and isinstance(command.value, str)):
-                raise AssertionError(
-                    f"{where} calls {CHECK_NAME}() without a string-literal `command=`; "
-                    f"pass the command name literally so this contract can find the check"
-                )
-            found.setdefault(command.value, []).append(where)
-    return found
+            if isinstance(command, ast.Constant) and isinstance(command.value, str):
+                found.setdefault(command.value, []).append(where)
+            else:
+                unreadable.append(where)
+    return found, unreadable
 
 
-CHECKED_SURFACES = _checked_surfaces()
+CHECKED_SURFACES, UNREADABLE_CHECKS = _checked_surfaces()
+
+
+def test_every_check_names_its_command_literally():
+    """A check this contract cannot read counts for no surface."""
+    assert not UNREADABLE_CHECKS, (
+        f"{CHECK_NAME}() called without a string-literal `command=` at "
+        f"{', '.join(UNREADABLE_CHECKS)}; pass the command name literally so this "
+        f"contract can find the check"
+    )
 
 
 def test_the_identifier_table_was_read():
