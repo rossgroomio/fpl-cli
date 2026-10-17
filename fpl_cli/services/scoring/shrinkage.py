@@ -89,6 +89,17 @@ def _first_present(source: Any, *names: str) -> Any:
     return None
 
 
+def read_chance_of_playing(source: Any) -> Any:
+    """Next-round chance of playing from a row of either spelling.
+
+    The draft parser and the enriched dicts carry ``chance_of_playing``; the
+    ``Player`` model and raw API rows carry ``chance_of_playing_next_round``.
+    A caller that reads only one spelling sees None for every row of the other
+    and silently loses the availability signal (#436), so read through here.
+    """
+    return _first_present(source, "chance_of_playing", "chance_of_playing_next_round")
+
+
 def unavailable_player_ids(players: Iterable[Any], next_gw_id: int) -> set[int]:
     """Ids to hold out of shrinkage, from FPL models or the dicts agents pass around.
 
@@ -103,9 +114,7 @@ def unavailable_player_ids(players: Iterable[Any], next_gw_id: int) -> set[int]:
         if pid is None:
             continue
         if is_known_unavailable(
-            chance_of_playing=_first_present(
-                player, "chance_of_playing", "chance_of_playing_next_round",
-            ),
+            chance_of_playing=read_chance_of_playing(player),
             minutes=_first_present(player, "minutes"),
             next_gw_id=next_gw_id,
         ):

@@ -107,6 +107,7 @@ from fpl_cli.services.scoring.ownership import (
 from fpl_cli.services.scoring.shrinkage import (
     apply_shrinkage,
     is_known_unavailable,
+    read_chance_of_playing,
     shrink_scores,
     unavailable_player_ids,
 )
@@ -249,6 +250,7 @@ __all__ = [
     # shrinkage
     "apply_shrinkage",
     "is_known_unavailable",
+    "read_chance_of_playing",
     "shrink_scores",
     "unavailable_player_ids",
     # ownership
