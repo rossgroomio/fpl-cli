@@ -969,16 +969,17 @@ class TestWaiverAgentDefensiveContribution:
 
     async def _run_agent(
         self, mock_draft_bootstrap, mock_league_details, players,
-        *, squad=(), released=(),
+        *, squad=(), released=(), pool_player=None,
     ):
         """Drive ``run()`` with *squad* picked by entry 100 and *released* dropped."""
+        pool_player = pool_player or self._draft_defender()
         config: dict[str, Any] = {"draft_league_id": 12345}
         if squad:
             config["draft_entry_id"] = 100
         agent = WaiverAgent(config=config)
         bootstrap = {
             **mock_draft_bootstrap,
-            "elements": [self._draft_defender(), *squad, *released],
+            "elements": [pool_player, *squad, *released],
         }
 
         with _stub_upstream_fetches(players=players), \
@@ -991,7 +992,7 @@ class TestWaiverAgentDefensiveContribution:
              patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock) as mock_order:
 
             mock_bootstrap.return_value = bootstrap
-            mock_available.return_value = [self._draft_defender()]
+            mock_available.return_value = [pool_player]
             mock_releases.return_value = [
                 {"player": p, "dropped_by": 101, "gameweek": 24} for p in released
             ]
@@ -1006,8 +1007,10 @@ class TestWaiverAgentDefensiveContribution:
         assert result.status == AgentStatus.SUCCESS
         return result
 
-    async def _run(self, mock_draft_bootstrap, mock_league_details, players):
-        result = await self._run_agent(mock_draft_bootstrap, mock_league_details, players)
+    async def _run(self, mock_draft_bootstrap, mock_league_details, players, pool_player=None):
+        result = await self._run_agent(
+            mock_draft_bootstrap, mock_league_details, players, pool_player=pool_player,
+        )
         [target] = result.data["top_targets"]
         return target
 
@@ -1041,16 +1044,53 @@ class TestWaiverAgentDefensiveContribution:
         assert with_dc["waiver_score"] > without_dc["waiver_score"]
 
     @pytest.mark.asyncio
-    async def test_unjoined_defender_keeps_zero(
+    async def test_unjoined_defender_keeps_zero_and_says_so(
         self, mock_draft_bootstrap, mock_league_details,
     ):
-        """No main-game counterpart: DC stays at 0, never borrowed by id."""
-        target = await self._run(
-            mock_draft_bootstrap, mock_league_details,
-            players=[self._id_sharer()],
-        )
+        """No main-game counterpart: DC stays at 0, never borrowed by id.
+
+        The miss is named on stderr, as a keeper's is, since the defender is
+        then scored against a DC-calibrated anchor without the term.
+        """
+        with patch.object(WaiverAgent, "log_warning") as warn:
+            target = await self._run(
+                mock_draft_bootstrap, mock_league_details,
+                players=[self._id_sharer()],
+            )
 
         assert target["dc_per_90"] == 0
+        [message] = [
+            c.args[0] for c in warn.call_args_list if "defensive contribution" in c.args[0]
+        ]
+        assert "1 draft defender(s) (Gabriel)" in message
+
+    @pytest.mark.asyncio
+    async def test_midfielder_rate_is_display_only(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """A MID row carries its real rate, which the MID score does not weight.
+
+        Midfielders earn DC points too, so the row shows the main-game figure
+        rather than the parser's 0; the waiver weights zero ``dc_per_90``
+        outside the DEF path, so the score is the same either way.
+        """
+        midfielder = make_draft_player(
+            id=self.DRAFT_ID, web_name="Rice", team=1, element_type=3,
+            code=self.CODE, form=5.0, minutes=1800,
+        )
+        main_mid = {"web_name": "Rice", "position": PlayerPosition.MIDFIELDER}
+        with_dc = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._main_defender(**main_mid)], pool_player=midfielder,
+        )
+        without_dc = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._main_defender(**main_mid, defensive_contribution_per_90=0.0)],
+            pool_player=midfielder,
+        )
+
+        assert (with_dc["position"], with_dc["dc_per_90"]) == ("MID", 3.2)
+        assert with_dc["waiver_score"] == without_dc["waiver_score"]
 
     @pytest.mark.asyncio
     async def test_squad_and_release_rows_carry_the_main_game_rate(

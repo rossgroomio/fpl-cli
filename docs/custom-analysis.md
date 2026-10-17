@@ -188,7 +188,7 @@ Combines: xGI/90, penalty xG/90, form (StatWeight(1.3, 7), scaled by form trajec
 
 **Keepers:** the three GK signals come from the main-game player each draft element is joined to on `code` — the draft bootstrap publishes neither saves nor expected goals conceded, so they cannot be read off the draft record itself. A keeper the join misses falls back to form and ppg alone and keeps the unscaled anchor (see [Quality & Value Scores](#quality--value-scores)).
 
-**Defenders:** `dc_per_90` comes through the same join. The draft bootstrap carries defensive contribution only as a season total, and the waiver DEF anchor was calibrated with the DC term present, so a defender read off the draft record alone would lose that term and sit below the top of the scale. A defender the join misses scores with DC at 0. The same join fills `dc_per_90` on the `current_squad` and `recent_releases` rows, so no row in the payload shows the parser's 0 beside a target carrying the real rate.
+**Defenders:** `dc_per_90` comes through the same join. The draft bootstrap carries defensive contribution only as a season total, and the waiver DEF anchor was calibrated with the DC term present, so a defender read off the draft record alone would lose that term and sit below the top of the scale. A defender the join misses scores with DC at 0 and is named in a warning on stderr. The same join fills `dc_per_90` on every row of the payload, `current_squad` and `recent_releases` included and every position, so no row shows the parser's 0 beside a target carrying the real rate; outside the defender score the rate is display-only, as in classic, since `dc_per_90` is weighted only on the DEF path.
 
 ## Squad Allocator
 

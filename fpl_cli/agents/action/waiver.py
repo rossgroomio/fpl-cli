@@ -110,9 +110,6 @@ class WaiverAgent(Agent):
 
             # Get recently released players (independent of entry_id)
             recent_releases: list[dict[str, Any]] = []
-            # Raw draft elements of every player the payload carries besides
-            # the pool, so the main-game join below reaches them too (#437).
-            joined_elements: list[dict[str, Any]] = list(available)
             league_details: dict[str, Any] = {}
             try:
                 releases = await self.client.get_recent_releases(league_id, bootstrap)
@@ -131,7 +128,6 @@ class WaiverAgent(Agent):
                     }
                     for r in releases[:20]
                 ]
-                joined_elements.extend(r["player"] for r in releases[:20])
             except Exception as e:  # noqa: BLE001 — best-effort enrichment
                 self.log_warning(f"Could not fetch recent releases: {e}")
 
@@ -183,7 +179,6 @@ class WaiverAgent(Agent):
                         player_map = {p["id"]: p for p in bootstrap.get("elements", [])}
                         for pid in player_ids:
                             if pid in player_map:
-                                joined_elements.append(player_map[pid])
                                 player = self._enrich(
                                     player_map[pid], team_id_map, draft_teams,
                                     include_availability=False,
@@ -210,11 +205,33 @@ class WaiverAgent(Agent):
             # conceded, so a keeper's three scoring signals only exist on the
             # main game's player. Joined on `code`, never on (web_name,
             # team_id) — a mid-season rename breaks the name join (#168).
+            # Every row the payload carries is joined, not only the pool, so
+            # no squad or release row keeps the parser's 0 for dc_per_90
+            # beside a target carrying the real rate (#437). Squad and release
+            # rows are draft bootstrap elements; keying on id matches a player
+            # who sits in two of the lists once.
+            payload_rows = (*parsed_available, *current_squad, *recent_releases)
+            elements = {e["id"]: e for e in bootstrap.get("elements", [])}
+            elements.update((e["id"], e) for e in available)
+            payload_ids = {int(p.get("id") or 0) for p in payload_rows}
             self._main_player_map = match_draft_to_main(
-                joined_elements, data.players or [], team_id_map=team_id_map,
+                [elements[i] for i in payload_ids if i in elements],
+                data.players or [],
+                team_id_map=team_id_map,
             )
-            for players in (parsed_available, current_squad, recent_releases):
-                self._apply_main_dc_per_90(players)
+            self._apply_main_dc_per_90(payload_rows)
+            unjoined_defenders = [
+                p["player_name"] for p in parsed_available
+                if p.get("position") == "DEF"
+                and int(p.get("id") or 0) not in self._main_player_map
+            ]
+            if unjoined_defenders:
+                self.log_warning(
+                    f"No main FPL match for {len(unjoined_defenders)} draft defender(s) "
+                    f"({', '.join(unjoined_defenders[:3])}"
+                    f"{', ...' if len(unjoined_defenders) > 3 else ''}) "
+                    "— scoring without defensive contribution",
+                )
 
             # Every lookup below arrives keyed by the main game's element id,
             # and the pool scored from here on is keyed by the draft's, so
@@ -329,11 +346,13 @@ class WaiverAgent(Agent):
 
         The draft bootstrap carries defensive contribution only as a season
         total, and the parser drops even that, so ``enrich_player`` leaves
-        every draft player at 0. In the pool that scored each defender with no
-        DC term against a waiver anchor calibrated with it (#437); beside the
-        pool, a squad or release row left at 0 reads as a defender who makes
-        no contributions next to a target carrying the real rate. Read off the
-        joined main player, the field classic scoring uses; a miss keeps 0.
+        every draft player at 0. Only the defender score weights the rate
+        (``without_xgi``): left at 0 it scored each defender with no DC term
+        against a waiver anchor calibrated with it (#437). Every position is
+        filled all the same, because midfielders and forwards earn DC points
+        too and a 0 on their rows would be a made-up figure, not an absent
+        one; for them the rate is display-only, as it is in classic. Read off
+        the joined main player, the field classic scoring uses; a miss keeps 0.
         """
         for player in players:
             main_player = self._main_player_map.get(int(player.get("id") or 0))
