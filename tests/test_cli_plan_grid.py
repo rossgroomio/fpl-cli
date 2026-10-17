@@ -13,10 +13,10 @@ from tests.conftest import make_fixture, make_player, make_team
 
 def _squad():
     return [
-        make_player(id=1, web_name="Raya", team_id=1, position=PlayerPosition.GOALKEEPER),
-        make_player(id=2, web_name="Gabriel", team_id=1, position=PlayerPosition.DEFENDER),
-        make_player(id=3, web_name="Saka", team_id=1, position=PlayerPosition.MIDFIELDER),
-        make_player(id=4, web_name="Jesus", team_id=1, position=PlayerPosition.FORWARD),
+        make_player(id=1, code=7001, web_name="Raya", team_id=1, position=PlayerPosition.GOALKEEPER),
+        make_player(id=2, code=7002, web_name="Gabriel", team_id=1, position=PlayerPosition.DEFENDER),
+        make_player(id=3, code=7003, web_name="Saka", team_id=1, position=PlayerPosition.MIDFIELDER),
+        make_player(id=4, code=7004, web_name="Jesus", team_id=1, position=PlayerPosition.FORWARD),
     ]
 
 
@@ -152,10 +152,10 @@ class TestPlanGrid:
 
 def _draft_elements():
     return [
-        {"id": 901, "web_name": "Raya", "team": 1, "element_type": 1},
-        {"id": 902, "web_name": "Gabriel", "team": 1, "element_type": 2},
-        {"id": 903, "web_name": "Saka", "team": 1, "element_type": 3},
-        {"id": 904, "web_name": "Jesus", "team": 1, "element_type": 4},
+        {"id": 901, "code": 7001, "web_name": "Raya", "team": 1, "element_type": 1},
+        {"id": 902, "code": 7002, "web_name": "Gabriel", "team": 1, "element_type": 2},
+        {"id": 903, "code": 7003, "web_name": "Saka", "team": 1, "element_type": 3},
+        {"id": 904, "code": 7004, "web_name": "Jesus", "team": 1, "element_type": 4},
     ]
 
 

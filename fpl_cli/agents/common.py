@@ -11,9 +11,10 @@ import httpx
 if TYPE_CHECKING:
     from fpl_cli.api.fpl_draft import FPLDraftClient
     from fpl_cli.models.player import Player
+    from fpl_cli.models.team import Team
 
 from fpl_cli.api.fpl import FPLClient
-from fpl_cli.api.fpl_draft import match_draft_to_main
+from fpl_cli.api.fpl_draft import match_draft_teams_to_main, match_draft_to_main
 from fpl_cli.api.understat import UnderstatClient, match_fpl_to_understat
 from fpl_cli.constants import MIN_MINUTES_FOR_PER90
 from fpl_cli.models.types import EnrichedPlayer
@@ -55,15 +56,21 @@ def rekey_for_draft(
 
 def enrich_player(
     player: dict[str, Any],
-    team_map: dict[int, Any],
+    team: Mapping[str, Any] | None,
     include_availability: bool = True,
 ) -> EnrichedPlayer:
     """Enrich player dict with team name, position, and derived stats.
 
+    *team* is the player's club record (``name`` / ``short_name``), handed
+    over rather than looked up from ``player["team_id"]``: a draft player's
+    names come from the draft game's own club list by its own id, while his
+    ``team_id`` is the main game's and None for a club the main game does not
+    list (#423), so the two must not be tied together.
+
     Mutates and returns ``player``. Callers sharing a dict across
     multiple consumers should pass a copy.
     """
-    team = team_map.get(player.get("team_id", 0), {})
+    team = team or {}
     player["team_name"] = team.get("name", "Unknown")
     player["team_short"] = team.get("short_name", "???")
 
@@ -157,11 +164,14 @@ async def get_draft_squad_players(
     draft_entry_id: int,
     gameweek: int,
     log: Callable[[str], None] | None = None,
+    *,
+    main_teams: Sequence[Team],
 ) -> list[Player]:
     """Fetch draft squad and map to main FPL Player objects.
 
     Returns list of Player objects from the main API that correspond
-    to the draft entry's picks for the given gameweek.
+    to the draft entry's picks for the given gameweek. *main_teams*
+    translates a draft club for the name fallback a code-less pick needs.
     """
     draft_bootstrap = await draft_client.get_bootstrap_static()
     draft_players = {dp["id"]: dp for dp in draft_bootstrap.get("elements", [])}
@@ -177,7 +187,10 @@ async def get_draft_squad_players(
             raise
 
     pick_ids = [p["element"] for p in picks_data.get("picks", [])]
-    matched = match_draft_to_main(draft_bootstrap.get("elements", []), main_players)
+    matched = match_draft_to_main(
+        draft_bootstrap.get("elements", []), main_players,
+        team_id_map=match_draft_teams_to_main(draft_bootstrap.get("teams", []), main_teams),
+    )
     squad: list[Player] = []
     for dpid in pick_ids:
         dp = draft_players.get(dpid)
@@ -196,8 +209,13 @@ async def get_draft_ownership_mapping(
     draft_client: FPLDraftClient,
     main_players: list[Player],
     draft_league_id: int,
+    *,
+    main_teams: Sequence[Team],
 ) -> tuple[dict[int, int], dict[int, str], dict[int, int]]:
     """Fetch draft ownership and build ID mapping to main FPL players.
+
+    *main_teams* translates a draft club for the name fallback a code-less
+    player needs.
 
     Returns:
         (draft_owned, draft_entries, main_to_draft_id) where:
@@ -227,6 +245,7 @@ async def get_draft_ownership_mapping(
         main_player.id: draft_id
         for draft_id, main_player in match_draft_to_main(
             draft_bootstrap.get("elements", []), main_players,
+            team_id_map=match_draft_teams_to_main(draft_bootstrap.get("teams", []), main_teams),
         ).items()
     }
 

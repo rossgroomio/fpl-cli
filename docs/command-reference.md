@@ -138,6 +138,17 @@ rival-owned). Every payload therefore follows one convention:
 - A `code` that is not known is `null`, never `0` or a guess: a shared `0` would join every
   such player to every other.
 
+Clubs follow the same rule one level up. Each game publishes its own `teams` list and numbers
+its 20 clubs 1-20 for the season; the numberings agree today, but nothing ties them together,
+and a draft club id read as a main-game one would name a different club rather than missing.
+What both lists share is the club's permanent `code` (Arsenal is id 1, code 3), so every
+draft path translates the draft game's club id by `code` before reading main-game fixtures,
+form or team data (#423), and a `team_id` on any payload's player row is **the main game's**,
+`fpl waivers` included. A matched player's club is his main-game player's; an unmatched one's is
+his draft club translated by code. A club the main game does not list comes out as `null`, never
+the raw draft id, and `fpl waivers` says so with a `draft_club_untranslated` entry in
+`metadata.warnings` (stderr in table mode) naming the clubs.
+
 Which namespace each payload's `id` is in, and whether the row carries `code`:
 
 | Command | Player rows | `id` is | `code` |
@@ -555,7 +566,7 @@ fpl history                  # All players (compact, for squad-builder)
 fpl history --format json
 ```
 
-In `--format json`, each entry in `seasons` carries `team` as the FPL club code (`teams[].code` in the bootstrap), which is stable across seasons and the same whichever dataset served the season. It is not that season's 1-20 team id, so resolve it through the bootstrap's `code` field rather than `id`.
+In `--format json`, each entry in `seasons` carries `team_code`, the FPL club code (`teams[].code` in the bootstrap), which is stable across seasons and the same whichever dataset served the season. It is not that season's 1-20 team id, so resolve it through the bootstrap's `code` field rather than `id`. The same number is also emitted as `team`, which is **deprecated** and kept only for consumers written before `team_code` existed: every other payload's `team` is a short name like `"ARS"`, so the name misdescribes the value (#423). Read `team_code`; `team` will be removed in a future release.
 
 **Signals:**
 - **pts_per_90 trend** - Points per 90 minutes across seasons (improving/declining)

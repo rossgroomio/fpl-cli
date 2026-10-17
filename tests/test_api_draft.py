@@ -6,10 +6,13 @@ import pytest
 
 from fpl_cli.api.fpl_draft import (
     FPLDraftClient,
+    draft_player_team_id,
     is_accepted_transaction,
     is_denied_on_the_incoming_player,
-    resolve_lost_claims,
+    match_draft_teams_to_main,
     match_draft_to_main,
+    resolve_lost_claims,
+    untranslated_draft_teams,
 )
 from tests.conftest import (
     make_draft_league_entry,
@@ -17,6 +20,7 @@ from tests.conftest import (
     make_draft_standing,
     make_draft_team,
     make_player,
+    make_team,
 )
 
 # --- Fixtures ---
@@ -527,11 +531,11 @@ class TestFPLDraftClientParsePlayer:
             points_per_game=6.2,
         )
 
-        result = client.parse_player(raw_data)
+        result = client.parse_player(raw_data, {14: 12})
 
         assert result["id"] == 1
         assert result["player_name"] == "Salah"
-        assert result["team_id"] == 14
+        assert result["team_id"] == 12
         assert result["position"] == "MID"
         assert result["form"] == 7.5
         assert result["ppg"] == 6.2
@@ -541,13 +545,35 @@ class TestFPLDraftClientParsePlayer:
         client = FPLDraftClient()
         raw_data = {"id": 1}
 
-        result = client.parse_player(raw_data)
+        result = client.parse_player(raw_data, {1: 1})
 
         assert result["id"] == 1
         assert result["player_name"] == ""
         assert result["total_points"] == 0
         assert result["form"] == 0.0
         assert result["code"] is None
+        assert result["team_id"] is None
+
+    def test_parse_player_emits_the_main_games_team_id(self):
+        """#423: the draft game numbers its clubs on its own, and everything a
+        parsed player is scored against is keyed by the main game's ids.
+
+        Draft club 14 is main-game club 12 here, so a row that passed the raw
+        draft id through would score the player on another club's fixtures.
+        """
+        client = FPLDraftClient()
+
+        result = client.parse_player(make_draft_player(team=14), {14: 12})
+
+        assert result["team_id"] == 12
+
+    def test_parse_player_leaves_an_untranslated_club_empty(self):
+        """A club the main game does not list is no club, not the raw id."""
+        client = FPLDraftClient()
+
+        result = client.parse_player(make_draft_player(team=14), {13: 13})
+
+        assert result["team_id"] is None
 
     def test_parse_player_keeps_the_cross_game_code(self):
         """#418: ``id`` is the draft game's own; ``code`` is the key both games share.
@@ -557,7 +583,7 @@ class TestFPLDraftClientParsePlayer:
         """
         client = FPLDraftClient()
 
-        result = client.parse_player(make_draft_player(id=575, code=9575))
+        result = client.parse_player(make_draft_player(id=575, code=9575), {})
 
         assert result["id"] == 575
         assert result["code"] == 9575
@@ -573,7 +599,7 @@ class TestFPLDraftClientParsePlayer:
             "expected_assists": "5.3",
         }
 
-        result = client.parse_player(raw_data)
+        result = client.parse_player(raw_data, {})
 
         assert result["form"] == 7.5
         assert result["ppg"] == 6.2
@@ -590,7 +616,7 @@ class TestMatchDraftToMain:
         draft = make_draft_player(id=403, code=510281, web_name="Savinho", team=19)
         main = make_player(id=403, code=510281, web_name="Sávio", team_id=19)
 
-        assert match_draft_to_main([draft], [main]) == {403: main}
+        assert match_draft_to_main([draft], [main], team_id_map={}) == {403: main}
 
     def test_matches_a_player_the_draft_game_moved_to_another_club(self):
         """A January transfer lands in the two bootstraps at different times,
@@ -598,31 +624,48 @@ class TestMatchDraftToMain:
         draft = make_draft_player(id=403, code=510281, web_name="Savinho", team=19)
         main = make_player(id=403, code=510281, web_name="Savinho", team_id=13)
 
-        assert match_draft_to_main([draft], [main]) == {403: main}
+        assert match_draft_to_main([draft], [main], team_id_map={}) == {403: main}
 
     def test_falls_back_to_name_and_team_for_a_codeless_element(self):
         draft = make_draft_player(id=900, web_name="Star", team=1)
-        main = make_player(id=5, web_name="Star", team_id=1)
+        main = make_player(id=5, web_name="Star", team_id=7)
 
-        assert match_draft_to_main([draft], [main]) == {900: main}
+        assert match_draft_to_main([draft], [main], team_id_map={1: 7}) == {900: main}
 
     def test_name_fallback_folds_diacritics(self):
         draft = make_draft_player(id=900, web_name="Gyokeres", team=1)
-        main = make_player(id=5, web_name="Gyökeres", team_id=1)
+        main = make_player(id=5, web_name="Gyökeres", team_id=7)
 
-        assert match_draft_to_main([draft], [main]) == {900: main}
+        assert match_draft_to_main([draft], [main], team_id_map={1: 7}) == {900: main}
 
     def test_name_fallback_keeps_two_players_of_the_same_name_apart(self):
         draft = make_draft_player(id=900, web_name="Martinez", team=1)
         wrong_club = make_player(id=5, web_name="Martinez", team_id=2)
 
-        assert match_draft_to_main([draft], [wrong_club]) == {}
+        assert match_draft_to_main([draft], [wrong_club], team_id_map={1: 7}) == {}
+
+    def test_name_fallback_reads_the_draft_team_in_the_main_games_numbering(self):
+        """#423: draft club 1 is main-game club 7 here, so the namesake at
+        main-game club 1 plays for a different club and must not match."""
+        draft = make_draft_player(id=900, web_name="Martinez", team=1)
+        namesake = make_player(id=5, web_name="Martinez", team_id=1)
+
+        assert match_draft_to_main([draft], [namesake], team_id_map={1: 7}) == {}
+
+    def test_name_fallback_needs_the_club_to_translate(self):
+        """A club the map has no main-game id for has nothing to be compared
+        with, so a codeless element goes unmatched rather than paired on a
+        guess."""
+        draft = make_draft_player(id=900, web_name="Star", team=1)
+        main = make_player(id=5, web_name="Star", team_id=1)
+
+        assert match_draft_to_main([draft], [main], team_id_map={}) == {}
 
     def test_a_genuine_miss_stays_missing(self):
         draft = make_draft_player(id=900, code=111, web_name="Mystery", team=1)
         main = make_player(id=5, code=222, web_name="Star", team_id=1)
 
-        assert match_draft_to_main([draft], [main]) == {}
+        assert match_draft_to_main([draft], [main], team_id_map={}) == {}
 
     def test_a_zero_code_is_not_a_join_key(self):
         """`Player.code` defaults to 0 for a main player built without one, so
@@ -630,7 +673,82 @@ class TestMatchDraftToMain:
         draft = make_draft_player(id=900, code=0, web_name="Mystery", team=1)
         main = make_player(id=5, code=0, web_name="Star", team_id=1)
 
-        assert match_draft_to_main([draft], [main]) == {}
+        assert match_draft_to_main([draft], [main], team_id_map={}) == {}
+
+
+class TestMatchDraftTeamsToMain:
+    """#423: the two games number their clubs independently; `code` is shared."""
+
+    def test_joins_on_code_where_the_numberings_diverge(self):
+        draft_teams = [
+            make_draft_team(id=1, code=3, short_name="ARS"),
+            make_draft_team(id=2, code=43, short_name="MCI"),
+        ]
+        main_teams = [
+            make_team(id=1, code=43, short_name="MCI"),
+            make_team(id=2, code=3, short_name="ARS"),
+        ]
+
+        assert match_draft_teams_to_main(draft_teams, main_teams) == {1: 2, 2: 1}
+
+    def test_matches_identical_numberings_one_to_one(self):
+        """The live state today: every club shares its id across the games."""
+        draft_teams = [make_draft_team(id=i) for i in range(1, 21)]
+        main_teams = [make_team(id=i) for i in range(1, 21)]
+
+        assert match_draft_teams_to_main(draft_teams, main_teams) == {i: i for i in range(1, 21)}
+
+    def test_a_club_missing_from_the_main_game_is_absent(self):
+        draft_teams = [make_draft_team(id=1, code=3), make_draft_team(id=2, code=999)]
+        main_teams = [make_team(id=1, code=3)]
+
+        assert match_draft_teams_to_main(draft_teams, main_teams) == {1: 1}
+
+    def test_a_draft_club_without_a_code_is_absent(self):
+        """Absent, never matched on its id: the id is what cannot be trusted."""
+        draft_teams = [{"id": 1, "name": "Arsenal", "short_name": "ARS"}]
+        main_teams = [make_team(id=1, code=3)]
+
+        assert match_draft_teams_to_main(draft_teams, main_teams) == {}
+
+    def test_a_zero_code_is_not_a_join_key(self):
+        draft_teams = [make_draft_team(id=1, code=0)]
+        main_teams = [make_team(id=1, code=0)]
+
+        assert match_draft_teams_to_main(draft_teams, main_teams) == {}
+
+
+class TestDraftPlayerTeamId:
+    def test_translates_the_draft_team(self):
+        assert draft_player_team_id(make_draft_player(team=14), {14: 12}) == 12
+
+    def test_an_untranslated_club_is_none_not_the_raw_id(self):
+        assert draft_player_team_id(make_draft_player(team=14), {}) is None
+
+    def test_a_player_without_a_team_is_none(self):
+        assert draft_player_team_id({"id": 1}, {1: 1}) is None
+
+    def test_a_matched_main_player_answers_first(self):
+        """His club is already in the main game's numbering, so it holds even
+        when the draft list carries a club the main game has dropped."""
+        main = make_player(id=5, team_id=7)
+
+        assert draft_player_team_id(make_draft_player(team=14), {}, main_player=main) == 7
+        assert draft_player_team_id(make_draft_player(team=14), {14: 12}, main_player=main) == 7
+
+
+class TestUntranslatedDraftTeams:
+    def test_names_the_clubs_the_map_lacks(self):
+        teams = [
+            make_draft_team(id=1, short_name="ARS"),
+            make_draft_team(id=2, short_name="NOW"),
+            make_draft_team(id=3, short_name="HUL"),
+        ]
+
+        assert untranslated_draft_teams(teams, {1: 1}) == ["HUL", "NOW"]
+
+    def test_empty_when_every_club_translates(self):
+        assert untranslated_draft_teams([make_draft_team(id=1)], {1: 4}) == []
 
 
 class TestDraftTransactionResultCodes:

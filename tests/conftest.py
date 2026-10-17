@@ -255,9 +255,22 @@ def make_draft_team(
     id: int = 1,
     name: str = "Test FC",
     short_name: str = "TFC",
+    code: int | None = None,
 ) -> dict[str, Any]:
-    """Factory for draft API team data."""
-    return {"id": id, "name": name, "short_name": short_name}
+    """Factory for draft API team data.
+
+    ``code`` defaults to the code ``make_team`` gives the same ``id``, so a
+    fixture that does not care numbers the two games' clubs alike, as the
+    live APIs do today. A test that does care (#423) passes codes that pair
+    a draft id with a *different* main-game id: fixtures where the two
+    numberings coincide cannot catch a draft id read as a main-game one.
+    """
+    return {
+        "id": id,
+        "code": team_code_for(id) if code is None else code,
+        "name": name,
+        "short_name": short_name,
+    }
 
 
 def make_draft_league_entry(
@@ -347,11 +360,21 @@ def make_player(
     )
 
 
+def team_code_for(team_id: int) -> int:
+    """The club ``code`` the team factories default to for a team id.
+
+    Deliberately not the id itself, as a real club's is not (Arsenal is id 1,
+    code 3), so a payload that put one where the other belongs fails. Shared
+    by ``make_team`` and ``make_draft_team`` so their defaults pair up.
+    """
+    return 100 + team_id
+
+
 def make_team(
     id: int = 1,
     name: str = "Test FC",
     short_name: str = "TFC",
-    code: int = 1,
+    code: int | None = None,
     strength: int = 3,
     strength_overall_home: int = 1200,
     strength_overall_away: int = 1100,
@@ -373,7 +396,7 @@ def make_team(
         id=id,
         name=name,
         short_name=short_name,
-        code=code,
+        code=team_code_for(id) if code is None else code,
         strength=strength,
         strength_overall_home=strength_overall_home,
         strength_overall_away=strength_overall_away,

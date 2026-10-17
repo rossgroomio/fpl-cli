@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import click
 import httpx
 from rich.console import Console
+from rich.markup import escape as rich_escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -374,12 +375,23 @@ def fdr_command(
                 if not entry_id:
                     error_console.print("[yellow]draft_entry_id not configured[/yellow]")
                 else:
-                    from fpl_cli.api.fpl_draft import FPLDraftClient
-                    async with FPLDraftClient() as draft_client:
-                        game_data = await draft_client.get_game_state()
+                    from fpl_cli.api.fpl_draft import (
+                        FPLDraftClient,
+                        draft_player_team_id,
+                        match_draft_teams_to_main,
+                    )
+                    async with FPLClient() as client, FPLDraftClient() as draft_client:
+                        # Independent until the club translation, so fetched together
+                        main_teams, game_data, bootstrap = await asyncio.gather(
+                            client.get_teams(),
+                            draft_client.get_game_state(),
+                            draft_client.get_bootstrap_static(),
+                        )
                         current_gw = game_data.get("current_event", 1)
-                        bootstrap = await draft_client.get_bootstrap_static()
                         draft_player_map = {p["id"]: p for p in bootstrap.get("elements", [])}
+                        # The blanks and doubles are keyed by the main game's
+                        # team ids, the squad's clubs by the draft game's (#423)
+                        team_id_map = match_draft_teams_to_main(bootstrap.get("teams", []), main_teams)
                         try:
                             picks_data = await draft_client.get_entry_picks(entry_id, current_gw)
                         except Exception:  # noqa: BLE001 — best-effort enrichment
@@ -387,13 +399,22 @@ def fdr_command(
                         pick_ids = [p["element"] for p in picks_data.get("picks", [])]
                         squad = [
                             {
-                                "team_id": draft_player_map[pid]["team"],
+                                "team_id": draft_player_team_id(draft_player_map[pid], team_id_map),
                                 "element_type": draft_player_map[pid]["element_type"],
                                 "web_name": draft_player_map[pid]["web_name"],
                             }
                             for pid in pick_ids
                             if pid in draft_player_map
                         ]
+                        unplaced = [p["web_name"] for p in squad if p["team_id"] is None]
+                        if unplaced:
+                            # Still counted in the squad total, so the exposure
+                            # shares understate: say which players are missing
+                            error_console.print(
+                                f"[yellow]{len(unplaced)} squad player(s) at a draft club the main game"
+                                f" does not list ({rich_escape(', '.join(unplaced))}) are left out of"
+                                " blank and double exposure[/yellow]"
+                            )
                         context = {"squad": squad}
             else:
                 entry_id = fpl_config(settings).get("classic_entry_id")
