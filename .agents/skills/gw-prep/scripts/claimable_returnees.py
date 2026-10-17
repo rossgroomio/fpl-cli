@@ -47,6 +47,8 @@ from typing import Any, TypedDict
 # envelope instead of a ModuleNotFoundError traceback.
 import _bootstrap  # noqa: F401 — import guard, see module docstring
 
+from fpl_cli.models.player import usable_code
+
 
 class Excluded(TypedDict):
     web_name: str
@@ -54,7 +56,7 @@ class Excluded(TypedDict):
     reason: str
 
 
-class Warning(TypedDict):
+class JoinWarning(TypedDict):
     type: str
 
 
@@ -63,15 +65,10 @@ class JoinResult(TypedDict):
     metadata: dict[str, Any]
     entries: list[dict[str, Any]]
     excluded: list[Excluded]
-    warnings: list[Warning]
+    warnings: list[JoinWarning]
 
 
-def _as_code(value: object) -> int | None:
-    """A usable `code`, or None: the join never matches on a missing key."""
-    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
-
-
-def pool_codes(waivers: dict[str, Any]) -> tuple[set[int] | None, Warning | None]:
+def pool_codes(waivers: dict[str, Any]) -> tuple[set[int] | None, JoinWarning | None]:
     """The `code` of every row in the waivers `data.pool`, or None with the reason.
 
     None means the join cannot run: there is no pool list to read, or there
@@ -81,20 +78,20 @@ def pool_codes(waivers: dict[str, Any]) -> tuple[set[int] | None, Warning | None
     data = waivers.get("data")
     pool = data.get("pool") if isinstance(data, dict) else None
     if not isinstance(pool, list):
-        return None, Warning(type="pool-unreadable")
+        return None, JoinWarning(type="pool-unreadable")
     rows = [row for row in pool if isinstance(row, dict)]
-    codes = {code for row in rows if (code := _as_code(row.get("code"))) is not None}
+    codes = {code for row in rows if (code := usable_code(row.get("code"))) is not None}
     if rows and not codes:
-        return None, Warning(type="pool-without-code")
+        return None, JoinWarning(type="pool-without-code")
     return codes, None
 
 
-def radar_entries(radar: dict[str, Any]) -> tuple[list[dict[str, Any]], Warning | None]:
+def radar_entries(radar: dict[str, Any]) -> tuple[list[dict[str, Any]], JoinWarning | None]:
     """The radar's `data.entries`, or an empty list with the reason."""
     data = radar.get("data")
     entries = data.get("entries") if isinstance(data, dict) else None
     if not isinstance(entries, list):
-        return [], Warning(type="radar-unreadable")
+        return [], JoinWarning(type="radar-unreadable")
     return [entry for entry in entries if isinstance(entry, dict)], None
 
 
@@ -122,7 +119,7 @@ def join(radar: dict[str, Any], waivers: dict[str, Any]) -> JoinResult:
     result["metadata"]["pool_size"] = len(codes)
 
     for entry in entries:
-        code = _as_code(entry.get("code"))
+        code = usable_code(entry.get("code"))
         web_name = str(entry.get("web_name", ""))
         if code is None:
             result["excluded"].append(Excluded(web_name=web_name, code=None, reason="no-code"))
@@ -142,7 +139,7 @@ def _run(returnees_json: str, waivers_json: str) -> None:
         # Neither file is an envelope at all; say so in the same shape rather
         # than raise, since the orchestrator parses stdout either way.
         json.dump(
-            JoinResult(ok=False, metadata={}, entries=[], excluded=[], warnings=[Warning(type="envelope-unreadable")]),
+            JoinResult(ok=False, metadata={}, entries=[], excluded=[], warnings=[JoinWarning(type="envelope-unreadable")]),
             sys.stdout,
         )
         return
