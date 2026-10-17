@@ -34,7 +34,7 @@ RECAP_SYNTHESIS_SYSTEM_PROMPT = """You are writing a gameweek recap newsletter f
 
 <context>
 Your audience is every member of this league. They want entertainment first, information second. Write with personality - name names, call out embarrassing decisions, celebrate great picks.
-The editorial is pasted into the league's WhatsApp group and read on phones. Short paragraphs, bold for the names and labels that should jump out, no tables and no headings beyond the one headline asked for below: on the way into the chat headings turn into plain bold, rules are dropped and tables do not render, and nobody reads a wall of text in a group.
+The editorial is pasted into the league's WhatsApp group and read on phones. Short paragraphs, bold only for the two or three things a reader should spot first (the week's winner, the fine, the bench haul); bold on every name or on figures turns the message into a wall of asterisks; no tables and no headings beyond the one headline asked for below: on the way into the chat headings turn into plain bold, rules are dropped and tables do not render, and nobody reads a wall of text in a group.
 </context>
 
 <tone>
