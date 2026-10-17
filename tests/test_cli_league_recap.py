@@ -4143,7 +4143,8 @@ class TestSeasonFinesSurfaces:
         text = format_recap_season_fines_context(tally)
 
         assert f"Season fine totals, GW{CHIP_SPLIT_GW} through GW{CHIP_SPLIT_GW}" in text
-        assert f"- Bob: 1 (1 last-place; fined in GW{CHIP_SPLIT_GW})" in text
+        assert "- Bob: 1 (1 last-place)" in text
+        assert "fined in" not in text
         assert "Not fined so far: Alice" in text
         assert "Coverage:" in text
 
@@ -4328,7 +4329,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
 
         assert "## Season Fines" in user_prompt
-        assert f"Bob: 1 (1 last-place; fined in GW{CHIP_SPLIT_GW})" in user_prompt
+        assert "Bob: 1 (1 last-place)" in user_prompt
         assert 'Season fine totals come from the "## Season Fines" section exactly' in system_prompt
         # This fixture's ledger holds only the gameweek under recap, so the
         # ordinal the model kept inventing cannot be asserted -- and the
@@ -4353,7 +4354,7 @@ class TestEndToEndPromptThroughTheFullCommand:
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
 
         assert "## Season Fines" in user_prompt
-        assert "Bob: 1 (1 last-place; fined in GW5)" in user_prompt
+        assert "Bob: 1 (1 last-place)" in user_prompt
         assert "the ledger records 1 last-place fine against Bob" in user_prompt
         assert "Do not number this fine." in user_prompt
         # ...and it is offered, never demanded.

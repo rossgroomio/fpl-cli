@@ -6008,7 +6008,7 @@ class TestFinePlacement:
 
         assert "of the season" not in text
 
-    def test_the_season_fines_section_names_each_managers_fined_gameweeks(self):
+    def test_the_season_fines_section_leaves_out_each_managers_fined_gameweeks(self):
         tally = self._tally(ManagerFineTally(
             manager_key=1, manager_name="Bob",
             counts={"last-place": 2}, fined_gameweeks=[3, 10],
@@ -6016,7 +6016,8 @@ class TestFinePlacement:
 
         text = format_recap_season_fines_context(tally)
 
-        assert "- Bob: 2 (2 last-place; fined in GW3, GW10)" in text
+        assert "- Bob: 2 (2 last-place)" in text
+        assert "fined in" not in text
 
     def test_a_gap_in_the_span_forbids_the_ordinal_instead_of_asserting_it(self):
         """GW3 was never captured. If Bob was fined there, the tally never
