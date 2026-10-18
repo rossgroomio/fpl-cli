@@ -145,6 +145,18 @@ via trusted publishing, and prepends the git-cliff section to
 agent sessions run it as the `release` skill, and can preview the next
 version's notes any time with the read-only `release-notes` skill.
 
+## Prompts and editorial checks
+
+A change to a prompt the CLI sends to a model, or to a data section the model is shown,
+is verified before it ships by an A/B in the fpl-workspace vault's harness
+(`.claude/scripts/recap_ab/` there): both arms run from pinned commits, a dry run first so
+the prompts differ only where intended, graded per format with draft as the gate, and the
+result is written into the PR body as numbers with no names. A change to an editorial
+check (`fpl_cli/prompts/league_recap_checks.py`) is verified by replaying the saved drafts
+corpus through both builds' checks, never by new model runs. The October 2026 prompt audit
+and its A/B record live in the private `fpl-cli-docs` repo under `docs/audits/`; re-run it
+at the next change of the default synthesis model.
+
 ## Agent sessions
 
 The operative copy of these conventions for agents is in
