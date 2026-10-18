@@ -425,7 +425,10 @@ class RecapAcquisition(TypedDict):
     league had drafted more than once by then (so a line must say which),
     `round` and `pick` are where it fell in the draft (`overall_pick` counts
     round after round), `auto_pick` whether the draft's auto-pick made it, and
-    `drafter` is the manager who did, the owner himself. `from_manager` is a
+    `drafter` is the manager who did, the owner himself. Where the draft's
+    picks are lost (neither the API nor a snapshot holds them) who drafted
+    whom is rebuilt from the squads, and a pick then carries `round_unknown`
+    with `round`, `pick`, `overall_pick` and `auto_pick` all null. `from_manager` is a
     trade's counterparty, the manager he came from; None when the league's
     managers do not name that entry.
     """
@@ -435,6 +438,8 @@ class RecapAcquisition(TypedDict):
     draft_id: int | None
     draft_gameweek: int | None
     redraft: bool
+    # A draft pick whose round is not known; False for every other kind.
+    round_unknown: bool
     round: int | None
     pick: int | None
     overall_pick: int | None
@@ -586,7 +591,9 @@ def standout_acquisition_clause(
     dropped and signed again reads as the signing. A redraft names itself
     ("in the first round of the GW20 redraft") because the league has drafted
     twice and "the draft" alone no longer says which; the first draft of a
-    league that has held one never does. A pick the draft's auto-pick made
+    league that has held one never does. Where the draft's picks are lost the
+    round is not guessed at: "who drafted him", or "who drafted him in the
+    GW20 redraft". A pick the draft's auto-pick made
     says so rather than claim the manager chose him. A trade names the
     manager he came from unless another manager shares that display name,
     since "from Alex" then tells a reader nothing; `shared_names` are the
@@ -606,9 +613,12 @@ def standout_acquisition_clause(
         came_from = f" from {source['manager_name']}" if source and source["manager_name"] not in shared_names else ""
         return f"who acquired him{came_from} in a GW{gameweek} trade"
     clause = "who had him as an auto-pick" if acquisition["auto_pick"] else "who drafted him"
-    clause += f" in the {ordinal_word(acquisition['round'])} round" if acquisition["round"] else ""
+    rounds = acquisition["round"]
+    clause += f" in the {ordinal_word(rounds)} round" if rounds else ""
     if acquisition["redraft"] and acquisition["draft_gameweek"] is not None:
-        clause += f" of the GW{acquisition['draft_gameweek']} redraft"
+        # "In the first round of the GW20 redraft", or, the round being
+        # unknown, "in the GW20 redraft".
+        clause += f"{' of' if rounds else ' in'} the GW{acquisition['draft_gameweek']} redraft"
     return clause
 
 
@@ -799,6 +809,11 @@ class LeagueRecapData(TypedDict):
     # who owns whom. Set by the draft collector; absent when it worked or was
     # not asked, and the Standout Players lines then read without it.
     draft_provenance_problem: NotRequired[str]
+    # Draft only (#458): set when the lines could say who drafted each player
+    # but not in which round, because the draft's picks are held by neither the
+    # API nor a snapshot and were rebuilt from the squads. A notice, not a
+    # failure: the lines are labelled, just without rounds.
+    draft_provenance_notice: NotRequired[str]
     fines: NotRequired[list[RecapFineResult]]
     # Which fine rule types were ruled on for this gameweek, whether or not
     # any triggered -- stamped onto every captured row so the ledger can tell

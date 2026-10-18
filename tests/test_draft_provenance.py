@@ -644,3 +644,265 @@ class TestWhenTheFeedHasMovedOn:
 
         assert not provenance.available
         assert "choices could not be read" in (provenance.problem or "")
+
+
+class TestWhenThePicksAreLost:
+    """A draft held, its picks in neither the feed nor a snapshot: who drafted whom
+    is rebuilt from each manager's squad at the draft's gameweek, with the moves
+    made before that gameweek undone, and the rounds are not guessed.
+
+    The same league as the picks-known tests start from, with moves before GW1:
+
+        GW1  Bob claims 10 on waivers, releasing 5
+        GW1  trade: Alice gives 4 to Cam for 6
+        GW1  Cam signs 11 as a free agent, releasing 9
+        GW3  Alice claims 5 on waivers, releasing 7
+        GW4  trade: Bob gives 8 to Cam for 3
+
+    so the GW1 squads were Alice 1, 6, 7; Bob 2, 8, 10; Cam 3, 4, 11, and the
+    league ends with Alice on 1, 5, 6; Bob on 2, 3, 10; Cam on 4, 8, 11. Each was
+    drafted as the picks-known league's were: Alice 1, 4, 7; Bob 2, 5, 8; Cam 3, 6, 9.
+    """
+
+    TXNS = [
+        _txn(1, BOB, 10, 5, 1, "2026-08-11T10:00:00Z"),
+        _txn(2, CAM, 11, 9, 1, "2026-08-13T09:00:00Z", kind="f", index=0),
+        _txn(3, ALICE, 5, 7, 3, "2026-08-27T09:00:00Z"),
+    ]
+    TRADES = [
+        _trade(1, ALICE, CAM, [(4, 6)], 1, "2026-08-12T10:00:00Z"),
+        _trade(2, BOB, CAM, [(8, 3)], 4, "2026-09-03T12:00:00Z"),
+    ]
+    SQUADS_AT_GW1 = {1: ALICE, 6: ALICE, 7: ALICE, 2: BOB, 8: BOB, 10: BOB, 3: CAM, 4: CAM, 11: CAM}
+    OWNERS = {1: ALICE, 5: ALICE, 6: ALICE, 2: BOB, 3: BOB, 10: BOB, 4: CAM, 8: CAM, 11: CAM}
+
+    def _lost(self, **overrides: Any) -> DraftLogs:
+        logs = DraftLogs(
+            drafts=[_draft_row(DRAFT, 1, DRAFTED_AT)],
+            choices=[],
+            element_status=_status(self.OWNERS),
+            transactions=self.TXNS,
+            trades=self.TRADES,
+            draft_squads={DRAFT: self.SQUADS_AT_GW1},
+        )
+        return replace(logs, **overrides)
+
+    def _histories(self, **overrides: Any):
+        return _histories(replay_draft_history(self._lost(**overrides), 4))
+
+    def test_drafters_are_labelled_without_a_round_and_the_draft_says_so(self):
+        provenance = replay_draft_history(self._lost(), 4)
+
+        histories = _histories(provenance)
+        step = histories[1].latest
+        assert (step.kind, step.entry, step.gameweek, step.pick) == ("draft", ALICE, 1, None)
+        assert provenance.draft is not None
+        assert (provenance.draft.id, provenance.draft.rounds_known) == (DRAFT, False)
+
+    def test_a_pre_gameweek_waiver_pickup_is_not_drafted_by_the_squad_it_joined(self):
+        histories = self._histories()
+
+        pickup = histories[10]
+        assert (pickup.latest.kind, pickup.latest.entry, pickup.latest.gameweek) == ("waiver", BOB, 1)
+        assert [step.kind for step in pickup.chain] == ["waiver"]
+
+    def test_the_player_a_pre_gameweek_waiver_replaced_was_drafted_by_that_manager(self):
+        histories = self._histories()
+
+        chain = histories[5].chain
+        assert [(step.kind, step.entry, step.gameweek) for step in chain] == [
+            ("draft", BOB, 1), ("release", BOB, 1), ("waiver", ALICE, 3),
+        ]
+        assert chain[0].pick is None
+
+    def test_a_pre_gameweek_trade_swaps_the_two_players_correctly(self):
+        histories = self._histories()
+
+        to_cam, to_alice = histories[4], histories[6]
+        assert [(s.kind, s.entry, s.from_entry) for s in to_cam.chain] == [
+            ("draft", ALICE, None), ("trade", CAM, ALICE),
+        ]
+        assert [(s.kind, s.entry, s.from_entry) for s in to_alice.chain] == [
+            ("draft", CAM, None), ("trade", ALICE, CAM),
+        ]
+
+    def test_a_pre_gameweek_free_agent_signing_is_the_signing_and_the_player_he_replaced_is_gone(self):
+        histories = self._histories()
+
+        assert (histories[11].latest.kind, histories[11].latest.entry) == ("free_agent", CAM)
+        assert 9 not in histories
+
+    def test_moves_after_the_gameweek_follow_the_acquisition_rule_from_there(self):
+        histories = self._histories()
+
+        assert (histories[8].latest.kind, histories[8].latest.entry, histories[8].latest.gameweek) == ("trade", CAM, 4)
+        assert [s.kind for s in histories[8].chain] == ["draft", "trade"]
+        assert histories[8].chain[0].entry == BOB
+
+    def test_a_replay_of_the_drafts_own_gameweek_reads_the_squads_it_was_rebuilt_from(self):
+        provenance = replay_draft_history(self._lost(), 1, observed=self.SQUADS_AT_GW1)
+
+        histories = _histories(provenance)
+        assert (histories[4].owner, histories[4].latest.kind, histories[4].latest.gameweek) == (CAM, "trade", 1)
+        assert histories[6].owner == ALICE
+
+    def test_an_earlier_gameweek_is_held_to_the_squads_it_recorded(self):
+        gw3 = {1: ALICE, 5: ALICE, 6: ALICE, 2: BOB, 8: BOB, 10: BOB, 3: CAM, 4: CAM, 11: CAM}
+
+        assert replay_draft_history(self._lost(), 3, observed=gw3).available
+        assert not replay_draft_history(self._lost(), 3, observed={**gw3, 8: CAM}).available
+
+    def test_the_same_checks_gate_the_labels_as_when_the_picks_are_known(self):
+        off_list = replay_draft_history(self._lost(element_status=_status({**self.OWNERS, 2: ALICE})), 4)
+        off_squads = replay_draft_history(self._lost(), 4, observed={**self.OWNERS, 2: ALICE})
+
+        assert not off_list.available and off_list.players == {}
+        assert "owned differently from FPL's own ownership list" in (off_list.problem or "")
+        assert not off_squads.available and off_squads.players == {}
+        assert "different squad" in (off_squads.problem or "")
+
+    def test_a_trades_log_that_did_not_come_back_refuses_the_rebuild(self):
+        """The two checks cannot see a missing GW1 trade when the start is derived
+        from the same logs, so what could hide one refuses instead."""
+        provenance = replay_draft_history(self._lost(trades=None), 4)
+
+        assert not provenance.available and provenance.players == {}
+        assert "the trades could not be read" in (provenance.problem or "")
+
+    def test_a_pre_gameweek_trade_in_a_state_nobody_has_seen_move_players_refuses_the_rebuild(self):
+        pending = _trade(3, ALICE, BOB, [(1, 2)], 1, "2026-08-12T11:00:00Z", state="o")
+
+        provenance = replay_draft_history(self._lost(trades=[*self.TRADES, pending]), 4)
+
+        assert not provenance.available
+        assert "state this client has not seen move players" in (provenance.problem or "")
+
+    def test_a_vetoed_pre_gameweek_trade_changes_nothing(self):
+        vetoed = _trade(3, ALICE, BOB, [(1, 2)], 1, "2026-08-12T11:00:00Z", state="v")
+
+        assert replay_draft_history(self._lost(trades=[*self.TRADES, vetoed]), 4).available
+
+    def test_a_pre_gameweek_move_that_does_not_fit_the_squads_refuses_the_rebuild(self):
+        """A claim for a player the manager's GW1 squad does not have."""
+        bad = _txn(4, ALICE, 12, 7, 1, "2026-08-12T09:00:00Z")
+
+        provenance = replay_draft_history(self._lost(transactions=[*self.TXNS, bad]), 4)
+
+        assert not provenance.available and provenance.players == {}
+        assert "brought in a player" in (provenance.problem or "")
+
+    def test_squads_that_could_not_all_be_read_refuse_the_rebuild_and_say_how_many(self):
+        provenance = replay_draft_history(
+            self._lost(draft_squads={}, unread_squads={DRAFT: (ALICE, BOB)}), 4,
+        )
+
+        assert not provenance.available
+        assert "squads of 2 managers could not be read" in (provenance.problem or "")
+        assert "neither FPL's choices list nor a saved snapshot" in (provenance.problem or "")
+
+    def test_no_squads_at_all_is_the_unavailable_message_as_before(self):
+        provenance = replay_draft_history(self._lost(draft_squads={}), 4)
+
+        assert "neither FPL's choices list nor a saved snapshot holds the picks of the GW1 draft" == provenance.problem
+
+    def test_a_snapshot_appearing_later_promotes_the_same_draft_to_known_rounds(self):
+        before = replay_draft_history(self._lost(), 4)
+        after = replay_draft_history(self._lost(saved_choices={DRAFT: FIRST_DRAFT}), 4)
+
+        assert before.draft is not None and before.draft.rounds_known is False
+        assert after.draft is not None and after.draft.rounds_known is True
+        pick = _histories(after)[1].latest.pick
+        assert pick is not None and (pick.round, pick.pick) == (1, 1)
+        # The same chains otherwise: the rebuild and the picks agree about who drafted whom.
+        assert {e: h.owner for e, h in before.players.items()} == {e: h.owner for e, h in after.players.items()}
+        assert [s.kind for s in _histories(after)[5].chain] == [s.kind for s in _histories(before)[5].chain]
+
+    def test_the_feeds_picks_win_over_the_rebuild(self):
+        provenance = replay_draft_history(self._lost(choices=FIRST_DRAFT), 4)
+
+        assert provenance.draft is not None and provenance.draft.rounds_known is True
+
+
+class TestReadingTheSquadsAtTheDraftsGameweek:
+    """Squads are read only for a draft whose picks neither source holds, one
+    request per manager, so a league with its picks pays nothing for the rebuild."""
+
+    def _client(self, squads: dict[int, list[int]] | None = None, failing: int | None = None) -> MagicMock:
+        squads = squads or {ALICE: [1, 6, 7], BOB: [2, 8, 10], CAM: [3, 4, 11]}
+
+        async def picks(entry: int, gameweek: int) -> dict[str, Any]:
+            if entry == failing:
+                raise httpx.ConnectError("down")
+            return {"picks": [{"element": e, "position": n} for n, e in enumerate(squads[entry], start=1)]}
+
+        client = MagicMock()
+        client.get_draft_choices = AsyncMock(return_value={"choices": [], "element_status": _status({}), "idle": []})
+        client.get_league_trades = AsyncMock(return_value={"trades": []})
+        client.get_entry_picks = AsyncMock(side_effect=picks)
+        return client
+
+    async def _read(self, client: MagicMock, **kwargs: Any) -> DraftLogs:
+        return await read_draft_logs(
+            client, 7, drafts=[_draft_row(DRAFT, 1, DRAFTED_AT)], transactions=[],
+            entry_ids=[ALICE, BOB, CAM], **kwargs,
+        )
+
+    async def test_each_managers_squad_is_read_at_the_drafts_gameweek(self):
+        client = self._client()
+
+        logs = await self._read(client, gameweek=5)
+
+        assert sorted(call.args for call in client.get_entry_picks.await_args_list) == [
+            (ALICE, 1), (BOB, 1), (CAM, 1),
+        ]
+        assert logs.draft_squads == {DRAFT: {1: ALICE, 6: ALICE, 7: ALICE, 2: BOB, 8: BOB, 10: BOB, 3: CAM, 4: CAM, 11: CAM}}
+        assert logs.unread_squads == {}
+
+    async def test_a_draft_with_its_picks_costs_no_squad_reads(self):
+        client = self._client()
+        client.get_draft_choices = AsyncMock(return_value={
+            "choices": FIRST_DRAFT, "element_status": _status({}), "idle": [],
+        })
+
+        logs = await self._read(client, gameweek=5)
+
+        client.get_entry_picks.assert_not_awaited()
+        assert logs.draft_squads == {}
+
+    async def test_nobody_is_asked_without_the_entries(self):
+        client = self._client()
+
+        await read_draft_logs(client, 7, drafts=[_draft_row(DRAFT, 1, DRAFTED_AT)], transactions=[])
+
+        client.get_entry_picks.assert_not_awaited()
+
+    async def test_one_squad_that_fails_leaves_the_set_unusable_and_names_who(self):
+        logs = await self._read(self._client(failing=BOB), gameweek=5)
+
+        assert logs.draft_squads == {}
+        assert logs.unread_squads == {DRAFT: (BOB,)}
+
+    async def test_a_player_in_two_squads_at_once_cannot_be_rebuilt_from(self):
+        client = self._client({ALICE: [1, 6, 7], BOB: [2, 6, 10], CAM: [3, 4, 11]})
+
+        logs = await self._read(client, gameweek=5)
+
+        assert logs.draft_squads == {}
+        assert len(logs.unread_squads[DRAFT]) >= 1
+
+    async def test_the_whole_helper_labels_drafters_from_the_squads(self):
+        txns = TestWhenThePicksAreLost.TXNS
+        client = self._client()
+        client.get_league_trades = AsyncMock(return_value={"trades": TestWhenThePicksAreLost.TRADES})
+        client.get_draft_choices = AsyncMock(return_value={
+            "choices": [], "element_status": _status(TestWhenThePicksAreLost.OWNERS), "idle": [],
+        })
+
+        provenance = await get_draft_provenance(
+            client, 7, 4, drafts=[_draft_row(DRAFT, 1, DRAFTED_AT)], transactions=txns,
+            entry_ids=[ALICE, BOB, CAM], observed=TestWhenThePicksAreLost.OWNERS,
+        )
+
+        assert provenance.available, provenance.problem
+        assert provenance.draft is not None and provenance.draft.rounds_known is False
+        assert provenance.players[1].latest.kind == "draft"

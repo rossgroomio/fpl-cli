@@ -72,6 +72,10 @@ RECAP_WARNING_LEAGUE_TABLES_UPDATING = "league_tables_updating"
 # with FPL's own record of who owns whom (#458). The Standout Players lines
 # read without it.
 RECAP_WARNING_DRAFT_PROVENANCE_UNAVAILABLE = "draft_provenance_unavailable"
+# A draft recap could say who drafted each player but not in which round,
+# because the draft's picks are held by neither the API nor a snapshot and were
+# rebuilt from the squads (#458). A notice: the lines are labelled all the same.
+RECAP_WARNING_DRAFT_ROUNDS_UNKNOWN = "draft_rounds_unknown"
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse, TokenUsage
@@ -371,6 +375,8 @@ def league_recap_command(
                 error_console.print(
                     f"[yellow]{_provenance_unavailable_message(provenance_problem)}[/yellow]"
                 )
+            if rounds_notice := collected_data.get("draft_provenance_notice"):
+                error_console.print(f"[yellow]{rich_escape(rounds_notice)}[/yellow]")
             # Standout players (#455), built here for the recapped gameweek
             # rather than in the collectors, so a backfill's replays -- which
             # only reach the ledger -- never pay for a section nobody reads.
@@ -737,6 +743,11 @@ def league_recap_command(
                                 "code": RECAP_WARNING_DRAFT_PROVENANCE_UNAVAILABLE,
                                 "message": _provenance_unavailable_message(provenance_problem),
                             }] if provenance_problem else []
+                        ) + (
+                            [{
+                                "code": RECAP_WARNING_DRAFT_ROUNDS_UNKNOWN,
+                                "message": rounds_notice,
+                            }] if rounds_notice else []
                         ),
                         # Only set on this partition's very first capture --
                         # the one moment a container-local data directory is

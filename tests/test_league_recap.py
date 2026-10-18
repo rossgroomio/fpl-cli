@@ -8818,7 +8818,7 @@ def _acquired(kind: str, gameweek: int = 1, **kwargs: Any) -> RecapAcquisition:
     base: dict[str, Any] = {
         "kind": kind, "gameweek": gameweek,
         "draft_id": 7 if pick else None, "draft_gameweek": gameweek if pick else None, "redraft": False,
-        "round": 1 if pick else None, "pick": 1 if pick else None, "overall_pick": 1 if pick else None,
+        "round_unknown": False, "round": 1 if pick else None, "pick": 1 if pick else None, "overall_pick": 1 if pick else None,
         "auto_pick": False if pick else None, "drafter": None, "from_manager": None,
     }
     return RecapAcquisition(**{**base, **kwargs})  # type: ignore[typeddict-item]
@@ -8849,6 +8849,18 @@ class TestStandoutAcquisitionSentences:
             _acquired("draft", gameweek=20, redraft=True, draft_gameweek=20),
             "who drafted him in the first round of the GW20 redraft",
         ),
+        # The picks are lost, so the round is not guessed at.
+        (
+            _acquired("draft", round_unknown=True, round=None, pick=None, overall_pick=None, auto_pick=None),
+            "who drafted him",
+        ),
+        (
+            _acquired(
+                "draft", gameweek=20, redraft=True, draft_gameweek=20,
+                round_unknown=True, round=None, pick=None, overall_pick=None, auto_pick=None,
+            ),
+            "who drafted him in the GW20 redraft",
+        ),
         (_acquired("waiver", 4), "who picked him up on waivers in GW4"),
         (_acquired("free_agent", 9), "who signed him as a free agent in GW9"),
         (
@@ -8857,7 +8869,8 @@ class TestStandoutAcquisitionSentences:
         ),
         (_acquired("trade", 7), "who acquired him in a GW7 trade"),
     ], ids=[
-        "pick", "late pick", "auto pick", "redraft pick", "waiver", "free agent", "trade", "trade from an unnamed entry",
+        "pick", "late pick", "auto pick", "redraft pick", "pick, round lost", "redraft pick, round lost",
+        "waiver", "free agent", "trade", "trade from an unnamed entry",
     ])
     def test_a_scorer_says_how_he_came_to_the_manager_he_scored_for(
         self, acquisition: RecapAcquisition, clause: str,
@@ -8934,7 +8947,7 @@ class TestStandoutAcquisitionSentences:
         assert (row["id"], row["code"]) == (1223, 223)
         assert row["acquisition"] == {
             "kind": "draft", "gameweek": 1, "draft_id": 7, "draft_gameweek": 1, "redraft": False,
-            "round": 3, "pick": 2, "overall_pick": 17, "auto_pick": False,
+            "round_unknown": False, "round": 3, "pick": 2, "overall_pick": 17, "auto_pick": False,
             "drafter": {"manager_key": 1, "manager_name": "Alice"}, "from_manager": None,
         }
 
@@ -9093,7 +9106,7 @@ class TestCollectorDraftAcquisitions:
         assert fifth["draft_element"] == 905
         assert fifth["acquisition"] == {
             "kind": "draft", "gameweek": 1, "draft_id": self._DRAFT, "draft_gameweek": 1, "redraft": False,
-            "round": 5, "pick": 1, "overall_pick": 5, "auto_pick": False,
+            "round_unknown": False, "round": 5, "pick": 1, "overall_pick": 5, "auto_pick": False,
             "drafter": {"manager_key": 10, "manager_name": "A B"}, "from_manager": None,
         }
         assert all(p["acquisition"] is not None for p in squad)
@@ -9166,23 +9179,116 @@ class TestCollectorDraftAcquisitions:
         assert "draft_provenance_problem" not in data
         assert all(p["acquisition"] is not None for p in data["managers"][0]["squad"])
 
-    async def test_no_choices_at_all_leaves_the_lines_as_they_were(self):
+    def _picks_by_gameweek(self, unreadable_at: int | None = None) -> Any:
+        """get_entry_picks that answers every gameweek alike, bar one that fails."""
+        squad = [900 + i for i in range(1, 16)]
+
+        async def picks(entry: int, gameweek: int, *_: Any) -> dict[str, Any]:
+            if gameweek == unreadable_at:
+                raise httpx.ConnectError("down")
+            return {"picks": [{"element": e, "position": n} for n, e in enumerate(squad, start=1)], "subs": []}
+
+        return AsyncMock(side_effect=picks)
+
+    def _feed_without_the_picks(self) -> MagicMock:
+        """What a league with a later draft scheduled gets: the ownership list,
+        and no picks for the draft that was held."""
         client = self._client()
-        # What a league with a later draft scheduled gets: the ownership list,
-        # and no picks for the draft that was held.
         client.get_draft_choices = AsyncMock(return_value={
             "choices": [],
-            "element_status": [{"element": 900 + i, "owner": 1} for i in range(1, 16)],
+            "element_status": [{"element": 900 + i, "owner": 1 if i < 16 else None} for i in range(1, 17)],
             "idle": [],
+        })
+        return client
+
+    async def test_picks_held_by_neither_source_are_rebuilt_from_the_squads_without_rounds(self):
+        """The configured league's case: a redraft was scheduled before the first
+        snapshot, so the feed moved on and nothing kept the picks."""
+        data = await self._collect(self._feed_without_the_picks())
+
+        assert "draft_provenance_problem" not in data
+        assert "held by neither the draft API nor a saved snapshot" in data["draft_provenance_notice"]
+        assert "not in which round" in data["draft_provenance_notice"]
+        assert "draft-70.json" in data["draft_provenance_notice"]
+        fifth = next(p for p in data["managers"][0]["squad"] if p["name"] == "P5")
+        assert fifth["acquisition"] == {
+            "kind": "draft", "gameweek": 1, "draft_id": self._DRAFT, "draft_gameweek": 1, "redraft": False,
+            "round_unknown": True, "round": None, "pick": None, "overall_pick": None, "auto_pick": None,
+            "drafter": {"manager_key": 10, "manager_name": "A B"}, "from_manager": None,
+        }
+
+    async def test_the_lines_then_say_who_drafted_him_with_no_round(self):
+        data = await self._collect(self._feed_without_the_picks())
+        for row in data["managers"][0]["squad"]:
+            row["points"] = 9 if row["name"] == "P5" else 0
+
+        standouts = find_standout_players(
+            data["managers"], fpl_format="draft", gameweek=4, live=False, whole_league=True,
+        )
+
+        assert standouts["top_scorers"][0]["text"].endswith("for A B, who drafted him.")
+
+    async def test_a_pre_gameweek_waiver_is_not_drafted_by_the_squad_it_joined(self):
+        """P16 came in on a GW1 waiver for P15, so P16 was claimed and P15 drafted."""
+        waiver = {
+            "id": 1, "entry": 1, "element_in": 916, "element_out": 915, "event": 1,
+            "added": "2026-08-11T10:00:00Z", "kind": "w", "result": "a", "index": 1, "priority": 1,
+        }
+        owners = {**{900 + i: 1 for i in range(1, 15)}, 916: 1}
+        in_squad = [900 + i for i in range(1, 15)] + [916]
+        client = self._feed_without_the_picks()
+        client.get_league_transactions = AsyncMock(return_value={"transactions": [waiver]})
+        client.get_draft_choices = AsyncMock(return_value={
+            "choices": [], "element_status": [{"element": 900 + i, "owner": owners.get(900 + i)} for i in range(1, 17)],
+            "idle": [],
+        })
+        client.get_entry_picks = AsyncMock(return_value={
+            "picks": [{"element": e, "position": n} for n, e in enumerate(in_squad, start=1)], "subs": [],
         })
 
         data = await self._collect(client)
 
-        assert "holds the picks of the GW1 draft" in data["draft_provenance_problem"]
-        standouts = find_standout_players(
-            data["managers"], fpl_format="draft", gameweek=4, live=False, whole_league=True,
-        )
-        assert all(p["acquisition"] is None for p in standouts["top_scorers"] + standouts["blanks"])
+        assert "draft_provenance_problem" not in data
+        pickup = next(p for p in data["managers"][0]["squad"] if p["name"] == "P16")
+        assert pickup["acquisition"] is not None
+        assert (pickup["acquisition"]["kind"], pickup["acquisition"]["gameweek"]) == ("waiver", 1)
+        assert pickup["acquisition"]["round_unknown"] is False
+
+    async def test_squads_that_cannot_be_read_at_the_drafts_gameweek_leave_the_lines_as_they_were(self):
+        client = self._feed_without_the_picks()
+        client.get_entry_picks = self._picks_by_gameweek(unreadable_at=1)
+
+        data = await self._collect(client)
+
+        assert "squads of 1 manager could not be read" in data["draft_provenance_problem"]
+        assert "draft_provenance_notice" not in data
+        assert all("acquisition" not in p for p in data["managers"][0]["squad"])
+
+    async def test_a_failed_trades_read_refuses_the_rebuild(self):
+        """The two checks cannot catch a missing GW1 trade when the start is derived
+        from the same logs, so a trades log that did not come back refuses it."""
+        client = self._feed_without_the_picks()
+        client.get_league_trades = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+        data = await self._collect(client)
+
+        assert "the trades could not be read" in data["draft_provenance_problem"]
+        assert all("acquisition" not in p for p in data["managers"][0]["squad"])
+
+    async def test_a_snapshot_appearing_later_promotes_the_same_draft_to_known_rounds(self):
+        from fpl_cli.services.league_history_drafts import completed_drafts, snapshot_draft_choices
+
+        before = await self._collect(self._feed_without_the_picks())
+        held = {"id": self._DRAFT, "event": 1, "draft_completed": self._DRAFTED_AT}
+        snapshot_draft_choices(_SEASON, 1, completed_drafts([held]), {"choices": self._rows(), "idle": []})
+
+        after = await self._collect(self._feed_without_the_picks())
+
+        fifth = next(p for p in after["managers"][0]["squad"] if p["name"] == "P5")
+        assert "draft_provenance_notice" not in after and "draft_provenance_problem" not in after
+        assert fifth["acquisition"] is not None
+        assert (fifth["acquisition"]["round_unknown"], fifth["acquisition"]["round"]) == (False, 5)
+        assert "draft_provenance_notice" in before
 
     async def test_a_squad_the_replay_puts_elsewhere_labels_nobody(self):
         """P16 is in the fetched squad but, by the history, nobody's."""
@@ -9212,16 +9318,3 @@ class TestCollectorDraftAcquisitions:
         fifth = next(p for p in data["managers"][0]["squad"] if p["name"] == "P5")
         assert fifth["acquisition"] is not None
         assert (fifth["acquisition"]["kind"], fifth["acquisition"]["round"]) == ("draft", 5)
-
-    async def test_the_picks_of_a_draft_with_neither_source_degrade_with_the_reason(self):
-        client = self._client()
-        client.get_draft_choices = AsyncMock(return_value={
-            "choices": [],
-            "element_status": [{"element": 900 + i, "owner": 1 if i < 16 else None} for i in range(1, 17)],
-            "idle": [],
-        })
-
-        data = await self._collect(client)
-
-        assert "neither FPL's choices list nor a saved snapshot" in data["draft_provenance_problem"]
-        assert all("acquisition" not in p for p in data["managers"][0]["squad"])

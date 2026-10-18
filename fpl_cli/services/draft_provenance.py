@@ -19,6 +19,15 @@ picks nobody has: FPL serves a league's latest draft only (see
 the feed first and, when it has none for that draft, from the snapshot
 ``league-recap --draft`` saved while it did (``league_history_drafts``, #461).
 
+Where neither has them (a redraft was scheduled before the first snapshot was
+taken, so the feed moved on first) the picks are lost, but who drafted whom is
+not: each manager's squad at the draft's gameweek is the set they drafted,
+corrected by undoing the moves made before that gameweek. The replay runs on
+from there as it would from known picks and is held to the same two checks, so
+the chains are as trustworthy; they just start from a draft step with no round
+(``DraftStep.pick`` is None, ``DraftInForce.rounds_known`` False). Rounds
+return on their own once a snapshot of the draft exists.
+
 One helper for every draft command that says where a player came from; the
 league recap's Standout Players section is the first (#458), and ``fpl
 player``, ``fpl stats`` and ``fpl waivers`` follow (#460).
@@ -35,7 +44,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
-from fpl_cli.api.fpl_draft import is_accepted_transaction, is_processed_trade
+from fpl_cli.api.fpl_draft import (
+    DRAFT_TRADE_VETOED,
+    is_accepted_transaction,
+    is_processed_trade,
+)
 from fpl_cli.models.player import usable_code
 from fpl_cli.services.league_history_drafts import (
     completed_drafts as recognised_completed_drafts,
@@ -60,6 +73,9 @@ _TXN_KINDS: dict[str, StepKind] = {"w": "waiver", "f": "free_agent"}
 
 # Problems named in a message before the rest are only counted.
 _PROBLEMS_SHOWN = 2
+
+# Squads read at once when a draft's picks have to be rebuilt from them.
+_SQUAD_READS = 10
 
 
 @dataclass(frozen=True)
@@ -92,7 +108,9 @@ class DraftStep:
     at: datetime
     # A trade only: the entry he came from.
     from_entry: int | None = None
-    # A draft pick only.
+    # A draft step only: the pick, or None where the draft's picks are lost and
+    # the entry is known from the squads alone: drafted by `entry`, in a round
+    # nobody can now say.
     pick: DraftPick | None = None
 
 
@@ -128,6 +146,9 @@ class DraftInForce:
     gameweek: int
     # Whether the league had drafted more than once by then, so a label has to say which.
     redraft: bool
+    # False when the draft's picks were lost and the chains start from the squads
+    # at its gameweek: who drafted whom is known, the rounds are not.
+    rounds_known: bool = True
 
 
 @dataclass(frozen=True)
@@ -156,6 +177,10 @@ class DraftLogs:
     ``saved_choices`` are the pick rows of each held draft's snapshot, by the
     draft's id, read only for a draft the caller asked about; ``lost_drafts``
     the held drafts a run recorded as gone before any snapshot was taken.
+    ``draft_squads`` are, for a held draft with picks in neither, every
+    manager's squad at the draft's gameweek (draft element id to entry id),
+    present only when all of them could be read; ``unread_squads`` the entries
+    that could not, for the draft where some could not.
     """
 
     drafts: Sequence[Mapping[str, Any]]
@@ -165,6 +190,8 @@ class DraftLogs:
     trades: Sequence[Mapping[str, Any]] | None
     saved_choices: Mapping[int, Sequence[Mapping[str, Any]]] = field(default_factory=dict)
     lost_drafts: frozenset[int] = frozenset()
+    draft_squads: Mapping[int, Mapping[int, int]] = field(default_factory=dict)
+    unread_squads: Mapping[int, tuple[int, ...]] = field(default_factory=dict)
 
 
 def _rows(payload: object, key: str) -> list[Mapping[str, Any]] | None:
@@ -196,6 +223,8 @@ async def read_draft_logs(
     drafts: Sequence[Mapping[str, Any]] | None = None,
     transactions: Sequence[Mapping[str, Any]] | None = None,
     season: str | None = None,
+    entry_ids: Sequence[int] | None = None,
+    gameweek: int | None = None,
 ) -> DraftLogs:
     """Read what a replay needs: the draft's picks, the trades and the ownership list.
 
@@ -210,6 +239,13 @@ async def read_draft_logs(
     ledger's snapshots (``league_history_drafts``) for the replay to fall back
     on when the feed has none for that draft. Without one, only the feed's
     picks are used.
+
+    Given *entry_ids* (every manager's entry id), a draft with picks in
+    neither the feed nor a snapshot has its managers' squads read at the
+    draft's gameweek, one request each, for the replay to rebuild who drafted
+    whom from. With a *gameweek* only the drafts a replay of it reads are
+    asked about (the draft in force and the league's latest, which the whole
+    history is checked through); without, every such draft.
     """
     async def _drafts() -> Sequence[Mapping[str, Any]] | None:
         try:
@@ -257,6 +293,23 @@ async def read_draft_logs(
                 saved[draft["id"]] = rows
             if lost_draft_path(season, league_id, draft["id"]).is_file():
                 lost.add(draft["id"])
+    squads: dict[int, Mapping[int, int]] = {}
+    unread: dict[int, tuple[int, ...]] = {}
+    held = _held_drafts(known)
+    if entry_ids and held:
+        wanted = {held[-1]["id"]}
+        if gameweek is None:
+            wanted |= {d["id"] for d in held}
+        elif (in_force := draft_in_force(known, gameweek)) is not None:
+            wanted.add(in_force["id"])
+        for draft in held:
+            has_picks = any(row.get("draft") == draft["id"] for row in picks or []) or draft["id"] in saved
+            if draft["id"] in wanted and not has_picks:
+                squad, missing = await _read_squads(draft_client, entry_ids, draft["event"])
+                if squad is not None:
+                    squads[draft["id"]] = squad
+                if missing:
+                    unread[draft["id"]] = missing
     return DraftLogs(
         drafts=known,
         choices=picks,
@@ -265,7 +318,40 @@ async def read_draft_logs(
         trades=found_trades,
         saved_choices=saved,
         lost_drafts=frozenset(lost),
+        draft_squads=squads,
+        unread_squads=unread,
     )
+
+
+async def _read_squads(
+    draft_client: FPLDraftClient, entry_ids: Sequence[int], gameweek: int,
+) -> tuple[dict[int, int] | None, tuple[int, ...]]:
+    """Every entry's squad at *gameweek* as draft element id to entry id, or
+    None if any could not be read, and the entries that could not.
+
+    A squad missing from the set would put its players in nobody's draft, so
+    one unreadable squad spoils the whole set rather than leaving a hole.
+    """
+    gate = asyncio.Semaphore(_SQUAD_READS)
+
+    async def one(entry: int) -> tuple[int, list[Mapping[str, Any]] | None]:
+        async with gate:
+            try:
+                return entry, _rows(await draft_client.get_entry_picks(entry, gameweek), "picks")
+            except (httpx.HTTPError, ValueError) as e:
+                logger.warning("Could not read entry %s's GW%s squad: %s", entry, gameweek, e)
+                return entry, None
+
+    squad: dict[int, int] = {}
+    missing: list[int] = []
+    for entry, picks in await asyncio.gather(*(one(e) for e in entry_ids)):
+        elements = [_int(row.get("element")) for row in picks or []]
+        # A player in two squads at once cannot be read either: nobody drafted him twice.
+        if picks is None or None in elements or any(el in squad for el in elements if el is not None):
+            missing.append(entry)
+            continue
+        squad.update({el: entry for el in elements if el is not None})
+    return (None, tuple(missing)) if missing else (squad, ())
 
 
 async def _given(rows: Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
@@ -321,6 +407,8 @@ class _Replay:
     owner: dict[int, int] = field(default_factory=dict)
     chains: dict[int, list[DraftStep]] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
+    # False when the chains start from squads, not from the draft's picks.
+    rounds_known: bool = True
 
     def link(self, element: int, step: DraftStep) -> None:
         self.chains.setdefault(element, []).append(step)
@@ -338,6 +426,126 @@ def _no_picks_message(draft: Mapping[str, Any], logs: DraftLogs) -> str:
     if draft["id"] in logs.lost_drafts:
         message += ", and a run already recorded that they were gone before any was saved"
     return message
+
+
+_Move = tuple[tuple[datetime, int, int, int], Literal["transaction", "trade"], Mapping[str, Any]]
+
+
+def _collect_moves(logs: DraftLogs, started: datetime, through: int | None, problems: list[str]) -> list[_Move]:
+    """Every accepted transaction and processed trade after *started* up to
+    gameweek *through*, oldest first, ordered by the time FPL recorded each
+    (a transaction's ``added``, a trade's ``response_time``)."""
+    # (when, trades after transactions at the same instant, index, row id).
+    moves: list[_Move] = []
+    for arrival, txn in enumerate(logs.transactions or []):
+        if not is_accepted_transaction(txn):
+            continue
+        event = _int(txn.get("event"))
+        if event is None or (through is not None and event > through):
+            continue
+        at = _when(txn.get("added"))
+        if at is None:
+            problems.append("an accepted transaction has no usable time")
+            continue
+        if at > started:
+            ident = _int(txn.get("id"))
+            order = (at, 0, _int(txn.get("index")) or 0, arrival if ident is None else ident)
+            moves.append((order, "transaction", txn))
+    for arrival, trade in enumerate(logs.trades or []):
+        if not is_processed_trade(trade):
+            continue
+        event = _int(trade.get("event"))
+        if event is None or (through is not None and event > through):
+            continue
+        at = _when(trade.get("response_time"))
+        if at is None:
+            problems.append("a processed trade has no usable time")
+            continue
+        if at > started:
+            ident = _int(trade.get("id"))
+            moves.append(((at, 1, 0, arrival if ident is None else ident), "trade", trade))
+    moves.sort(key=lambda move: move[0])
+    return moves
+
+
+def _start_from_picks(
+    replay: _Replay, draft: Mapping[str, Any], picks: Sequence[Mapping[str, Any]], started: datetime,
+) -> None:
+    """Begin the replay from the draft's picks, each with its round and pick."""
+    for row in picks:
+        element, entry = _int(row.get("element")), _int(row.get("entry"))
+        rnd, number = _int(row.get("round")), _int(row.get("pick"))
+        if element is None or entry is None or rnd is None or number is None:
+            replay.problems.append("a pick in the draft is missing its player, manager, round or position")
+            continue
+        if element in replay.owner:
+            replay.problems.append("a player was picked twice in the same draft")
+            continue
+        replay.owner[element] = entry
+        replay.link(element, DraftStep(
+            kind="draft", entry=entry, gameweek=draft["event"], at=started,
+            pick=DraftPick(
+                draft_id=draft["id"], draft_gameweek=draft["event"], round=rnd, pick=number,
+                overall=_int(row.get("index")), auto=row.get("was_auto") is True,
+            ),
+        ))
+
+
+def _start_from_squads(
+    replay: _Replay, draft: Mapping[str, Any], logs: DraftLogs, started: datetime, moves: Sequence[_Move],
+) -> None:
+    """Begin the replay from each manager's drafted set, rebuilt from their squads.
+
+    For a draft whose picks neither the feed nor a snapshot holds. A squad at
+    the draft's gameweek is what was drafted plus the moves made since the
+    draft and before that gameweek, so undoing those, newest first, gives the
+    set drafted: a player who arrived in one was not drafted by that manager,
+    and the player who left in the same move was. Every undone move is checked
+    against the squads as the forward replay checks every applied one.
+
+    The result is only as good as the logs it undoes, and the two checks that
+    vouch for a replay from known picks cannot catch a missing move here (the
+    start is derived from the same logs), so what could hide one refuses
+    instead: a trades log that could not be read, or a pre-gameweek trade in a
+    state nobody has seen move players.
+    """
+    event: int = draft["event"]
+    gap = _no_picks_message(draft, logs)
+    squad = logs.draft_squads.get(draft["id"])
+    if squad is None:
+        unread = logs.unread_squads.get(draft["id"], ())
+        replay.problems.append(
+            f"{gap}; the GW{event} squads of {len(unread)} manager{'s' if len(unread) != 1 else ''} "
+            "could not be read to rebuild them" if unread else gap,
+        )
+        return
+    if logs.trades is None:
+        replay.problems.append(
+            f"{gap}; and the trades could not be read, so the moves made before GW{event} cannot all be undone",
+        )
+        return
+    for trade in logs.trades:
+        trade_event = _int(trade.get("event"))
+        if (
+            trade_event is not None and trade_event <= event
+            and not is_processed_trade(trade) and trade.get("state") != DRAFT_TRADE_VETOED
+        ):
+            replay.problems.append(
+                f"{gap}; and a GW{trade_event} trade is in a state this client has not seen move players, "
+                "so the moves made before it cannot all be undone",
+            )
+            return
+
+    drafted = dict(squad)
+    for _, what, row in reversed([m for m in moves if m[2]["event"] <= event]):
+        if what == "transaction":
+            _unapply_transaction(drafted, row, replay.problems)
+        else:
+            _unapply_trade(drafted, row, replay.problems)
+    for element, entry in drafted.items():
+        replay.owner[element] = entry
+        replay.link(element, DraftStep(kind="draft", entry=entry, gameweek=event, at=started))
+    replay.rounds_known = False
 
 
 def _replay(
@@ -358,6 +566,10 @@ def _replay(
     entry that did not hold the player, a claim on one somebody holds, a trade
     of a player the giver did not have. None happens in a complete history,
     so each one is recorded as a problem.
+
+    It starts from the draft's picks, the feed's first and the snapshot's
+    when the feed has none for this draft, and from the squads at its
+    gameweek when neither does (``_start_from_squads``).
     """
     replay = _Replay()
     started = _when(draft.get("draft_completed"))
@@ -365,63 +577,18 @@ def _replay(
         replay.problems.append("the draft in force has no completion time")
         return replay
 
-    draft_event: int = draft["event"]
     # The feed first, since it is the draft's own record; the snapshot only
     # when the feed has none for this draft (empty, or serving another).
     picks = [row for row in logs.choices or [] if row.get("draft") == draft["id"]]
     if not picks:
         picks = [row for row in logs.saved_choices.get(draft["id"], []) if row.get("draft") == draft["id"]]
-    if not picks:
-        replay.problems.append(_no_picks_message(draft, logs))
-        return replay
-    for row in picks:
-        element, entry = _int(row.get("element")), _int(row.get("entry"))
-        rnd, number = _int(row.get("round")), _int(row.get("pick"))
-        if element is None or entry is None or rnd is None or number is None:
-            replay.problems.append("a pick in the draft is missing its player, manager, round or position")
-            continue
-        if element in replay.owner:
-            replay.problems.append("a player was picked twice in the same draft")
-            continue
-        replay.owner[element] = entry
-        replay.link(element, DraftStep(
-            kind="draft", entry=entry, gameweek=draft_event, at=started,
-            pick=DraftPick(
-                draft_id=draft["id"], draft_gameweek=draft_event, round=rnd, pick=number,
-                overall=_int(row.get("index")), auto=row.get("was_auto") is True,
-            ),
-        ))
-
-    # (when, trades after transactions at the same instant, index, row id), then the row.
-    moves: list[tuple[tuple[datetime, int, int, int], Literal["transaction", "trade"], Mapping[str, Any]]] = []
-    for arrival, txn in enumerate(logs.transactions or []):
-        if not is_accepted_transaction(txn):
-            continue
-        event = _int(txn.get("event"))
-        if event is None or (through is not None and event > through):
-            continue
-        at = _when(txn.get("added"))
-        if at is None:
-            replay.problems.append("an accepted transaction has no usable time")
-            continue
-        if at > started:
-            ident = _int(txn.get("id"))
-            order = (at, 0, _int(txn.get("index")) or 0, arrival if ident is None else ident)
-            moves.append((order, "transaction", txn))
-    for arrival, trade in enumerate(logs.trades or []):
-        if not is_processed_trade(trade):
-            continue
-        event = _int(trade.get("event"))
-        if event is None or (through is not None and event > through):
-            continue
-        at = _when(trade.get("response_time"))
-        if at is None:
-            replay.problems.append("a processed trade has no usable time")
-            continue
-        if at > started:
-            ident = _int(trade.get("id"))
-            moves.append(((at, 1, 0, arrival if ident is None else ident), "trade", trade))
-    moves.sort(key=lambda move: move[0])
+    moves = _collect_moves(logs, started, through, replay.problems)
+    if picks:
+        _start_from_picks(replay, draft, picks, started)
+    else:
+        _start_from_squads(replay, draft, logs, started, moves)
+        if replay.problems:
+            return replay
 
     for (at, *_), what, row in moves:
         if what == "transaction":
@@ -431,18 +598,43 @@ def _replay(
     return replay
 
 
-def _apply_transaction(replay: _Replay, txn: Mapping[str, Any], at: datetime) -> None:
-    """An accepted claim: ``element_in`` joins the entry's squad, ``element_out`` leaves it."""
+def _transaction_parts(txn: Mapping[str, Any]) -> tuple[int, int, int | None, StepKind] | None:
+    """A transaction's entry, incoming and outgoing player and kind, or None if
+    it is not a waiver or free-agent move this client reads."""
     entry, element_in = _int(txn.get("entry")), _int(txn.get("element_in"))
     element_out = _int(txn.get("element_out"))
     code = txn.get("kind")
     kind = _TXN_KINDS.get(code) if isinstance(code, str) else None
-    event: int = txn["event"]
     if kind is None or entry is None or element_in is None or (
         txn.get("element_out") is not None and element_out is None
     ):
+        return None
+    return entry, element_in, element_out, kind
+
+
+def _trade_parts(trade: Mapping[str, Any]) -> tuple[int, int, list[tuple[int, int]]] | None:
+    """A trade's offering and receiving entries and its (element_out, element_in)
+    pairs, or None if any is missing."""
+    offered, received = _int(trade.get("offered_entry")), _int(trade.get("received_entry"))
+    items = trade.get("tradeitem_set")
+    pairs: list[tuple[int, int]] = []
+    for item in items if isinstance(items, list) else []:
+        out = _int(item.get("element_out")) if isinstance(item, Mapping) else None
+        into = _int(item.get("element_in")) if isinstance(item, Mapping) else None
+        if out is None or into is None:
+            return None
+        pairs.append((out, into))
+    return None if offered is None or received is None or not pairs else (offered, received, pairs)
+
+
+def _apply_transaction(replay: _Replay, txn: Mapping[str, Any], at: datetime) -> None:
+    """An accepted claim: ``element_in`` joins the entry's squad, ``element_out`` leaves it."""
+    event: int = txn["event"]
+    parts = _transaction_parts(txn)
+    if parts is None:
         replay.problems.append(f"a GW{event} transaction is not a waiver or free-agent move this client reads")
         return
+    entry, element_in, element_out, kind = parts
     if element_out is not None:
         if replay.owner.get(element_out) != entry:
             replay.problems.append(f"a GW{event} {kind.replace('_', ' ')} released a player his entry did not hold")
@@ -459,20 +651,12 @@ def _apply_transaction(replay: _Replay, txn: Mapping[str, Any], at: datetime) ->
 def _apply_trade(replay: _Replay, trade: Mapping[str, Any], at: datetime) -> None:
     """A processed trade: each item's ``element_out`` goes from the offering entry to the
     receiving one, its ``element_in`` the other way."""
-    offered, received = _int(trade.get("offered_entry")), _int(trade.get("received_entry"))
-    items = trade.get("tradeitem_set")
     event: int = trade["event"]
-    pairs: list[tuple[int, int]] = []
-    for item in items if isinstance(items, list) else []:
-        out = _int(item.get("element_out")) if isinstance(item, Mapping) else None
-        into = _int(item.get("element_in")) if isinstance(item, Mapping) else None
-        if out is None or into is None:
-            pairs = []
-            break
-        pairs.append((out, into))
-    if offered is None or received is None or not pairs:
+    parts = _trade_parts(trade)
+    if parts is None:
         replay.problems.append(f"a GW{event} trade is missing its managers or players")
         return
+    offered, received, pairs = parts
     # Checked whole before any of it is applied, as the league applies it.
     if any(replay.owner.get(out) != offered or replay.owner.get(into) != received for out, into in pairs):
         replay.problems.append(f"a GW{event} trade moved a player his giver did not hold")
@@ -481,6 +665,42 @@ def _apply_trade(replay: _Replay, trade: Mapping[str, Any], at: datetime) -> Non
         replay.owner[out], replay.owner[into] = received, offered
         replay.link(out, DraftStep(kind="trade", entry=received, gameweek=event, at=at, from_entry=offered))
         replay.link(into, DraftStep(kind="trade", entry=offered, gameweek=event, at=at, from_entry=received))
+
+
+def _unapply_transaction(squads: dict[int, int], txn: Mapping[str, Any], problems: list[str]) -> None:
+    """Undo an accepted claim on *squads* (element to entry): the player it brought
+    in leaves the entry's squad and the one it released is back in it."""
+    event: int = txn["event"]
+    parts = _transaction_parts(txn)
+    if parts is None:
+        problems.append(f"a GW{event} transaction is not a waiver or free-agent move this client reads")
+        return
+    entry, element_in, element_out, kind = parts
+    label = f"a GW{event} {kind.replace('_', ' ')}"
+    if squads.get(element_in) != entry:
+        problems.append(f"{label} brought in a player his entry's squad did not have")
+    else:
+        del squads[element_in]
+    if element_out is not None:
+        if element_out in squads:
+            problems.append(f"{label} released a player who was still in a squad")
+        else:
+            squads[element_out] = entry
+
+
+def _unapply_trade(squads: dict[int, int], trade: Mapping[str, Any], problems: list[str]) -> None:
+    """Undo a processed trade on *squads*: each player goes back to the entry that gave him."""
+    event: int = trade["event"]
+    parts = _trade_parts(trade)
+    if parts is None:
+        problems.append(f"a GW{event} trade is missing its managers or players")
+        return
+    offered, received, pairs = parts
+    if any(squads.get(out) != received or squads.get(into) != offered for out, into in pairs):
+        problems.append(f"a GW{event} trade moved a player the squads do not show with its receiver")
+        return
+    for out, into in pairs:
+        squads[out], squads[into] = offered, received
 
 
 def _problem_text(problems: Sequence[str]) -> str:
@@ -581,6 +801,7 @@ def replay_draft_history(
         draft=DraftInForce(
             id=in_force["id"], gameweek=in_force["event"],
             redraft=sum(1 for d in held if d["event"] <= gameweek) > 1,
+            rounds_known=replay.rounds_known,
         ),
         players=players,
     )
@@ -596,15 +817,20 @@ async def get_draft_provenance(
     drafts: Sequence[Mapping[str, Any]] | None = None,
     transactions: Sequence[Mapping[str, Any]] | None = None,
     season: str | None = None,
+    entry_ids: Sequence[int] | None = None,
 ) -> DraftProvenance:
     """Read a league's logs and replay them: ``read_draft_logs()`` then ``replay_draft_history()``.
 
     Costs two requests (the choices and the trades), plus the league details
     and the transaction log for whichever of *drafts* and *transactions* the
     caller does not already hold, and reads the saved picks under *season*
-    when given. Never raises for a failed read.
+    when given. Given *entry_ids*, a draft whose picks neither the feed nor a
+    snapshot holds is rebuilt from the managers' squads at its gameweek, one
+    request each (``DraftInForce.rounds_known`` is then False). Never raises
+    for a failed read.
     """
     logs = await read_draft_logs(
         draft_client, league_id, drafts=drafts, transactions=transactions, season=season,
+        entry_ids=entry_ids, gameweek=gameweek,
     )
     return replay_draft_history(logs, gameweek, main_players=main_players, observed=observed)

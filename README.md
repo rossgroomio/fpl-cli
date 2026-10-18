@@ -116,7 +116,9 @@ In draft the Standout Players lines also say how each player came to the manager
 on waivers in GW4", "...who acquired him from Cam in a GW7 trade". It is the latest way he
 joined that squad as of the gameweek, worked out by replaying the league's draft, waivers and
 trades and checking the result against FPL's own record of who owns whom; if that does not
-agree, or a log cannot be read, the lines read without it and a warning says why.
+agree, or a log cannot be read, the lines read without it and a warning says why. If the draft's
+picks are gone (a redraft was scheduled before they were first kept) it still says who drafted whom,
+rebuilt from the squads, but not in which round, and a notice says so.
 
 A draft recap also keeps each held draft's picks, who picked whom in which round, in the
 ledger beside the gameweeks. The draft API serves only a league's latest draft, so the

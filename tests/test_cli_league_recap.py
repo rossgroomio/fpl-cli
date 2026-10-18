@@ -7666,12 +7666,12 @@ class TestStandoutAcquisitionSurfaces:
     _SETTINGS = {"fpl": {"draft_league_id": 42}}
     _PICK = {
         "kind": "draft", "gameweek": 1, "draft_id": 7, "draft_gameweek": 1, "redraft": False,
-        "round": 1, "pick": 3, "overall_pick": 3, "auto_pick": False,
+        "round_unknown": False, "round": 1, "pick": 3, "overall_pick": 3, "auto_pick": False,
         "drafter": {"manager_key": 10, "manager_name": "Alice"}, "from_manager": None,
     }
     _PICKUP = {
         "kind": "waiver", "gameweek": 4, "draft_id": None, "draft_gameweek": None, "redraft": False,
-        "round": None, "pick": None, "overall_pick": None, "auto_pick": None,
+        "round_unknown": False, "round": None, "pick": None, "overall_pick": None, "auto_pick": None,
         "drafter": None, "from_manager": None,
     }
     _HAALAND = "Haaland (Manchester City) scored 17 points for Alice, who drafted him in the first round."
@@ -7745,6 +7745,44 @@ class TestStandoutAcquisitionSurfaces:
         haaland = payload["metadata"]["standout_players"]["top_scorers"][0]
         assert haaland["acquisition"] is None
         assert haaland["text"] == "Haaland (Manchester City) scored 17 points for Alice."
+
+    def test_rounds_unknown_is_a_notice_on_both_channels_not_the_unavailable_warning(self):
+        """The configured league's case: the picks were lost, the drafters rebuilt."""
+        lost = {**self._PICK, "round_unknown": True, "round": None, "pick": None, "overall_pick": None, "auto_pick": None}
+        data = self._data()
+        data["managers"][0]["squad"][0]["acquisition"] = lost  # type: ignore[typeddict-item]
+        data["draft_provenance_notice"] = (
+            "The picks of the GW1 draft are held by neither the draft API nor a saved snapshot, so the "
+            "Standout Players lines say who drafted each player but not in which round."
+        )
+
+        result = self._run(data, ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert "but not in which round" in " ".join(result.stderr.split())
+        assert "cannot say how each player came to his manager" not in result.stderr
+        payload = json.loads(result.stdout)
+        codes = [w["code"] for w in payload["metadata"]["warnings"]]
+        assert "draft_rounds_unknown" in codes and "draft_provenance_unavailable" not in codes
+        haaland = payload["metadata"]["standout_players"]["top_scorers"][0]
+        assert haaland["text"] == "Haaland (Manchester City) scored 17 points for Alice, who drafted him."
+        assert haaland["acquisition"] == lost
+        assert haaland["acquisition"]["round_unknown"] is True
+
+    def test_the_editorial_prompt_then_differs_from_the_lines_without_provenance(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """What the vault A/B checks first: with the lines labelled, the draft prompt is
+        not the control's."""
+        monkeypatch.chdir(tmp_path)
+        lost = {**self._PICK, "round_unknown": True, "round": None, "pick": None, "overall_pick": None, "auto_pick": None}
+        labelled = self._data()
+        labelled["managers"][0]["squad"][0]["acquisition"] = lost  # type: ignore[typeddict-item]
+        self._run(labelled, ["--dry-run"])
+        variant = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        self._run(self._data(acquired=False), ["--dry-run"])
+        control = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+
+        assert variant != control
+        assert "- Haaland (Manchester City) scored 17 points for Alice, who drafted him." in variant
 
     def test_only_the_recapped_gameweek_asks_for_it_never_a_backfills_replays(self):
         client = _fpl_client()

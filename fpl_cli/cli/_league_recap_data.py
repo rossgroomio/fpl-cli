@@ -86,6 +86,7 @@ from fpl_cli.cli._league_recap_types import (
 )
 from fpl_cli.models.player import usable_code
 from fpl_cli.services.fixture_predictions import had_fixture
+from fpl_cli.services.league_history_drafts import draft_snapshot_path
 from fpl_cli.services.player_clubs import gameweek_club
 from fpl_cli.services.scoring.constants import VALID_FORMATIONS
 
@@ -2360,17 +2361,21 @@ def _recap_acquisition(
     if step.kind == "release":
         return None
     pick = step.pick
+    drafted = step.kind == "draft"
     return RecapAcquisition(
         kind=step.kind,
         gameweek=step.gameweek,
-        draft_id=pick.draft_id if pick else None,
-        draft_gameweek=pick.draft_gameweek if pick else None,
-        redraft=bool(pick and draft and draft.redraft),
+        # The draft's own, for a pick whose round is lost as much as for one
+        # that is known: it is still that draft's.
+        draft_id=draft.id if drafted and draft else None,
+        draft_gameweek=draft.gameweek if drafted and draft else None,
+        redraft=bool(drafted and draft and draft.redraft),
+        round_unknown=drafted and pick is None,
         round=pick.round if pick else None,
         pick=pick.pick if pick else None,
         overall_pick=pick.overall if pick else None,
         auto_pick=pick.auto if pick else None,
-        drafter=people.get(step.entry) if pick else None,
+        drafter=people.get(step.entry) if drafted else None,
         from_manager=people.get(step.from_entry) if step.from_entry is not None else None,
     )
 
@@ -2386,7 +2391,7 @@ async def _attach_draft_acquisitions(
     main_players: Mapping[int, Player],
     gameweek: int,
     season: str,
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """Set each draft squad row's `acquisition`: how that player came to the
     manager whose squad he is in, as of `gameweek` (#458).
 
@@ -2395,9 +2400,14 @@ async def _attach_draft_acquisitions(
     actually fielded, so a row is only ever labelled from a history that ends
     where the gameweek did. The draft's picks come from the API's choices
     feed, or, once it serves another draft, from the snapshot kept under
-    `season` (#461). Returns why it could not be, or None: then every row's
-    `acquisition` stays None, the lines read without it, and the caller says
-    so. A history that cannot be shown complete is never partly used.
+    `season` (#461); where neither has them, who drafted whom is rebuilt from
+    the squads at the draft's gameweek and the lines name no round.
+
+    Returns `(problem, notice)`. A problem says why the history could not be
+    shown complete: every row's `acquisition` stays None, the lines read
+    without it, and the caller says so; a history that cannot be shown
+    complete is never partly used. A notice says the rounds are unknown, and
+    the rows are labelled all the same.
     """
     from fpl_cli.services.draft_provenance import get_draft_provenance
 
@@ -2412,13 +2422,14 @@ async def _attach_draft_acquisitions(
             draft_client, league_id, gameweek,
             main_players=main_players, observed=observed,
             drafts=league_drafts, transactions=transactions, season=season,
+            entry_ids=[e["entry_id"] for e in league_entries if isinstance(e.get("entry_id"), int)],
         )
     except (KeyError, TypeError, ValueError, AttributeError) as e:
         logger.debug("Draft provenance could not be replayed", exc_info=True)
-        return f"the league's history could not be replayed ({type(e).__name__})"
+        return f"the league's history could not be replayed ({type(e).__name__})", None
     if provenance.problem:
         logger.warning("Draft provenance unavailable: %s", provenance.problem)
-        return provenance.problem
+        return provenance.problem, None
 
     people = {
         entry["entry_id"]: RecapStandoutManager(manager_key=entry["id"], manager_name=_draft_manager_name(entry))
@@ -2430,7 +2441,19 @@ async def _attach_draft_acquisitions(
             element = row.get("draft_element")
             history = provenance.players.get(element) if element is not None else None
             row["acquisition"] = _recap_acquisition(history, provenance.draft, people) if history else None
-    return None
+    draft = provenance.draft
+    if draft is not None and not draft.rounds_known:
+        path = draft_snapshot_path(season, league_id, draft.id)
+        notice = (
+            f"The picks of the GW{draft.gameweek} draft are held by neither the draft API nor a saved "
+            f"snapshot, so the Standout Players lines say who drafted each player but not in which round: "
+            f"each manager's drafted set was rebuilt from their GW{draft.gameweek} squad and the moves made "
+            f"before it. If you have a copy of the choices response for draft {draft.id}, saving it at {path} "
+            "gives the rounds."
+        )
+        logger.warning("Draft rounds unknown: %s", notice)
+        return None, notice
+    return None, None
 
 
 async def collect_draft_recap_data(
@@ -2816,12 +2839,12 @@ async def collect_draft_recap_data(
         for i, m in enumerate(managers):
             m["gw_rank"] = i + 1
 
-        provenance_problem = (
+        provenance_problem, provenance_notice = (
             await _attach_draft_acquisitions(
                 draft_client, league_id=draft_league_id, league_drafts=league_drafts or [],
                 transactions=all_txns, managers=managers, league_entries=league_entries,
                 main_players=matched_main_players, gameweek=gw, season=provenance_season,
-            ) if provenance_season is not None else None
+            ) if provenance_season is not None else (None, None)
         )
 
         # A live capture already carries the league's own rank (set above).
@@ -2878,4 +2901,6 @@ async def collect_draft_recap_data(
     )
     if provenance_problem:
         data["draft_provenance_problem"] = provenance_problem
+    if provenance_notice:
+        data["draft_provenance_notice"] = provenance_notice
     return data
