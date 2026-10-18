@@ -19,6 +19,9 @@ from fpl_cli.cli._league_recap_types import (
     place_label,
     points_label,
     recap_title,
+    standout_blanks_heading,
+    standout_players_lines,
+    standout_players_note,
 )
 from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
@@ -96,6 +99,7 @@ def get_recap_synthesis_prompt(
     player_clubs_text: str = "",
     league_history_text: str = "",
     prior_seasons_text: str = "",
+    standout_players_text: str = "",
     is_bgw: bool = False,
     is_dgw: bool = False,
     season_length: int = 38,
@@ -134,6 +138,9 @@ def get_recap_synthesis_prompt(
         "## GW Standings",
         standings_text,
     ])
+
+    if standout_players_text:
+        sections.extend(["", "## Standout Players", standout_players_text])
 
     if captains_text:
         sections.extend(["", "## Captains", captains_text])
@@ -446,6 +453,42 @@ def _shared_positions(managers: Sequence[RecapManagerEntry], column: str) -> lis
         on = f", all on {totals.pop()}" if column == "overall_rank" and len(totals) == 1 and None not in totals else ""
         shared.append(f"{place_label(rank)} ({', '.join(m['manager_name'] for m in holders)}{on})")
     return shared
+
+
+def format_recap_standout_players_context(data: LeagueRecapData) -> str:
+    """The week's top scorers and costliest blanks, each with the managers
+    he scored for, as sentences (issue #455).
+
+    The editorial had no player points to work with beyond the bench haul
+    and the swing on each move, so whatever it said about a manager's week
+    it said with the waiver race, the bench and the fine, and read like a
+    ledger however the rules were worded. Asking for star players without
+    the data would have invited invented numbers. This hands it a few
+    players worth writing about, each tied to the managers he counted for,
+    so it can name a player who scored or blanked for a named manager and
+    keep the figure right.
+
+    The section owns its facts the way every other one does, so it carries
+    no instructions: one line says what the figures are, and every player
+    line is the sentence the report prints, written for a reader because the
+    model lifts what it is given (audit finding 20). Empty when the data
+    carries no section, or one with nobody in it.
+    """
+    standouts = data.get("standout_players")
+    if not standouts:
+        return ""
+    scorers, blanks = standout_players_lines(standouts)
+    if not scorers and not blanks:
+        return ""
+    fpl_format = data.get("fpl_format", "classic")
+    lines = [standout_players_note(fpl_format)]
+    if scorers:
+        lines.append("Top scorers:")
+        lines.extend(f"- {line}" for line in scorers)
+    if blanks:
+        lines.append(f"{standout_blanks_heading(standouts)}:")
+        lines.extend(f"- {line}" for line in blanks)
+    return "\n".join(lines)
 
 
 _CHIP_LABEL = {

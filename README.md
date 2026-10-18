@@ -59,7 +59,7 @@ Alternatives: `uv pip install fplkit` or `pip install fplkit`.
 $ fpl status                       # GW result, deadline, rank movement, flagged players
 $ fpl review --save --summarise    # Full review with LLM narrative
 $ fpl league                       # Live league standings
-$ fpl league-recap                 # Awards, standings movement, and running streaks
+$ fpl league-recap                 # Awards, standout players, standings movement, and streaks
 $ fpl league-recap --summarise     # Add the LLM editorial for the group chat
 $ fpl league-fines                 # Who owes what this season, and which weeks were ruled
 ```

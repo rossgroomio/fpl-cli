@@ -54,6 +54,10 @@ if TYPE_CHECKING:
             self, league_id: int, page: int = 1, /,
         ) -> dict[str, Any]: ...
 from fpl_cli.cli._league_recap_types import (
+    DETAIL_CAP,
+    STANDOUT_BLANK_MAX_POINTS,
+    STANDOUT_PPG_FROM_GW,
+    STANDOUT_PPG_MIN_APPEARANCES,
     LeagueRecapData,
     RecapAwardEntry,
     RecapAwards,
@@ -65,12 +69,18 @@ from fpl_cli.cli._league_recap_types import (
     RecapManagerPlayer,
     RecapPriorSeason,
     RecapStandingsEntry,
+    RecapStandoutManager,
+    RecapStandoutPlayer,
+    RecapStandoutPlayers,
     RecapTransfer,
+    StandoutBlanksOrder,
     contested_draft_claims,
     draft_transaction_kind_counts,
     format_contested_claim,
     format_move_counts,
+    format_standout_player,
 )
+from fpl_cli.models.player import usable_code
 from fpl_cli.services.fixture_predictions import had_fixture
 from fpl_cli.services.player_clubs import gameweek_club
 from fpl_cli.services.scoring.constants import VALID_FORMATIONS
@@ -119,10 +129,6 @@ def raw_chip_name(display: str | None) -> str | None:
         return None
     return _CHIP_RAW.get(display, display)
 _PICKS_CONCURRENCY = 10
-# Most managers named in one award's detail before it is truncated. Shared by
-# the transfer/waiver, captain, and bench-haul awards so a wide tie in a large
-# league cannot sprawl.
-_DETAIL_CAP = 3
 # Fewest managers who must have claimed one player before the draft recap
 # hands out Most Contested (issue #330). Two is every lost claim by
 # definition -- the loser plus the winner -- so the award would fire on any
@@ -133,7 +139,7 @@ MOST_CONTESTED_MIN_CLAIMANTS = 3
 
 
 def _omitted_suffix(omitted: int, noun: str | None = None) -> str:
-    """Render the "; N more [noun(s)] omitted" tail once a _DETAIL_CAP list is
+    """Render the "; N more [noun(s)] omitted" tail once a DETAIL_CAP list is
     truncated, shared by the transfer/waiver, captain, and bench-haul awards.
     """
     if not omitted:
@@ -552,7 +558,9 @@ async def _fetch_all_manager_data(
                 team_name=player_team.name if player_team else None,
                 position=player.position_name,
                 code=player.code or None,
+                main_id=player.id,
                 points=pts,
+                minutes=minutes,
                 is_captain=pick.get("is_captain", False),
                 is_vice_captain=pick.get("is_vice_captain", False),
                 contributed=contributed,
@@ -1482,7 +1490,7 @@ def _captain_detail(
     `points` is the value the tie was struck on. Pass it for worst-captain,
     where the tie is on *effective* captain points (the vice's score when the
     captain did not play) and so need not equal any tied manager's raw
-    `captain_points`. Groups are capped at _DETAIL_CAP, as are the managers
+    `captain_points`. Groups are capped at DETAIL_CAP, as are the managers
     named inside one group, so a wide tie in a large league does not sprawl;
     the "## Captains" prompt section remains the full per-manager roster.
 
@@ -1519,12 +1527,12 @@ def _captain_detail(
     # it named them all twice (issue #145). Collapse only once the roster is
     # longer than a capped block would be, so a small league keeps the prose
     # that already fits.
-    if total_managers > _DETAIL_CAP and len(caps) == total_managers:
+    if total_managers > DETAIL_CAP and len(caps) == total_managers:
         picks = ", ".join(
             f"{player} ×{len(names)}" + ("" if played_by_player[player] else " (dnp)")
-            for player, names in groups[:_DETAIL_CAP]
+            for player, names in groups[:DETAIL_CAP]
         )
-        dropped_players = max(0, len(groups) - _DETAIL_CAP)
+        dropped_players = max(0, len(groups) - DETAIL_CAP)
         unit = "pt" if pts == 1 else "pts"
         # Only a tie every captain played for can say the captains scored it.
         # A tie can mix captains who scored the value with captains who blanked
@@ -1541,15 +1549,15 @@ def _captain_detail(
             f" ({picks})" + _omitted_suffix(dropped_players, "player")
         )
 
-    omitted = sum(len(names) for _, names in groups[_DETAIL_CAP:])
+    omitted = sum(len(names) for _, names in groups[DETAIL_CAP:])
 
     parts = []
-    for player, names in groups[:_DETAIL_CAP]:
+    for player, names in groups[:DETAIL_CAP]:
         n = len(names)
         # Naming the managers is the point of a narrow tie, but the same list
         # is roster-length when most of the league shares a captain, so it is
         # capped like the groups themselves.
-        shown = names[:_DETAIL_CAP]
+        shown = names[:DETAIL_CAP]
         extra = n - len(shown)
         if extra:
             joined = ", ".join(shown) + f" and {extra} other{'' if extra == 1 else 's'}"
@@ -1632,9 +1640,9 @@ def _compute_shared_awards(
             # 80-point one. Name is the secondary key so the choice stays
             # deterministic.
             bench_kings.sort(key=lambda m: (m["gw_points"], m["manager_name"]))
-            omitted = max(0, len(bench_kings) - _DETAIL_CAP)
+            omitted = max(0, len(bench_kings) - DETAIL_CAP)
             detail_parts = []
-            for m in bench_kings[:_DETAIL_CAP]:
+            for m in bench_kings[:DETAIL_CAP]:
                 swap = best_xi_selection(m["squad"], captain_played=m["captain_played"])
                 detail_parts.append(
                     f"{m['manager_name']} could have scored {m['best_xi_gain']} more with"
@@ -1747,7 +1755,7 @@ def _format_award_detail(
 ) -> str:
     """Format the detail string for a transfer/waiver genius or disaster award.
 
-    Surfaces the top _DETAIL_CAP moves by net (for the side of the award),
+    Surfaces the top DETAIL_CAP moves by net (for the side of the award),
     aggregate context (raw, hit, overall true_net), and an omitted-count tail
     when more moves exist than the cap. Uniform across transfer and waiver.
 
@@ -1787,8 +1795,8 @@ def _format_award_detail(
     )
     headline = f"{manager_name} {verb} {magnitude} net pts overall{context}."
 
-    shown = sorted_moves[:_DETAIL_CAP]
-    omitted = max(0, n - _DETAIL_CAP)
+    shown = sorted_moves[:DETAIL_CAP]
+    omitted = max(0, n - DETAIL_CAP)
 
     # Disaster fired but no individual move was negative: the loss came from
     # the hit, not from any swap. Reframe so "Worst: X (+3)" doesn't read as
@@ -1999,7 +2007,7 @@ def _compute_most_contested_award(
 
     top_count = won[0]["claimants"]
     top = [c for c in won if c["claimants"] == top_count]
-    shown = top[:_DETAIL_CAP]
+    shown = top[:DETAIL_CAP]
     omitted = len(top) - len(shown)
     detail = " ".join(format_contested_claim(c) for c in shown)
     if omitted:
@@ -2016,6 +2024,195 @@ def _compute_most_contested_award(
         manager_name=" and ".join(dict.fromkeys(winners)),
         value=top_count,
         detail=detail,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Standout players (issue #455)
+# ---------------------------------------------------------------------------
+
+# How many top scorers and blanks the section lists: enough that the
+# editorial has a player to name for the managers it writes about, few
+# enough to stay a fact sheet rather than a second roster.
+_STANDOUT_SCORERS = 5
+_STANDOUT_BLANKS = 3
+
+# The player code where the collector resolved one, else the name and club
+# printed with the main-game id beside them, so two code-less players who
+# share a name and a club stay two.
+_StandoutKey = int | tuple[str, str, int | None]
+
+
+def _level_beyond(keys: Sequence[_StandoutKey], shown: int, measure: Callable[[_StandoutKey], object]) -> int:
+    """How many of `keys` past the first `shown` rank level with the last
+    one shown -- the players a cap left out rather than outranked."""
+    if len(keys) <= shown:
+        return 0
+    last = measure(keys[shown - 1])
+    return sum(1 for key in keys[shown:] if measure(key) == last)
+
+
+def standout_blanks_order(fpl_format: str, gameweek: int, *, live: bool) -> StandoutBlanksOrder:
+    """How a gameweek's Standout Players blanks are ordered (#455).
+
+    Classic by how many managers a blank counted for: a template player
+    blanking for half the league is the costliest. Draft has one owner per
+    player, so that would leave only the lowest score, and the lowest
+    scores are squad fillers nobody drafted with any hope; the blank that
+    stings is the one from a player his manager expected something of. FPL's
+    pre-season draft rank says that until the halfway point, and is never
+    updated after it, so from `STANDOUT_PPG_FROM_GW` the season's points per
+    game takes over -- but only on a `live` recap. The average is read off
+    today's player data, which on a live recap runs exactly to the gameweek
+    being recapped and on any other also counts the gameweeks since, so a
+    replay keeps the draft rank, the one expectation that reads the same
+    whenever the recap runs.
+    """
+    if fpl_format != "draft":
+        return "managers"
+    return "points_per_game" if live and gameweek >= STANDOUT_PPG_FROM_GW else "draft_rank"
+
+
+def find_standout_players(
+    managers: Sequence[RecapManagerEntry],
+    *,
+    fpl_format: str,
+    gameweek: int,
+    live: bool,
+    whole_league: bool,
+) -> RecapStandoutPlayers:
+    """The week's top scorers and costliest blanks in the league's squads,
+    with whose team each one counted for (issue #455).
+
+    Read off the squads the bench haul is computed from, with the same live
+    points, so nothing is fetched and no figure here can disagree with an
+    award. Before this the editorial had no player points beyond the bench
+    haul and the swing on each move, so whatever it wanted to say about a
+    manager's week it said with the waiver race, the bench and the fine.
+
+    A top scorer is the highest-scoring player in any manager's squad,
+    whether he counted or sat on a bench -- "Alice left Groß's 17 on the
+    bench" is the week's story as much as anyone's haul -- and ties go to
+    the player who counted for more managers. A blank is a player who
+    counted for at least one manager and scored no more than
+    `STANDOUT_BLANK_MAX_POINTS`, ordered as `standout_blanks_order()` says
+    (`live`: whether this is the gameweek's own recap rather than a replay).
+    In draft only a player that ordering can rank is listed -- one with a
+    draft rank, or from GW19 one with `STANDOUT_PPG_MIN_APPEARANCES` behind
+    his average -- so the list can run short of three rather than fill up
+    under a heading that calls it the best. A player whose club had no
+    fixture is no blank: there was nothing to play. `whole_league` says
+    whether `managers` are every manager in the league, which decides
+    whether a line may say "all" or "everyone but".
+
+    Two players are left out entirely. A draft pick the main game could not
+    be matched to carries a false zero rather than a score (`unmatched`),
+    and a starter who never played and was replaced from the bench counted
+    for nobody, so he is neither a scorer's owner nor a blank. Who a player
+    counted for is held by position in `managers`, never by name: two
+    managers can share one.
+    """
+    order = standout_blanks_order(fpl_format, gameweek, live=live)
+    cohort = [
+        RecapStandoutManager(manager_key=recap_manager_key(m), manager_name=m["manager_name"])
+        for m in managers
+    ]
+    players: dict[_StandoutKey, RecapManagerPlayer] = {}
+    counted: dict[_StandoutKey, list[int]] = {}
+    benched: dict[_StandoutKey, list[int]] = {}
+    for position, m in enumerate(managers):
+        for p in m.get("squad", []):
+            if p["unmatched"]:
+                continue
+            key: _StandoutKey = (
+                p["code"] if p["code"] is not None else (p["name"], p["team"], p.get("main_id"))
+            )
+            players.setdefault(key, p)
+            if p["auto_sub_out"]:
+                continue
+            # Once per manager, however many of his rows share the key.
+            seen = (counted if p["contributed"] else benched).setdefault(key, [])
+            if position not in seen:
+                seen.append(position)
+
+    def by_name(positions: Sequence[int]) -> list[RecapStandoutManager]:
+        return sorted((cohort[i] for i in positions), key=lambda m: (m["manager_name"], m["manager_key"]))
+
+    def row(key: _StandoutKey, *, blank: bool) -> RecapStandoutPlayer:
+        p = players[key]
+        counted_at = counted.get(key, [])
+        standout = RecapStandoutPlayer(
+            id=p.get("main_id"),
+            code=usable_code(p["code"]),
+            name=p["name"],
+            team=p["team"],
+            team_name=p.get("team_name"),
+            position=p["position"],
+            points=p["points"],
+            minutes=p.get("minutes"),
+            red_cards=p["red_cards"],
+            draft_rank=p.get("draft_rank"),
+            points_per_game=p.get("points_per_game"),
+            counted_for=by_name(counted_at),
+            benched_by=by_name(benched.get(key, [])),
+            text="",
+        )
+        standout["text"] = format_standout_player(
+            standout,
+            managers=len(managers),
+            not_counted=by_name([i for i in range(len(managers)) if i not in counted_at]),
+            whole_league=whole_league,
+            blank=blank,
+        )
+        return standout
+
+    def points(key: _StandoutKey) -> int:
+        return players[key]["points"]
+
+    def counted_for(key: _StandoutKey) -> int:
+        return len(counted.get(key, []))
+
+    def tie_break(key: _StandoutKey) -> tuple[str, str]:
+        return players[key]["name"], players[key]["team"]
+
+    def expectation(key: _StandoutKey) -> tuple[bool, float]:
+        """Best first: whether the measure cannot rank him (such a player
+        is left off the list), then the measure itself -- rank ascending,
+        points per game descending."""
+        p = players[key]
+        if order == "draft_rank":
+            rank = p.get("draft_rank")
+            return rank is None, float(rank or 0)
+        ppg = p.get("points_per_game")
+        appearances = p.get("appearances") or 0
+        return ppg is None or appearances < STANDOUT_PPG_MIN_APPEARANCES, -(ppg or 0.0)
+
+    scorers = sorted(
+        (key for key in players if (key in counted or key in benched) and points(key) > STANDOUT_BLANK_MAX_POINTS),
+        key=lambda key: (-points(key), -counted_for(key), *tie_break(key)),
+    )
+    blanks = sorted(
+        (
+            key for key in counted
+            if points(key) <= STANDOUT_BLANK_MAX_POINTS and players[key].get("had_fixture", True)
+            and (order == "managers" or not expectation(key)[0])
+        ),
+        key=lambda key: (
+            (-counted_for(key), points(key), *tie_break(key)) if order == "managers"
+            else (*expectation(key), points(key), *tie_break(key))
+        ),
+    )
+    return RecapStandoutPlayers(
+        managers=len(managers),
+        whole_league=whole_league,
+        top_scorers=[row(key, blank=False) for key in scorers[:_STANDOUT_SCORERS]],
+        top_scorers_omitted=_level_beyond(scorers, _STANDOUT_SCORERS, points),
+        blanks=[row(key, blank=True) for key in blanks[:_STANDOUT_BLANKS]],
+        blanks_omitted=(
+            _level_beyond(blanks, _STANDOUT_BLANKS, lambda key: (counted_for(key), points(key)))
+            if order == "managers" else 0
+        ),
+        blanks_order=order,
     )
 
 
@@ -2293,8 +2490,10 @@ async def collect_draft_recap_data(
                     continue
 
                 main_id = draft_to_main_id.get(draft_elem_id)
+                main_player = matched_main_players.get(draft_elem_id)
                 unmatched = main_id is None
-                pts, _, red_cards = _live_player_stats(live_stats, main_id)
+                pts, minutes, red_cards = _live_player_stats(live_stats, main_id)
+                raw_rank = draft_player.get("draft_rank")
                 pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
                 draft_team_id = team_id_of(draft_player)
                 draft_team = club_of(main_id, draft_team_id)
@@ -2316,7 +2515,17 @@ async def collect_draft_recap_data(
                     team_name=draft_team.name if draft_team else None,
                     position=pos_name,
                     code=draft_to_main_code.get(draft_elem_id),
+                    main_id=main_id,
                     points=pts,
+                    minutes=minutes,
+                    # A rank is a positive int, as a code is (`usable_code`):
+                    # a 0 or a bool placeholder would sort ahead of rank 1.
+                    draft_rank=(
+                        raw_rank if isinstance(raw_rank, int) and not isinstance(raw_rank, bool)
+                        and raw_rank > 0 else None
+                    ),
+                    points_per_game=main_player.points_per_game if main_player else None,
+                    appearances=main_player.appearances if main_player else None,
                     is_captain=False,
                     is_vice_captain=False,
                     contributed=contributed,
