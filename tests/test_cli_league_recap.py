@@ -15,7 +15,7 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from fpl_cli.cli._league_recap_data import RecapReconciliationError, find_standout_players
+from fpl_cli.cli._league_recap_data import RecapReconciliationError
 from fpl_cli.cli._league_recap_history import (
     DETAIL_FLAG,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
@@ -7217,41 +7217,44 @@ class TestRecapTitleThroughTheCommand:
 
 
 def _scorer(name: str, code: int, points: int, club: str, **kwargs: Any) -> RecapManagerPlayer:
-    """A squad row with the main id a collector records beside its code."""
+    """A squad row with the main id a collector records beside its code, and
+    the draft collector's rank and season average where given."""
     row = _player(name=name, code=code, points=points, **kwargs)
     row["team_name"] = club
     row["main_id"] = kwargs.get("main_id", 300 + code % 100)
+    for key in ("draft_rank", "points_per_game", "appearances"):
+        if key in kwargs:
+            row[key] = kwargs[key]  # type: ignore[literal-required]
     return row
 
 
 class TestStandoutPlayersSurfaces:
-    """The section the collectors build reaches the console, the saved
-    report, the editorial's prompt and `--format json`, every one of them
-    from the same rows."""
+    """The section the command builds from the collected squads reaches the
+    console, the saved report, the editorial's prompt and `--format json`,
+    every one of them from the same rows."""
 
     _HAALAND = "Haaland (Manchester City) scored 17 points for Alice; Bob [bold] left him on the bench."
     _SALAH = "Salah (Liverpool) managed 2 points for Alice and Bob [bold]."
+    # Salah's draft-only figures, read only by a draft recap.
+    _SALAH_DRAFT = {"draft_rank": 40, "points_per_game": 5.0, "appearances": 18}
 
-    def _data(self, *, fpl_format: str = "classic") -> LeagueRecapData:
+    def _data(self, *, fpl_format: str = "classic", gameweek: int = 5, **kwargs: Any) -> LeagueRecapData:
         managers = [
             _manager(name="Alice", entry_id=1, squad=[
                 _scorer("Haaland", 223_094, 17, "Manchester City"),
-                _scorer("Salah", 118_748, 2, "Liverpool"),
+                _scorer("Salah", 118_748, 2, "Liverpool", **self._SALAH_DRAFT),
             ]),
             # Square brackets in a name are what Rich would read as markup.
             _manager(name="Bob [bold]", entry_id=2, gw_rank=2, squad=[
                 _scorer("Haaland", 223_094, 17, "Manchester City", contributed=False),
-                _scorer("Salah", 118_748, 2, "Liverpool"),
+                _scorer("Salah", 118_748, 2, "Liverpool", **self._SALAH_DRAFT),
             ]),
         ]
-        data = _recap_data(
-            managers=managers, fpl_format=fpl_format,
-            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob [bold]", 2, 40, 280)),
+        return _recap_data(
+            managers=managers, fpl_format=fpl_format, gameweek=gameweek,
+            cohort=kwargs.pop("cohort", _cohort((1, "Alice", 1, 60, 300), (2, "Bob [bold]", 2, 40, 280))),
+            **kwargs,
         )
-        # What both collectors do beside the awards; the stubbed one here
-        # hands back whatever the test built.
-        data["standout_players"] = find_standout_players(managers, fpl_format=fpl_format, gameweek=5)
-        return data
 
     def test_json_metadata_carries_the_section_with_code_beside_every_id(self):
         result = _invoke_recap(self._data(), ["--format", "json"])
@@ -7272,10 +7275,46 @@ class TestStandoutPlayersSurfaces:
         assert {"minutes", "draft_rank", "points_per_game"} <= set(haaland)
         assert (haaland["draft_rank"], haaland["points_per_game"]) == (None, None)
 
-    def test_json_metadata_is_null_when_no_section_was_built(self):
-        result = _invoke_recap(_recap_data(), ["--format", "json"])
+    def test_a_section_that_cannot_be_built_costs_only_itself(self):
+        """Nothing else reads it, so a row it cannot read must not take the
+        recap, the report or the ledger capture down with it."""
+        with patch("fpl_cli.cli._league_recap_data.find_standout_players", side_effect=TypeError("bad row")):
+            result = _invoke_recap(self._data(), ["--format", "json"])
 
-        assert json.loads(result.stdout)["metadata"]["standout_players"] is None
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["metadata"]["standout_players"] is None
+        assert len(payload["data"]) == 2
+        assert "Standout players skipped" in result.stderr
+
+    @pytest.mark.parametrize("partial", [
+        {"cohort": _cohort((1, "Alice", 1, 60, 300), (2, "Bob [bold]", 2, 40, 280), (3, "Cam", 3, 30, 250))},
+        {"standings_truncated": True},
+    ], ids=["a manager not fetched", "standings cut short"])
+    def test_a_league_not_fully_fetched_is_not_the_whole_league(self, partial: dict[str, Any]):
+        result = _invoke_recap(self._data(**partial), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["metadata"]["standout_players"]["whole_league"] is False
+
+    @pytest.mark.parametrize(("current", "order"), [(20, "points_per_game"), (21, "draft_rank")],
+                             ids=["live", "replay"])
+    def test_a_draft_recap_from_gw19_averages_only_while_live(self, current: int, order: str):
+        """Today's average counts every gameweek since the one recapped, so
+        only the live recap -- before the next deadline -- reads it."""
+        client = _fpl_client(gw=20)
+        client.get_gameweeks = AsyncMock(return_value=[
+            {"id": 20, "finished": True, "is_current": current == 20},
+            {"id": 21, "finished": False, "is_current": current == 21},
+        ])
+
+        result = _invoke_recap(
+            self._data(fpl_format="draft", gameweek=20), ["--draft", "--format", "json"],
+            client=client, gw=20, settings={"fpl": {"draft_league_id": 42}},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["metadata"]["standout_players"]["blanks_order"] == order
 
     def test_the_console_prints_both_lists_with_names_escaped(self):
         result = _invoke_recap(self._data())

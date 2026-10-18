@@ -1124,8 +1124,12 @@ the player. Before GW19 that is FPL's pre-season draft rank, best first ("B.Fern
 United, pre-season draft rank 2) managed 1 point for Alice."); the draft game sets it before the
 season, on last season's points and its view of each player's potential, and never updates it, so
 from GW19 the season's points per game takes over ("Saka (Arsenal, averaging 5.7 points a game this
-season) managed 2 points for Bob."), with a player under 5 appearances ranked after the rest so a
-cameo's average cannot head the list. On GW6 of 2026-27 the lowest scores were Bentancur, Struijk
+season) managed 2 points for Bob."). A draft blanks list only holds players its ordering can rank: a
+player with no draft rank, or from GW19 one with fewer than 5 appearances behind his average, is
+left off, so the list can run short of three rather than put a two-game cameo's average under a
+heading that calls it the best. The average is today's, which on the recap of the gameweek just
+finished runs exactly to it; a replay (an older `-g`, or a run after the next deadline) would count
+the gameweeks since, so it keeps the draft rank all season. On GW6 of 2026-27 the lowest scores were Bentancur, Struijk
 and Aina; the best-ranked blanks were Fernandes, Saka and Gabriel. A blank under the hour says how
 long he played ("managed 1 point in 27 minutes"), and one who did not play at all says so, since a
 starter nobody could cover is the manager's story. A player whose club had no fixture is no blank,
@@ -1133,13 +1137,18 @@ a starter who never played and was replaced from the bench counted for nobody, a
 main game could not be matched to is left out, since its zero is not a score. Each line names the managers
 where the list is short enough to be the story and counts them where it is not: "for Dan and Eve",
 "for 9 of the 12 managers, everyone but Alice, Bob and Cam", "for 6 of the 12 managers", so a
-template player in a big league is never a roll call. Where the cap cuts through players level on
+template player in a big league is never a roll call. Two managers sharing a display name are counted
+rather than named twice. "All" and "everyone but" are said only of the whole league: where the
+standings were cut short or a manager's picks could not be fetched, a line counts only the managers
+it can see ("for 9 managers"). Where the cap cuts through players level on
 the last one's score, a closing line counts them ("2 more players also scored 9 points."); draft
 blanks are ordered by rank or average rather than counted level, so they never close on one. The
 same sentences print on the console under `Standout Players:`, in a `# Standout Players` section
 of the saved report after the standings, and, with `--summarise`, in a `## Standout Players`
 section of the editorial's prompt, which carries one line saying what the figures are and no rule
-of its own. Nothing of it reaches the ledger.
+of its own. The command builds it for the gameweek it recaps, never for a backfill's replays, and as
+an addition nothing else reads: a squad row it cannot read skips the section with a note on stderr
+rather than costing the recap, the report or the ledger capture. Nothing of it reaches the ledger.
 
 **Fines:** evaluates fines for every manager (not just you) when configured and records the
 ruling against the gameweek. A backfilled gameweek is ruled too — the detailed replay rules every configured rule, the coarse tier rules the ones
@@ -1231,13 +1240,13 @@ gameweek with a file on disk appears there with a status, a damaged one as
 (every entry, including those below their reporting minimum and every nonzero season
 count whether or not it grew this gameweek), `season_fines` (the whole
 season tally, emitted every week regardless of the milestone gate the printed surfaces use), `standout_players`
-(`managers`, the `top_scorers` and `blanks` lists, and `top_scorers_omitted` / `blanks_omitted`
-counting the players the cap left out level with the last one listed, and `blanks_order`
-(`managers`, `draft_rank` or `points_per_game`); each player row carries the main game's `id` (a
-draft recap's too) with `code` beside it, `name`, `team`, `team_name`, `position`, `points`,
-`minutes`, `red_cards`, `draft_rank` and `points_per_game` (draft only, `null` in classic),
-`counted_for` and `benched_by` as `{manager_key, manager_name}` lists, and `text`, the sentence the
-other surfaces print; `null` only on data built without it),
+(`managers` and `whole_league`, the `top_scorers` and `blanks` lists, `top_scorers_omitted` /
+`blanks_omitted` counting the players the cap left out level with the last one listed, and
+`blanks_order` (`managers`, `draft_rank` or `points_per_game`); each player row carries the main
+game's `id` (a draft recap's too) with `code` beside it, `name`, `team`, `team_name`, `position`,
+`points`, `minutes`, `red_cards`, `counted_for` and `benched_by` as `{manager_key, manager_name}`
+lists, `text` (the sentence the other surfaces print), and the draft-only `draft_rank` and
+`points_per_game`, which are `null` in classic; the section is `null` when it could not be built),
 `synthesis_summary` (with
 `--summarise`, as it reaches the saved report — the model's heading already demoted beneath the
 report's title or dropped, see [Report title](#league-recap)), `synthesis_attempts` (how many answers were

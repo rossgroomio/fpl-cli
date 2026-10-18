@@ -46,6 +46,7 @@ from fpl_cli.cli._league_recap_data import (
     standout_blanks_order,
 )
 from fpl_cli.cli._league_recap_types import (
+    STANDOUT_PPG_FROM_GW,
     PriorSeasonsSummary,
     RecapAwardEntry,
     RecapAwards,
@@ -66,7 +67,6 @@ from fpl_cli.cli._league_recap_types import (
     summarise_prior_seasons,
 )
 from fpl_cli.models.player import PlayerPosition
-from fpl_cli.season import CHIP_SPLIT_GW
 from fpl_cli.prompts.league_recap import (
     collect_player_clubs,
     format_recap_awards_context,
@@ -7742,9 +7742,13 @@ def _standout_row(
 
 def _standouts(
     managers: list[RecapManagerEntry], *, fpl_format: str = "classic", gameweek: int = 7,
+    live: bool = True, whole_league: bool = True,
 ):
-    """The section as a collector builds it, for a classic GW7 unless told otherwise."""
-    return find_standout_players(managers, fpl_format=fpl_format, gameweek=gameweek)
+    """The section as the command builds it: a live classic GW7 recap of the
+    whole league unless told otherwise."""
+    return find_standout_players(
+        managers, fpl_format=fpl_format, gameweek=gameweek, live=live, whole_league=whole_league,
+    )
 
 
 def _standout_league(*squads: tuple[str, list[RecapManagerPlayer]]) -> list[RecapManagerEntry]:
@@ -7915,8 +7919,8 @@ class TestFindStandoutPlayers:
         standouts = _standouts(_standout_league(("Alice", []), ("Bob", [])))
 
         assert standouts == {
-            "managers": 2, "top_scorers": [], "top_scorers_omitted": 0, "blanks": [], "blanks_omitted": 0,
-            "blanks_order": "managers",
+            "managers": 2, "whole_league": True, "top_scorers": [], "top_scorers_omitted": 0,
+            "blanks": [], "blanks_omitted": 0, "blanks_order": "managers",
         }
         assert standout_players_lines(standouts) == ([], [])
 
@@ -7948,9 +7952,9 @@ class TestStandoutPlayersPromptSection:
         managers = _standout_league(
             ("Alice", [
                 _standout_row("Haaland", 17, 1, club="Manchester City"),
-                _standout_row("Salah", 2, 2, club="Liverpool"),
+                _standout_row("Salah", 2, 2, club="Liverpool", draft_rank=40),
             ]),
-            ("Bob", [_standout_row("Salah", 2, 2, club="Liverpool")]),
+            ("Bob", [_standout_row("Salah", 2, 2, club="Liverpool", draft_rank=40)]),
         )
         data = _make_recap_data(managers=managers)
         data["fpl_format"] = fpl_format
@@ -8018,10 +8022,10 @@ class TestStandoutPlayersReport:
         managers = _standout_league(
             ("Alice", [
                 _standout_row("Haaland", 17, 1, club="Manchester City"),
-                _standout_row("Salah", 2, 2, club="Liverpool"),
+                _standout_row("Salah", 2, 2, club="Liverpool", draft_rank=40),
             ]),
             ("Bob", [
-                _standout_row("Salah", 2, 2, club="Liverpool"),
+                _standout_row("Salah", 2, 2, club="Liverpool", draft_rank=40),
                 _standout_row("Groß", 13, 3, contributed=False, club="Brighton"),
             ]),
         )
@@ -8061,15 +8065,17 @@ class TestStandoutPlayersReport:
 
 
 class TestCollectorsFindStandoutPlayers:
-    """Both collectors build the section from the squads they record, and
-    every row carries the main game's id -- a draft recap's too, whose
+    """Both collectors record what the section is built from -- the main
+    game's id, minutes, and in draft the rank and season average -- and
+    leave building it to the command, so a backfill's replays never pay
+    for it. Every row carries the main game's id, a draft recap's too, whose
     draft ids run 900 above the main ones here (#418)."""
 
     _SLOTS = TestCollectorBestXIGain._SLOTS
     # The #350 bench's Groß: 17 points on the bench, the week's top score.
     _BENCHED_HAUL = 13
 
-    async def test_the_classic_collector_sets_the_section(self):
+    async def test_the_classic_collector_records_what_the_section_reads(self):
         player_map = {
             i: make_player(id=i, code=100 + i, web_name=f"P{i}", team_id=1, position=position)
             for i, (position, _) in enumerate(self._SLOTS, start=1)
@@ -8091,7 +8097,10 @@ class TestCollectorsFindStandoutPlayers:
             live_stats=live_stats, player_map=player_map, teams={}, is_live_gw=False,
         )
 
-        standouts = data["standout_players"]
+        assert "standout_players" not in data
+        standouts = find_standout_players(
+            data["managers"], fpl_format="classic", gameweek=4, live=False, whole_league=True,
+        )
         top = standouts["top_scorers"][0]
         assert (top["id"], top["code"], top["points"]) == (self._BENCHED_HAUL, 100 + self._BENCHED_HAUL, 17)
         assert top["text"] == f"P{self._BENCHED_HAUL} scored 17 points, but Alice left him on the bench."
@@ -8100,11 +8109,11 @@ class TestCollectorsFindStandoutPlayers:
         assert [(b["name"], b["minutes"], b["draft_rank"]) for b in standouts["blanks"]] == [("P5", 90, None)]
         assert standouts["blanks"][0]["text"] == "P5 managed 2 points for Alice."
 
-    async def test_the_draft_collector_sets_the_section_with_main_game_ids(self):
+    async def _collect_draft(self, rank_of: Any = lambda i: 600 - i) -> Any:
         draft_players = [
             make_draft_player(
                 id=900 + i, code=100 + i, web_name=f"P{i}", team=1, element_type=position.value,
-                draft_rank=600 - i,
+                draft_rank=rank_of(i),
             )
             for i, (position, _) in enumerate(self._SLOTS, start=1)
         ]
@@ -8134,12 +8143,18 @@ class TestCollectorsFindStandoutPlayers:
             "subs": [],
         })
         with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
-            data = await collect_draft_recap_data(
+            return await collect_draft_recap_data(
                 {"fpl": {"draft_league_id": 1}}, gw=4, live_stats=live_stats,
                 players=main_players, teams={}, is_live_gw=False,
             )
 
-        standouts = data["standout_players"]
+    async def test_the_draft_collector_records_main_game_ids_rank_and_average(self):
+        data = await self._collect_draft()
+
+        assert "standout_players" not in data
+        standouts = find_standout_players(
+            data["managers"], fpl_format="draft", gameweek=4, live=False, whole_league=True,
+        )
         top = standouts["top_scorers"][0]
         assert (top["id"], top["code"]) == (self._BENCHED_HAUL, 100 + self._BENCHED_HAUL)
         assert top["benched_by"] == [{"manager_key": 10, "manager_name": "A B"}]
@@ -8152,6 +8167,14 @@ class TestCollectorsFindStandoutPlayers:
         assert standouts["blanks_order"] == "draft_rank"
         row = data["managers"][0]["squad"][4]
         assert (row["draft_rank"], row["points_per_game"], row["appearances"]) == (595, 5.0, 10)
+
+    @pytest.mark.parametrize("placeholder", [0, -3, True, "2"])
+    async def test_a_rank_that_is_not_a_positive_int_is_no_rank(self, placeholder: Any):
+        """A 0 or a bool would sort ahead of rank 1 and print as "pre-season
+        draft rank 0"; it is treated as the missing rank it stands for."""
+        data = await self._collect_draft(rank_of=lambda i: placeholder if i == 5 else 600 - i)
+
+        assert data["managers"][0]["squad"][4]["draft_rank"] is None
 
 
 class TestDraftStandoutBlanks:
@@ -8185,7 +8208,7 @@ class TestDraftStandoutBlanks:
         return _standouts(managers, fpl_format="draft", gameweek=gameweek)
 
     def test_before_gw19_the_best_ranked_blanks_come_first(self):
-        standouts = self._league(CHIP_SPLIT_GW - 1)
+        standouts = self._league(STANDOUT_PPG_FROM_GW - 1)
 
         assert standouts["blanks_order"] == "draft_rank"
         assert [p["name"] for p in standouts["blanks"]] == ["B.Fernandes", "Saka", "Gabriel"]
@@ -8194,17 +8217,16 @@ class TestDraftStandoutBlanks:
         )
         assert standouts["blanks_omitted"] == 0
 
-    def test_an_unranked_blank_comes_after_every_ranked_one(self):
+    def test_an_unranked_blank_is_not_listed_under_the_ranked_heading(self):
         standouts = _standouts(_standout_league(
             ("Alice", [_standout_row("Unranked", 0, 1, minutes=90)]),
             ("Bob", [_standout_row("Ranked", 2, 2, minutes=90, draft_rank=600)]),
         ), fpl_format="draft")
 
-        assert [p["name"] for p in standouts["blanks"]] == ["Ranked", "Unranked"]
-        assert standouts["blanks"][1]["text"] == "Unranked (Arsenal) managed 0 points for Alice."
+        assert [p["name"] for p in standouts["blanks"]] == ["Ranked"]
 
     def test_from_gw19_the_season_average_takes_over(self):
-        standouts = self._league(CHIP_SPLIT_GW)
+        standouts = self._league(STANDOUT_PPG_FROM_GW)
 
         assert standouts["blanks_order"] == "points_per_game"
         assert [p["name"] for p in standouts["blanks"]] == ["Saka", "B.Fernandes", "Gabriel"]
@@ -8212,26 +8234,43 @@ class TestDraftStandoutBlanks:
             "Saka (Arsenal, averaging 5.7 points a game this season) managed 2 points for Bob."
         )
 
-    def test_an_average_behind_too_few_appearances_ranks_after_the_rest(self):
-        standouts = self._league(CHIP_SPLIT_GW)
-        ranked = [p["name"] for p in standouts["blanks"]]
+    def test_an_average_behind_too_few_appearances_is_not_listed(self):
+        """With one qualifying blank and two without, the list runs short
+        rather than fill up with cameos under a heading that calls it the
+        season's best, the cameo's 8.0 printed among them."""
+        standouts = _standouts(_standout_league(
+            ("Alice", [_standout_row("Saka", 2, 1, minutes=90, ppg=5.7, appearances=18)]),
+            ("Bob", [_standout_row("Cameo", 1, 2, minutes=20, ppg=8.0, appearances=2)]),
+            ("Cam", [_standout_row("Fringe", 1, 3, minutes=30, ppg=3.0, appearances=4)]),
+        ), fpl_format="draft", gameweek=STANDOUT_PPG_FROM_GW)
 
-        assert "Nwaneri" not in ranked
+        assert [p["name"] for p in standouts["blanks"]] == ["Saka"]
+        assert not any("8.0" in line for line in standout_players_lines(standouts)[1])
 
-    @pytest.mark.parametrize(("fpl_format", "gameweek", "order"), [
-        ("classic", 1, "managers"),
-        ("classic", CHIP_SPLIT_GW, "managers"),
-        ("draft", 1, "draft_rank"),
-        ("draft", CHIP_SPLIT_GW - 1, "draft_rank"),
-        ("draft", CHIP_SPLIT_GW, "points_per_game"),
-        ("draft", 38, "points_per_game"),
+    @pytest.mark.parametrize(("fpl_format", "gameweek", "live", "order"), [
+        ("classic", 1, True, "managers"),
+        ("classic", STANDOUT_PPG_FROM_GW, True, "managers"),
+        ("draft", 1, True, "draft_rank"),
+        ("draft", STANDOUT_PPG_FROM_GW - 1, True, "draft_rank"),
+        ("draft", STANDOUT_PPG_FROM_GW, True, "points_per_game"),
+        ("draft", 38, True, "points_per_game"),
+        # A replay reads today's average, which counts gameweeks after the
+        # one recapped, so it keeps the rank that never changes.
+        ("draft", 22, False, "draft_rank"),
     ])
-    def test_the_switch_falls_on_the_halfway_gameweek(self, fpl_format: str, gameweek: int, order: str):
-        assert standout_blanks_order(fpl_format, gameweek) == order
+    def test_the_switch_falls_on_the_halfway_gameweek_of_a_live_recap(
+        self, fpl_format: str, gameweek: int, live: bool, order: str,
+    ):
+        assert standout_blanks_order(fpl_format, gameweek, live=live) == order
+
+    def test_the_halfway_gameweek_is_its_own_policy(self):
+        """Pinned as a number, not as the chip split it happens to equal:
+        draft has no chips, and a move of the chip rule must not move this."""
+        assert STANDOUT_PPG_FROM_GW == 19
 
     @pytest.mark.parametrize(("gameweek", "heading"), [
-        (CHIP_SPLIT_GW - 1, "Blanks among the best-ranked players, by FPL's pre-season draft rank"),
-        (CHIP_SPLIT_GW, "Blanks among this season's best performers, by points per game"),
+        (STANDOUT_PPG_FROM_GW - 1, "Blanks among the best-ranked players, by FPL's pre-season draft rank"),
+        (STANDOUT_PPG_FROM_GW, "Blanks among this season's best performers, by points per game"),
     ])
     def test_the_heading_says_what_the_blanks_are_ordered_by(self, gameweek: int, heading: str):
         assert standout_blanks_heading(self._league(gameweek)) == heading
@@ -8277,3 +8316,52 @@ class TestStandoutBlankMinutes:
         ))
 
         assert standouts["top_scorers"][0]["text"] == "Isak (Liverpool) scored 6 points for Alice."
+
+
+class TestStandoutPartialCohort:
+    """A line only says "all" or "everyone but" of a whole league: a manager
+    the recap could not fetch may have had the player."""
+
+    @pytest.mark.parametrize(("counted", "expected"), [
+        (set(_EIGHT), "for 8 managers."),
+        (set(_EIGHT) - {"Gus", "Hal"}, "for 6 managers."),
+        ({"Alice", "Bob"}, "for Alice and Bob."),
+    ])
+    def test_a_partial_league_counts_only_whom_it_can_see(self, counted: set[str], expected: str):
+        standouts = _standouts(_haaland_league(counted), whole_league=False)
+
+        assert standouts["whole_league"] is False
+        assert standouts["top_scorers"][0]["text"] == f"Haaland (Manchester City) scored 17 points {expected}"
+
+
+class TestStandoutManagerIdentity:
+    def test_managers_sharing_a_display_name_are_counted_not_named_twice(self):
+        standouts = _standouts(_standout_league(
+            ("Alex", [_standout_row("Haaland", 17, 223)]),
+            ("Alex", [_standout_row("Haaland", 17, 223)]),
+        ))
+
+        row = standouts["top_scorers"][0]
+        assert row["text"] == "Haaland (Arsenal) scored 17 points for 2 managers."
+        # Kept apart, and in key order, where the payload can say who.
+        assert [m["manager_key"] for m in row["counted_for"]] == [1, 2]
+
+    def test_a_manager_is_named_once_however_many_rows_share_a_code_less_key(self):
+        standouts = _standouts(_standout_league(
+            ("Alice", [_standout_row("Dupe", 12, 1), _standout_row("Dupe", 12, 1)]),
+        ))
+        for row in standouts["top_scorers"]:
+            row["code"] = None
+
+        assert standouts["top_scorers"][0]["text"] == "Dupe (Arsenal) scored 12 points for Alice."
+
+    def test_code_less_players_sharing_a_name_and_club_stay_two(self):
+        alice_row = _standout_row("Smith", 12, 1)
+        bob_row = _standout_row("Smith", 7, 2)
+        for row, main_id in ((alice_row, 501), (bob_row, 502)):
+            row["code"] = None
+            row["main_id"] = main_id
+
+        standouts = _standouts(_standout_league(("Alice", [alice_row]), ("Bob", [bob_row])))
+
+        assert [(p["points"], p["id"]) for p in standouts["top_scorers"]] == [(12, 501), (7, 502)]

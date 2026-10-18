@@ -34,6 +34,7 @@ from fpl_cli.cli._json import (
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     PriorSeasonsSummary,
+    RecapStandoutPlayers,
     standout_blanks_heading,
     standout_players_lines,
     summarise_prior_seasons,
@@ -357,6 +358,12 @@ def league_recap_command(
                 collected_data["league_tables_updating"] = still_processing
             collected_data["is_bgw"] = is_bgw
             collected_data["is_dgw"] = is_dgw
+            # Standout players (#455), built here for the recapped gameweek
+            # rather than in the collectors, so a backfill's replays -- which
+            # only reach the ledger -- never pay for a section nobody reads.
+            standouts = _standout_players_or_none(collected_data, gw=gw, is_live_gw=is_live_gw)
+            if standouts is not None:
+                collected_data["standout_players"] = standouts
             # Which players the gameweek placed exactly, so the identity
             # carry keeps this run's derived club instead of a stale one
             # already on disk (issue #177).
@@ -723,6 +730,38 @@ def league_recap_command(
 
     with api_failure_boundary("league-recap", output_format):
         asyncio.run(_run())
+
+
+def _standout_players_or_none(
+    data: LeagueRecapData, *, gw: int, is_live_gw: bool,
+) -> RecapStandoutPlayers | None:
+    """The Standout Players section for the recapped gameweek, or None.
+
+    Best-effort, like the editorial checks: the section is an addition that
+    nothing else reads, so a row shape it did not expect costs the section,
+    never the console recap, the report or the ledger capture. The managers
+    are the whole league only when the standings were not cut short and
+    every member's picks came back -- otherwise a line never says "all" or
+    "everyone but" of them.
+    """
+    from fpl_cli.cli._league_recap_data import find_standout_players
+
+    managers = data["managers"]
+    cohort = data.get("standings_cohort")
+    whole_league = not data.get("standings_truncated", False) and (
+        cohort is None or len(managers) >= len(cohort)
+    )
+    try:
+        return find_standout_players(
+            managers, fpl_format=data["fpl_format"], gameweek=gw,
+            live=is_live_gw, whole_league=whole_league,
+        )
+    except (KeyError, TypeError, ValueError) as e:
+        logger.debug("Standout players could not be built", exc_info=True)
+        error_console.print(
+            f"[yellow]Standout players skipped: a squad row could not be read ({type(e).__name__})[/yellow]"
+        )
+        return None
 
 
 def _still_processing_message(gw: int, reason: str) -> str:
