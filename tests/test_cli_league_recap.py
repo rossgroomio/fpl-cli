@@ -80,6 +80,7 @@ from fpl_cli.services.league_history_notes import (
 )
 from tests.conftest import (
     assert_player_rows_carry_code,
+    make_agent,
     make_fixture,
     make_gameweek_status,
     make_history_row,
@@ -3836,6 +3837,75 @@ def _invoke_recap_unresolved_gameweek(args: list[str] | None = None):
         from fpl_cli.cli.league_recap import league_recap_command
 
         return CliRunner().invoke(league_recap_command, args or [])
+
+
+class TestLeagueRecapFailedSave:
+    """#474: a `--save` that did not save exited 0 and said nothing, the one
+    save path where `review` and `preview` already exit 1."""
+
+    @staticmethod
+    def _invoke(args: list[str], agent: MagicMock):
+        with patch("fpl_cli.agents.orchestration.report.ReportAgent", return_value=agent):
+            return _invoke_recap(_recap_data(), args)
+
+    def test_a_failed_save_exits_1_with_the_reason_on_stderr(self, tmp_path: Path):
+        result = self._invoke(
+            ["--save", "--output", str(tmp_path)], make_agent(success=False, message="disk full"),
+        )
+
+        assert result.exit_code == 1
+        assert "Failed to save report: disk full" in result.stderr
+        assert "Failed to save report" not in result.stdout
+
+    def test_a_failed_save_names_the_cause_the_agent_reports(self, tmp_path: Path):
+        agent = make_agent(
+            success=False, message="Failed to generate report",
+            errors=["[Errno 20] Not a directory"],
+        )
+        result = self._invoke(["--save", "--output", str(tmp_path)], agent)
+
+        assert result.exit_code == 1
+        assert (
+            "Failed to save report: Failed to generate report ([Errno 20] Not a directory)"
+            in result.stderr
+        )
+
+    def test_a_failed_save_under_json_is_the_error_envelope(self, tmp_path: Path):
+        result = self._invoke(
+            ["--format", "json", "--save", "--output", str(tmp_path)],
+            make_agent(success=False, message="disk full"),
+        )
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload == {
+            "command": "league-recap",
+            "error": "Failed to save report: disk full",
+        }
+
+    def test_the_ledger_capture_still_happened_before_the_save_failed(self, tmp_path: Path):
+        result = self._invoke(
+            ["--save", "--output", str(tmp_path)], make_agent(success=False, message="disk full"),
+        )
+
+        assert result.exit_code == 1
+        assert _store().captured_gameweeks() == [5]
+
+    def test_an_unwritable_output_directory_exits_1(self, tmp_path: Path):
+        blocker = tmp_path / "blocker"
+        blocker.touch()
+
+        result = _invoke_recap(_recap_data(), ["--save", "--output", str(blocker / "reports")])
+
+        assert result.exit_code == 1
+        assert "Failed to save report: Failed to generate report" in result.stderr
+
+    def test_a_successful_save_exits_0(self, tmp_path: Path):
+        result = _invoke_recap(_recap_data(), ["--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        assert "Report saved to" in result.stdout
+        assert "Failed to save report" not in result.stderr
 
 
 class TestLeagueRecapJsonEnvelope:

@@ -21,6 +21,7 @@ from fpl_cli.cli._context import (
     get_format,
     get_settings,
     resolve_output_dir,
+    save_failure_message,
 )
 from fpl_cli.cli._draft_provenance import DRAFT_PROVENANCE_UNAVAILABLE
 from fpl_cli.cli._json import (
@@ -637,6 +638,17 @@ def league_recap_command(
                     "gameweek": gw,
                     "data": dict(collected_data),
                 })
+                if not result.success:
+                    # A failure, so exit 1 in both formats, like `review` and
+                    # `preview`. The ledger capture ran above and has already
+                    # written, so nothing is lost by failing here; what the
+                    # exit code protects is a caller that reads 0 as "the
+                    # report exists" (#474).
+                    emit_failure(
+                        "league-recap",
+                        f"Failed to save report: {save_failure_message(result)}",
+                        output_format,
+                    )
                 if result.data and result.data.get("report_path"):
                     console.print(f"\n[green]Report saved to {result.data['report_path']}[/green]")
 
