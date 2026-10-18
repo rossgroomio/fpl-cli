@@ -1146,7 +1146,8 @@ blanks are ordered by rank or average rather than counted level, so they never c
 same sentences print on the console under `Standout Players:`, in a `# Standout Players` section
 of the saved report after the standings, and, with `--summarise`, in a `## Standout Players`
 section of the editorial's prompt, which carries one line saying what the figures are and no rule
-of its own. The command builds it for the gameweek it recaps, never for a backfill's replays, and as
+of its own; the system prompt's rule on facts spanning more than one gameweek names the section as
+the source of a draft blank's pre-season draft rank and season average. The command builds it for the gameweek it recaps, never for a backfill's replays, and as
 an addition nothing else reads: a squad row it cannot read skips the section with a note on stderr
 rather than costing the recap, the report or the ledger capture. Nothing of it reaches the ledger.
 

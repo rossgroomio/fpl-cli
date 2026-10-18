@@ -4360,6 +4360,12 @@ class TestLeagueHistoryPromptSection:
         assert '"## League History" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert '"## Prior Seasons" rule below' in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert 'season fine totals from the "## Season Fines" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        # A draft blank's line carries what was expected of him, a fact that
+        # spans more than this gameweek, so its section is named too (#455).
+        assert (
+            'a draft blank\'s pre-season draft rank or season average from the "## Standout Players" section'
+            in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        )
         # The previous-leader statement is the one cross-gameweek fact the
         # Standings section carries, so it is named as a source rather than
         # left contradicting the previous-leader rule (#452 review).
