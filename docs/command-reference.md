@@ -163,7 +163,7 @@ fpl stats 2>/dev/null           # quiet, and empty if it failed
 
 The main game and the draft game number their players independently. The two numberings
 agree for most of the pool and part ways over the players each game registered after the
-other — in 2026-27 every mismatch sat at draft id 555 or above, 53 players by GW7 — so an id
+season's start, since each numbers its additions on its own — so an id
 read across the boundary does not miss, it lands on someone else
 (#209 inside the waiver scoring; #418 where the gw-prep skill kept a returnee only if its
 `fpl returnees` id appeared in the `fpl waivers` pool, so an unowned late addition read as
