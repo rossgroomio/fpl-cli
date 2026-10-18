@@ -222,6 +222,24 @@ class TestFPLDraftClientLeague:
             mock_get.assert_called_once_with("draft/league/12345/transactions")
             assert len(result["transactions"]) == 3
 
+    @pytest.mark.asyncio
+    async def test_get_draft_choices_takes_the_league_id(self):
+        """The path takes the league id: a draft id reads another league's draft."""
+        client = FPLDraftClient()
+        response = {
+            "choices": [{"draft": 901, "index": 1, "round": 1, "pick": 1, "entry": 100, "element": 7}],
+            "element_status": [],
+            "idle": [],
+        }
+
+        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = response
+
+            result = await client.get_draft_choices(12345)
+
+            mock_get.assert_called_once_with("draft/12345/choices")
+            assert result == response
+
 
 class TestFPLDraftClientEntry:
     """Tests for entry-related endpoints."""

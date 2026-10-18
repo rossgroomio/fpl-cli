@@ -275,6 +275,24 @@ class FPLDraftClient:
         """
         return await self._get(f"draft/league/{league_id}/transactions")
 
+    async def get_draft_choices(self, league_id: int) -> dict[str, Any]:
+        """Get the picks of the league's latest draft.
+
+        One `choices` row per pick, each naming the `draft` it belongs to,
+        beside `element_status` (every player's owner *today*) and `idle`.
+        Only the latest draft is served: a draft scheduled but not yet held
+        returns no rows, and an earlier held draft's picks have no route at
+        all, so a redraft erases them once it is scheduled (#461). The path
+        takes the league id; a draft id reads some other league's draft.
+
+        Args:
+            league_id: The draft league ID.
+
+        Returns:
+            The choices response, as served.
+        """
+        return await self._get(f"draft/{league_id}/choices")
+
     async def get_entry_profile(self, entry_id: int) -> dict[str, Any]:
         """Get a draft entry's public profile.
 

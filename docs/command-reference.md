@@ -1279,6 +1279,31 @@ are cached separately, under `<data dir>/league_history_counters/`, and rebuilt 
 ledger whenever that cache is missing, stale, or unreadable — it is safe to delete, and
 is never read as a source of truth.
 
+A draft recap also keeps each held draft's picks in the ledger, at
+`<data dir>/league_history/<season>/draft-<league id>/drafts/draft-<draft id>.json`. The
+draft API's `draft/<league id>/choices` endpoint serves only the league's latest draft: a
+draft scheduled but not yet held returns no picks, and there is no route back to an
+earlier one, so the moment a redraft is scheduled the previous draft's picks are gone from
+the API. Every `--draft` run, a `-g` replay included, checks each draft the league details
+(`league.drafts`) mark completed:
+
+- Still served and not yet saved: the endpoint's response is written as served, with that
+  draft's `league.drafts` entry added under `league_draft`, and the path is printed on
+  stderr in table mode.
+- Still served and already saved: nothing is written. The two are compared on the picks
+  alone (`draft`, `index`, `round`, `pick`, `entry`, `element`, `was_auto`,
+  `choice_time`), since the response's `element_status` is every player's owner *today*
+  and changes each waiver round. Different picks leave the file untouched and raise
+  `league_history_draft_picks_conflict`.
+- No longer served: silent if a file holds it, `league_history_draft_picks_lost` if not.
+
+The file is the endpoint's response with one key added, so the response saved by hand
+(`curl -s https://draft.premierleague.com/api/draft/<league id>/choices > draft-<draft id>.json`
+into that directory) is a valid snapshot too: it is read as the same picks and kept as it
+is, without `league_draft`. That is the fallback for a league whose redraft is scheduled
+before a recap has run. Nothing reads the snapshots yet; they are captured now because
+they cannot be fetched later.
+
 Three fields say nothing rather than something convenient, because a row outlives the
 API that could correct it.
 
@@ -1441,6 +1466,9 @@ and `league_tables_updating`.
 | `league_history_tied_last_place_repaired` | A gameweek recorded its `last-place` fine against one manager of a tie, leaving the others recorded as owing nothing. The managers level on the same score now carry the same ruling — the one that gameweek wrote, penalty text and all, re-keyed to them. Nothing is re-fetched and nothing is re-ruled, so this needs neither `--backfill-detail` nor a network call, and it stops once the gameweek is repaired. It is skipped where the row data cannot settle who was level: the gameweek does not record whether it was ruled on gross or net points, so where the two measures name different managers as tied, the gameweek is left exactly as recorded |
 | `league_history_tied_last_place_ambiguous` | A gameweek looks to have left a manager out of its `last-place` fine, but it does not record whether it was ruled on gross or net points and the two measures disagree about whether that manager was level. Nothing is written for them — fining a manager who was level only on the measure that did *not* rule would invent a fine rather than restore one. Raised on every run, because the state is permanent and only you can settle it: add the fine by hand if you know how that gameweek was ruled. It can appear alongside `league_history_tied_last_place_repaired` for the same gameweek, where some of the tie was settled and some was not |
 | `league_history_standings_repaired` | A gameweek whose recorded positions an *earlier* run had already erased was restored from the ledger itself — the last superseded line that recorded them, or, on draft, a cumulative total re-summed from earlier gameweeks. The *last* one, not the first: a gameweek captured several times while bonus and late results were still landing recorded a stale position early and the settled one last, and only the latest recorded value is the one the damage destroyed. Nothing is re-fetched, so this needs neither `--backfill-detail` nor a network call, and it stops once the damage is repaired. The count is the managers whose league position or cumulative total actually changed — a row rewritten only to restate a fine's player names is not one of them |
+| `league_history_draft_picks_unsaved` | Draft only. A held draft's picks are still served but were not saved this run: the draft API could not be read, or the file could not be written. Raised only while some held draft has no saved copy; the next run tries again |
+| `league_history_draft_picks_conflict` | Draft only. A held draft's saved picks differ from the ones the draft API serves now, or the file cannot be read as a snapshot. The file is left exactly as it is, since a held draft's picks never change and only you can say which side is wrong; the message names the `mv` that retires the file if it is the wrong one |
+| `league_history_draft_picks_lost` | Draft only. The league details say a draft was held, the draft API no longer serves its picks, and no saved copy exists, so who picked whom in that draft is not recorded. Raised on every run, because the state is permanent; the message names the path a copy of the choices response would go to |
 | `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
 | `synthesis_stopped_early` | The provider reported that the editorial stopped for a reason other than finishing (a token ceiling, a refusal) on the attempt that shipped — a token ceiling only after one retry, a refusal never retried — so `synthesis_summary` may be cut off mid-sentence. The saved report says so in the warning callout above the editorial, naming the stop reason. For a refusal (`refusal`, `content_filter`) the message and the callout say the provider refused the editorial rather than that it may be cut off, since re-running usually draws the same refusal, and name the refusal's category when the provider gave one (Anthropic only: its `stop_details.category`, e.g. `cyber`, `general_harms`; an OpenAI-compatible `content_filter` stop carries none). Everything else in the recap is unaffected |
 | `synthesis_contested_misattribution` | Draft only. The editorial still puts a manager in the wrong role of a contested waiver race after one retry — beaten to a player the race's line does not name them as beaten to, or winning one someone else won. The message quotes each wrong claim beside the contested line it contradicts. `synthesis_summary` is the editorial as written; the saved report carries the same lines in a warning callout above it |

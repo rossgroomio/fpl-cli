@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 from fpl_cli.cli._context import error_console
 from fpl_cli.cli._fines import (
     COHORT_ONLY_RULE_TYPES,
@@ -70,6 +72,12 @@ from fpl_cli.services.league_history import (
     LeagueHistoryStore,
 )
 from fpl_cli.services.league_history_counters import invalidate_if_repaired
+from fpl_cli.services.league_history_drafts import (
+    DraftSnapshotStatus,
+    completed_drafts,
+    draft_snapshot_path,
+    snapshot_draft_choices,
+)
 from fpl_cli.services.league_history_fines import SeasonFinesTally, build_season_fines_tally
 from fpl_cli.services.league_history_notes import NotesPack, build_notes_pack
 from fpl_cli.utils.gameweek import format_gameweek_list
@@ -104,6 +112,13 @@ HISTORY_WARNING_CLAIMS_CARRIED = "league_history_claims_carried"
 HISTORY_WARNING_STANDINGS_REPAIRED = "league_history_standings_repaired"
 HISTORY_WARNING_TIED_LAST_PLACE_REPAIRED = "league_history_tied_last_place_repaired"
 HISTORY_WARNING_TIED_LAST_PLACE_AMBIGUOUS = "league_history_tied_last_place_ambiguous"
+HISTORY_WARNING_DRAFT_PICKS_UNSAVED = "league_history_draft_picks_unsaved"
+HISTORY_WARNING_DRAFT_PICKS_CONFLICT = "league_history_draft_picks_conflict"
+HISTORY_WARNING_DRAFT_PICKS_LOST = "league_history_draft_picks_lost"
+
+# Fetches the draft API's choices response for a league. Passed in, like
+# `ReplayGameweek`, so this module never opens a client of its own.
+FetchDraftChoices = Callable[[int], Awaitable[dict[str, Any]]]
 
 
 @dataclass
@@ -2635,3 +2650,91 @@ async def capture_recap_history(
         fines_tally=fines_tally,
         first_capture_store_path=first_capture_store_path,
     )
+
+
+async def capture_draft_picks(
+    data: LeagueRecapData,
+    *,
+    season: str,
+    fetch_choices: FetchDraftChoices,
+) -> list[dict[str, str]]:
+    """Save each held draft's picks beside the ledger while the API serves them.
+
+    The draft API serves only the latest draft, so a redraft erases the
+    current draft's picks from it the moment it is scheduled (#461). Every
+    draft recap therefore checks each draft the league has held: one still
+    served is saved once, and one no longer served is either already saved
+    or already lost, which is said. Nothing reads the snapshots yet.
+
+    Returns the warnings raised, already shown on stderr. Never raises for an
+    unreachable API or a file problem: the picks cost a warning, not the
+    recap (R4).
+    """
+    warnings: list[dict[str, str]] = []
+    league_id = data.get("league_id")
+    drafts = completed_drafts(data.get("league_drafts") or [])
+    if data["fpl_format"] != "draft" or league_id is None or not drafts:
+        return warnings
+
+    try:
+        choices: Any = await fetch_choices(league_id)
+        if not isinstance(choices, dict):
+            raise ValueError(f"expected a JSON object, got {type(choices).__name__}")
+    except (httpx.HTTPError, ValueError) as exc:
+        # Only a draft with no copy yet is at risk: once every held draft is
+        # saved, a failed read costs nothing but the check against it.
+        unsaved = [
+            draft["id"] for draft in drafts
+            if not draft_snapshot_path(season, league_id, draft["id"]).is_file()
+        ]
+        if not unsaved:
+            logger.debug("Could not read the draft picks to check them: %r", exc)
+            return warnings
+        _warn(
+            warnings, HISTORY_WARNING_DRAFT_PICKS_UNSAVED,
+            f"Could not read the draft picks from the draft API ({exc}), so the picks of "
+            f"draft {', '.join(str(i) for i in unsaved)} are still not saved. Re-run to retry: "
+            "the API stops serving a draft's picks once a redraft is scheduled.",
+        )
+        return warnings
+
+    for outcome in snapshot_draft_choices(season, league_id, drafts, choices):
+        path = outcome.path
+        if outcome.status is DraftSnapshotStatus.SAVED:
+            error_console.print(f"[dim]Saved the picks of draft {outcome.draft_id} to {path}.[/dim]")
+        elif outcome.status is DraftSnapshotStatus.DIFFERS:
+            _warn(
+                warnings, HISTORY_WARNING_DRAFT_PICKS_CONFLICT,
+                f"The picks saved for draft {outcome.draft_id} differ from the ones the draft API "
+                f"serves now: {outcome.detail}. A held draft's picks never change, so either the "
+                f"API or the file is wrong, and the file is left as it is. If the file is the wrong "
+                f"one, move it aside (mv '{path}' '{path}.corrupt') and re-run to save what the API "
+                "serves.",
+            )
+        elif outcome.status is DraftSnapshotStatus.UNREADABLE:
+            _warn(
+                warnings, HISTORY_WARNING_DRAFT_PICKS_CONFLICT,
+                f"The picks file for draft {outcome.draft_id} at {path} could not be read: "
+                f"{outcome.detail}. It is left as it is rather than saved over. Move it aside "
+                f"(mv '{path}' '{path}.corrupt') and re-run to save the picks the draft API "
+                "serves now.",
+            )
+        elif outcome.status is DraftSnapshotStatus.WRITE_FAILED:
+            _warn(
+                warnings, HISTORY_WARNING_DRAFT_PICKS_UNSAVED,
+                f"Could not save the picks of draft {outcome.draft_id} to {path}: "
+                f"{outcome.detail}. The draft API still serves them, so the next run tries again.",
+            )
+        elif outcome.status is DraftSnapshotStatus.LOST:
+            instead = (
+                f" (it serves draft {', '.join(str(i) for i in outcome.served_draft_ids)} instead)"
+                if outcome.served_draft_ids else ""
+            )
+            _warn(
+                warnings, HISTORY_WARNING_DRAFT_PICKS_LOST,
+                f"Draft {outcome.draft_id} has been held, but the draft API no longer serves its "
+                f"picks{instead} and none were saved while it did, so who picked whom in that draft "
+                f"is not recorded. If you have a copy of the API's choices response for it, put it "
+                f"at {path}.",
+            )
+    return warnings
