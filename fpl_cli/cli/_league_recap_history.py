@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 from fpl_cli.cli._context import error_console
 from fpl_cli.cli._fines import (
     COHORT_ONLY_RULE_TYPES,
@@ -70,6 +72,14 @@ from fpl_cli.services.league_history import (
     LeagueHistoryStore,
 )
 from fpl_cli.services.league_history_counters import invalidate_if_repaired
+from fpl_cli.services.league_history_drafts import (
+    DraftSnapshotStatus,
+    completed_drafts,
+    has_saved_picks,
+    is_recognised_draft,
+    lost_draft_path,
+    snapshot_draft_choices,
+)
 from fpl_cli.services.league_history_fines import SeasonFinesTally, build_season_fines_tally
 from fpl_cli.services.league_history_notes import NotesPack, build_notes_pack
 from fpl_cli.utils.gameweek import format_gameweek_list
@@ -104,6 +114,14 @@ HISTORY_WARNING_CLAIMS_CARRIED = "league_history_claims_carried"
 HISTORY_WARNING_STANDINGS_REPAIRED = "league_history_standings_repaired"
 HISTORY_WARNING_TIED_LAST_PLACE_REPAIRED = "league_history_tied_last_place_repaired"
 HISTORY_WARNING_TIED_LAST_PLACE_AMBIGUOUS = "league_history_tied_last_place_ambiguous"
+HISTORY_WARNING_DRAFT_PICKS_UNSAVED = "league_history_draft_picks_unsaved"
+HISTORY_WARNING_DRAFT_PICKS_CONFLICT = "league_history_draft_picks_conflict"
+HISTORY_WARNING_DRAFT_PICKS_LOST = "league_history_draft_picks_lost"
+HISTORY_WARNING_DRAFT_PICKS_UNCHECKED = "league_history_draft_picks_unchecked"
+
+# Fetches the draft API's choices response for a league. Passed in, like
+# `ReplayGameweek`, so this module never opens a client of its own.
+FetchDraftChoices = Callable[[int], Awaitable[dict[str, Any]]]
 
 
 @dataclass
@@ -2635,3 +2653,137 @@ async def capture_recap_history(
         fines_tally=fines_tally,
         first_capture_store_path=first_capture_store_path,
     )
+
+
+
+@dataclass
+class DraftPicksCapture:
+    """What one run did about the league's held drafts' picks."""
+
+    warnings: list[dict[str, str]] = field(default_factory=list)
+    # Snapshots written by this run. Reported under `--format json` too,
+    # where the stderr notice is suppressed: a run that commits the ledger
+    # needs to know a new file appeared (the same gap
+    # `first_capture_store_path` closes for the partition itself).
+    saved: list[Path] = field(default_factory=list)
+
+
+async def capture_draft_picks(
+    data: LeagueRecapData,
+    *,
+    season: str,
+    fetch_choices: FetchDraftChoices,
+) -> DraftPicksCapture:
+    """Save each held draft's picks beside the ledger while the API serves them.
+
+    The draft API serves only the latest draft, so a redraft erases the
+    current draft's picks from it the moment it is scheduled (#461). Every
+    draft recap therefore checks each draft the league has held: one still
+    served is saved once, and one no longer served is either already saved
+    or already lost, which is said once. Nothing reads the snapshots yet.
+
+    Every warning is also shown on stderr. Never raises for an unreachable
+    API, a reshaped response or a file problem: the picks cost a warning,
+    not the recap (R4).
+    """
+    result = DraftPicksCapture()
+    league_id = data.get("league_id")
+    # Absent means no collector read the league details; only a draft
+    # collector sets it, None included.
+    if data["fpl_format"] != "draft" or league_id is None or "league_drafts" not in data:
+        return result
+
+    league_drafts = data["league_drafts"]
+    if league_drafts is None:
+        _warn(
+            result.warnings, HISTORY_WARNING_DRAFT_PICKS_UNCHECKED,
+            "The draft league's details carry no `league.drafts` list, so no draft's picks were "
+            "checked or saved. The draft API may have changed shape; the picks stop being served "
+            "once a redraft is scheduled.",
+        )
+        return result
+    # Quietly skipping an entry this cannot read would lose a held draft's
+    # picks with no sign, which is the failure the snapshot exists to stop.
+    unrecognised = sum(1 for entry in league_drafts if not is_recognised_draft(entry))
+    if unrecognised:
+        _warn(
+            result.warnings, HISTORY_WARNING_DRAFT_PICKS_UNCHECKED,
+            f"{unrecognised} of the {len(league_drafts)} drafts in the league details could not be "
+            "read (no numeric `id`, or no true-or-false `draft_completed`), so their picks were not "
+            "checked or saved. The draft API may have changed shape; the picks stop being served "
+            "once a redraft is scheduled.",
+        )
+    completed = completed_drafts(league_drafts)
+    if not completed:
+        return result
+
+    try:
+        choices: Any = await fetch_choices(league_id)
+        # A body with no `choices` list (an error or maintenance object) is
+        # a failed read, not "no picks served": read as the second, it
+        # would report every unsaved draft as gone for good.
+        if not isinstance(choices, dict) or not isinstance(choices.get("choices"), list):
+            raise ValueError("the response carries no `choices` list")
+    except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError) as exc:
+        # Only a draft with no usable copy yet is at risk: once every held
+        # draft is saved, a failed read costs nothing but the check.
+        unsaved = [
+            draft["id"] for draft in completed
+            if not has_saved_picks(season, league_id, draft["id"])
+        ]
+        if not unsaved:
+            logger.debug("Could not read the draft picks to check them: %r", exc)
+            return result
+        _warn(
+            result.warnings, HISTORY_WARNING_DRAFT_PICKS_UNSAVED,
+            f"Could not read the draft picks from the draft API ({exc}), so the picks of "
+            f"draft {', '.join(str(i) for i in unsaved)} are still not saved. Re-run to retry: "
+            "the API stops serving a draft's picks once a redraft is scheduled.",
+        )
+        return result
+
+    for outcome in snapshot_draft_choices(season, league_id, completed, choices):
+        path = outcome.path
+        if outcome.status is DraftSnapshotStatus.SAVED:
+            result.saved.append(path)
+            error_console.print(f"[dim]Saved the picks of draft {outcome.draft_id} to {path}.[/dim]")
+        elif outcome.status is DraftSnapshotStatus.DIFFERS:
+            _warn(
+                result.warnings, HISTORY_WARNING_DRAFT_PICKS_CONFLICT,
+                f"The picks saved for draft {outcome.draft_id} differ from the ones the draft API "
+                f"serves now: the file at {path} {outcome.detail}. A held draft's picks never "
+                "change, so either the API or the file is wrong, and the file is left as it is. If "
+                f"the file is the wrong one, move it aside (mv '{path}' '{path}.corrupt') and re-run "
+                "to save what the API serves.",
+            )
+        elif outcome.status is DraftSnapshotStatus.UNREADABLE:
+            _warn(
+                result.warnings, HISTORY_WARNING_DRAFT_PICKS_CONFLICT,
+                f"The picks file for draft {outcome.draft_id} at {path} {outcome.detail}. It is left "
+                f"as it is rather than saved over. Move it aside (mv '{path}' '{path}.corrupt') and "
+                "re-run to save the picks the draft API serves now.",
+            )
+        elif outcome.status is DraftSnapshotStatus.WRITE_FAILED:
+            _warn(
+                result.warnings, HISTORY_WARNING_DRAFT_PICKS_UNSAVED,
+                f"Could not save the picks of draft {outcome.draft_id} to {path}: "
+                f"{outcome.detail}. The draft API still serves them, so the next run tries again.",
+            )
+        elif outcome.status is DraftSnapshotStatus.LOST:
+            instead = (
+                f" (it serves draft {', '.join(str(i) for i in outcome.served_draft_ids)} instead)"
+                if outcome.served_draft_ids else ""
+            )
+            copy = (
+                f"the file at {path} {outcome.detail}" if outcome.detail
+                else "none were saved while it did"
+            )
+            _warn(
+                result.warnings, HISTORY_WARNING_DRAFT_PICKS_LOST,
+                f"Draft {outcome.draft_id} has been held, but the draft API no longer serves its "
+                f"picks{instead} and {copy}, so who picked whom in that draft is not recorded. If "
+                f"you have a copy of the API's choices response for it, put it at {path}. Said once: "
+                f"later recaps stay quiet while "
+                f"{lost_draft_path(season, league_id, outcome.draft_id).name} is beside it.",
+            )
+    return result

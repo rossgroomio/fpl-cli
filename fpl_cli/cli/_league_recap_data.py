@@ -2384,6 +2384,10 @@ async def collect_draft_recap_data(
     async with FPLDraftClient() as draft_client:
         league_details = await draft_client.get_league_details(draft_league_id)
         league_name = league_details.get("league", {}).get("name", "Draft League")
+        # Verbatim, unfiltered: an entry the snapshot cannot read is reported
+        # there rather than dropped here, and None says the list is missing.
+        raw_drafts = league_details.get("league", {}).get("drafts")
+        league_drafts: list[Any] | None = raw_drafts if isinstance(raw_drafts, list) else None
         standings = league_details.get("standings", [])
         league_entries = league_details.get("league_entries", [])
         entry_map = {e.get("id"): e for e in league_entries}
@@ -2751,4 +2755,7 @@ async def collect_draft_recap_data(
         # unknown-size page.
         standings_truncated=len(cohort) < len(league_entries),
         league_size=len(league_entries),
+        # Handed on for the draft-picks snapshot (#461) rather than fetched
+        # again there: the same read the rest of this recap came from.
+        league_drafts=league_drafts,
     )

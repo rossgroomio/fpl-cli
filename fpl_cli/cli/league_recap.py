@@ -108,7 +108,7 @@ def league_recap_command(
         configured_fine_rule_types,
         evaluate_league_fines,
     )
-    from fpl_cli.cli._league_recap_history import capture_recap_history
+    from fpl_cli.cli._league_recap_history import capture_draft_picks, capture_recap_history
     from fpl_cli.cli.review import GameweekResolutionError, _review_resolve_gw
 
     settings = get_settings(ctx)
@@ -488,6 +488,11 @@ def league_recap_command(
                     fines_config=parse_fines_config(settings),
                     use_net_points=bool(settings.get("use_net_points", False)),
                 )
+                # Each held draft's picks, kept beside the ledger while the
+                # API still serves them (#461). A no-op off draft.
+                draft_picks = await capture_draft_picks(
+                    collected_data, season=season, fetch_choices=_fetch_draft_choices,
+                )
             notes_pack = capture_result.notes_pack
 
             # Report-surfaced history text, stashed as plain strings so the
@@ -656,7 +661,7 @@ def league_recap_command(
                         # The skipped editorial rides the same channel as the
                         # capture's own warnings: `synthesis_summary` being
                         # null does not say whether it was asked for.
-                        "warnings": capture_result.warnings + (
+                        "warnings": capture_result.warnings + draft_picks.warnings + (
                             [{
                                 "code": "synthesis_provider_unavailable",
                                 "message": (
@@ -724,6 +729,10 @@ def league_recap_command(
                             str(capture_result.first_capture_store_path)
                             if capture_result.first_capture_store_path else None
                         ),
+                        # The draft-picks snapshots this run wrote (#461), so
+                        # a run that commits the ledger sees a new file; the
+                        # stderr notice naming them is suppressed here.
+                        "draft_picks_saved": [str(path) for path in draft_picks.saved],
                     },
                     file=stdout,
                 )
@@ -762,6 +771,14 @@ def _standout_players_or_none(
             f"[yellow]Standout players skipped: a squad row could not be read ({type(e).__name__})[/yellow]"
         )
         return None
+
+
+async def _fetch_draft_choices(league_id: int) -> dict[str, Any]:
+    """The draft API's picks for a league, from a client opened for them alone."""
+    from fpl_cli.api.fpl_draft import FPLDraftClient
+
+    async with FPLDraftClient() as draft_client:
+        return await draft_client.get_draft_choices(league_id)
 
 
 def _still_processing_message(gw: int, reason: str) -> str:
