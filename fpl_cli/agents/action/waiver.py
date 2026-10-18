@@ -43,6 +43,13 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
+def _join_and(parts: list[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c``: a list as a sentence reads it."""
+    if len(parts) < 2:
+        return "".join(parts)
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
 class WaiverAgent(Agent):
     """Agent for analyzing and recommending waiver claims.
 
@@ -415,23 +422,27 @@ class WaiverAgent(Agent):
     def _unjoined_player_warning(
         self, pool: list[EnrichedPlayer],
     ) -> dict[str, str] | None:
-        """The notice for keepers and defenders the main-game join missed.
+        """The notice for players the main-game join missed, at every position.
 
-        Both read a scoring input off the main-game player (a keeper's
-        saves/xGC block, a defender's DC/90), so a miss scores the player
-        without the term against an anchor calibrated with it. That ranks him
-        low for a reason that is not merit, and nothing in the payload would
-        otherwise tell a consumer so. An empty main-game player list misses
-        every keeper and defender at once, which is why the entry is one
-        aggregate naming counts and the first few names rather than a line per
-        player. Midfielders and forwards read nothing off the join, so they
-        are not counted.
+        The join carries each player's history, prior, adjusted npxG and
+        consistency signals onto the draft pool, so a miss scores any player
+        on a different mix of terms from the rest of the pool. Keepers and
+        defenders lose a position-specific input as well (a keeper's
+        saves/xGC block, a defender's DC/90). The change is not uniformly
+        down: a midfielder dropped from the join has been seen to climb past
+        the top defender (#475), so a consumer cannot read a miss as an
+        under-rating, only as a score that is not comparable, and nothing in
+        the payload would otherwise say so. An empty main-game player list
+        misses the whole pool at once, which is why the entry is one aggregate
+        naming counts and the first few names rather than a line per player.
         """
         missed = []
-        consequences = []
-        for position, noun, consequence in (
-            ("GK", "keeper", "without saves/xGC signals"),
-            ("DEF", "defender", "without defensive contribution"),
+        extras = []
+        for position, noun, extra in (
+            ("GK", "keeper", "saves/xGC signals"),
+            ("DEF", "defender", "defensive contribution"),
+            ("MID", "midfielder", None),
+            ("FWD", "forward", None),
         ):
             names = [
                 p["player_name"] for p in pool
@@ -441,15 +452,17 @@ class WaiverAgent(Agent):
             if names:
                 shown = ", ".join(names[:3]) + (", ..." if len(names) > 3 else "")
                 missed.append(f"{len(names)} draft {noun}(s) ({shown})")
-                consequences.append(f"{noun}s are scored {consequence}")
+                if extra is not None:
+                    extras.append(f"{noun}s also without {extra}")
         if not missed:
             return None
         return {
             "code": "draft_player_unjoined",
             "message": (
-                f"No main-game match for {' and '.join(missed)}: "
-                f"{' and '.join(consequences)}, against a waiver anchor calibrated "
-                "with those terms."
+                f"No main-game match for {_join_and(missed)}: each is scored without"
+                " its history, prior, adjusted npxG and consistency signals"
+                f"{''.join(f', {e}' for e in extras)}, so its waiver score is not"
+                " comparable with the rest of the pool and can read high or low."
             ),
         }
 

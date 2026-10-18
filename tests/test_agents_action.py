@@ -1177,9 +1177,9 @@ class TestWaiverAgentDefensiveContribution:
 
         [warning] = self._unjoined_warnings(result)
         assert "1 draft keeper(s) (Raya)" in warning["message"]
-        assert "keepers are scored without saves/xGC signals" in warning["message"]
+        assert "keepers also without saves/xGC signals" in warning["message"]
         assert "1 draft defender(s) (Gabriel)" in warning["message"]
-        assert "defenders are scored without defensive contribution" in warning["message"]
+        assert "defenders also without defensive contribution" in warning["message"]
 
     @pytest.mark.asyncio
     async def test_an_empty_main_player_list_misses_every_keeper_and_defender(
@@ -1209,7 +1209,7 @@ class TestWaiverAgentDefensiveContribution:
         assert "defender" not in warning["message"]
 
     @pytest.mark.asyncio
-    async def test_no_entry_when_every_keeper_and_defender_joined(
+    async def test_no_entry_when_every_player_joined(
         self, mock_draft_bootstrap, mock_league_details,
     ):
         main_keeper = make_player(
@@ -1225,19 +1225,30 @@ class TestWaiverAgentDefensiveContribution:
         assert self._unjoined_warnings(result) == []
 
     @pytest.mark.asyncio
-    async def test_outfielders_that_read_nothing_off_the_join_are_not_counted(
+    async def test_midfielders_and_forwards_the_join_missed_are_counted(
         self, mock_draft_bootstrap, mock_league_details,
     ):
-        """A midfielder's score takes no term from the join, so a miss costs it none."""
+        """#475: the join carries history, prior, npxG and consistency for everyone.
+
+        So an outfielder's miss changes his score too, and only keepers and
+        defenders get a position-specific clause on top.
+        """
         midfielder = make_draft_player(
             id=9, web_name="Rice", team=1, element_type=3, code=9005, minutes=1800,
         )
+        forward = make_draft_player(
+            id=10, web_name="Haaland", team=13, element_type=4, code=9006, minutes=1800,
+        )
         result = await self._run_agent(
             mock_draft_bootstrap, mock_league_details,
-            players=[self._main_defender()], extra_pool=[midfielder],
+            players=[self._main_defender()], extra_pool=[midfielder, forward],
         )
 
-        assert self._unjoined_warnings(result) == []
+        [warning] = self._unjoined_warnings(result)
+        message = warning["message"]
+        assert "1 draft midfielder(s) (Rice) and 1 draft forward(s) (Haaland)" in message
+        assert "history, prior, adjusted npxG and consistency signals" in message
+        assert "also without" not in message
 
     @pytest.mark.asyncio
     async def test_the_miss_is_reported_once_not_also_logged(
@@ -1484,9 +1495,10 @@ class TestWaiverAgentIdSpace:
             for i, pts in enumerate(points)
         ]
 
-    async def _run(self, mock_draft_bootstrap, mock_league_details, **lookups):
+    async def _run(self, mock_draft_bootstrap, mock_league_details, players=None, **lookups):
         agent = WaiverAgent(config={"draft_league_id": 12345})
-        players = [self._main_player(), self._id_sharer()]
+        if players is None:
+            players = [self._main_player(), self._id_sharer()]
 
         with _stub_upstream_fetches(players=players, **lookups), \
              patch.object(agent.client, "get_bootstrap_static", new_callable=AsyncMock) as mock_bootstrap, \
@@ -1593,6 +1605,37 @@ class TestWaiverAgentIdSpace:
 
         assert with_id_sharer == own_row_only
         assert own_row_only < own_row_rising
+
+    @pytest.mark.asyncio
+    async def test_an_unjoined_midfielder_scores_differently_and_is_named(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        """#475: a miss changes a midfielder's score, so the warning must say so.
+
+        Same pool, same main-keyed lookups; the only difference is whether the
+        target's main-game counterpart is there to join to. Without it the
+        history and consistency rows have nowhere to land.
+        """
+        lookups = {
+            "player_histories": {self.MAIN_ID: self._history([2, 6, 10, 14, 18])},
+            "consistency_lookup": {self.MAIN_ID: ConsistencySignals(cv_xgi_percentile=0.9)},
+        }
+        _, joined = await self._run(mock_draft_bootstrap, mock_league_details, **lookups)
+        _, unjoined = await self._run(
+            mock_draft_bootstrap, mock_league_details,
+            players=[self._id_sharer()], **lookups,
+        )
+
+        def score(result) -> int:
+            return result.data["top_targets"][0]["waiver_score"]
+
+        def unjoined_warnings(result) -> list[dict[str, str]]:
+            return [w for w in result.data["warnings"] if w["code"] == "draft_player_unjoined"]
+
+        assert score(joined) != score(unjoined)
+        assert unjoined_warnings(joined) == []
+        [warning] = unjoined_warnings(unjoined)
+        assert "1 draft midfielder(s) (Semenyo)" in warning["message"]
 
     @pytest.mark.asyncio
     async def test_reliability_and_consistency_reach_the_recommendation(
