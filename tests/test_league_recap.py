@@ -4360,12 +4360,6 @@ class TestLeagueHistoryPromptSection:
         assert '"## League History" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert '"## Prior Seasons" rule below' in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert 'season fine totals from the "## Season Fines" section' in RECAP_SYNTHESIS_SYSTEM_PROMPT
-        # A draft blank's line carries what was expected of him, a fact that
-        # spans more than this gameweek, so its section is named too (#455).
-        assert (
-            'a draft blank\'s pre-season draft rank or season average from the "## Standout Players" section'
-            in RECAP_SYNTHESIS_SYSTEM_PROMPT
-        )
         # The previous-leader statement is the one cross-gameweek fact the
         # Standings section carries, so it is named as a source rather than
         # left contradicting the previous-leader rule (#452 review).
@@ -7981,7 +7975,7 @@ class TestStandoutPlayersPromptSection:
         text = format_recap_standout_players_context(self._data("draft"))
 
         assert "captaincy" not in text
-        assert "Blanks among the best-ranked players, by FPL's pre-season draft rank:" in text
+        assert "Blanks among the best-ranked players, by FPL's pre-season player ranking:" in text
 
     def test_the_section_states_facts_and_gives_no_instructions(self):
         """It owns its facts like every other section, so the model may use
@@ -8060,7 +8054,7 @@ class TestStandoutPlayersReport:
         content = await self._render(tmp_path, self._data("draft"))
 
         section = content[content.index("# Standout Players"):]
-        assert "## Blanks among the best-ranked players, by FPL's pre-season draft rank" in section
+        assert "## Blanks among the best-ranked players, by FPL's pre-season player ranking" in section
         assert "captaincy" not in section
 
     async def test_no_section_without_the_data(self, tmp_path: Path):
@@ -8169,7 +8163,7 @@ class TestCollectorsFindStandoutPlayers:
         # matched main-game player's.
         blank = standouts["blanks"][0]
         assert (blank["name"], blank["draft_rank"], blank["points_per_game"], blank["minutes"]) == ("P5", 595, 5.0, 90)
-        assert blank["text"] == "P5 (pre-season draft rank 595) managed 2 points for A B."
+        assert blank["text"] == "P5 managed 2 points for A B."
         assert standouts["blanks_order"] == "draft_rank"
         row = data["managers"][0]["squad"][4]
         assert (row["draft_rank"], row["points_per_game"], row["appearances"]) == (595, 5.0, 10)
@@ -8219,7 +8213,7 @@ class TestDraftStandoutBlanks:
         assert standouts["blanks_order"] == "draft_rank"
         assert [p["name"] for p in standouts["blanks"]] == ["B.Fernandes", "Saka", "Gabriel"]
         assert standouts["blanks"][0]["text"] == (
-            "B.Fernandes (Manchester United, pre-season draft rank 2) managed 1 point for Alice."
+            "B.Fernandes (Manchester United) managed 1 point for Alice."
         )
         assert standouts["blanks_omitted"] == 0
 
@@ -8237,7 +8231,7 @@ class TestDraftStandoutBlanks:
         assert standouts["blanks_order"] == "points_per_game"
         assert [p["name"] for p in standouts["blanks"]] == ["Saka", "B.Fernandes", "Gabriel"]
         assert standouts["blanks"][0]["text"] == (
-            "Saka (Arsenal, averaging 5.7 points a game this season) managed 2 points for Bob."
+            "Saka (Arsenal) managed 2 points for Bob."
         )
 
     def test_an_average_behind_too_few_appearances_is_not_listed(self):
@@ -8275,11 +8269,29 @@ class TestDraftStandoutBlanks:
         assert STANDOUT_PPG_FROM_GW == 19
 
     @pytest.mark.parametrize(("gameweek", "heading"), [
-        (STANDOUT_PPG_FROM_GW - 1, "Blanks among the best-ranked players, by FPL's pre-season draft rank"),
+        (STANDOUT_PPG_FROM_GW - 1, "Blanks among the best-ranked players, by FPL's pre-season player ranking"),
         (STANDOUT_PPG_FROM_GW, "Blanks among this season's best performers, by points per game"),
     ])
     def test_the_heading_says_what_the_blanks_are_ordered_by(self, gameweek: int, heading: str):
         assert standout_blanks_heading(self._league(gameweek)) == heading
+
+    @pytest.mark.parametrize("gameweek", [STANDOUT_PPG_FROM_GW - 1, STANDOUT_PPG_FROM_GW])
+    def test_a_draft_blank_reads_like_a_classic_one(self, gameweek: int):
+        """The ordering stays, in the heading and the payload, but no line
+        states it: given "pre-season draft rank 2", the editorial wrote it up
+        as this league's "number 2 draft pick" (#455, vault A/B round 1)."""
+        standouts = self._league(gameweek)
+        _, blank_lines = standout_players_lines(standouts)
+
+        assert blank_lines
+        for line in blank_lines:
+            assert not re.search(r"(?i)\b(?:draft|rank\w*|averag\w*|pick)\b", line), line
+        assert (standouts["blanks"][0]["draft_rank"], standouts["blanks"][0]["points_per_game"]) != (None, None)
+
+    @pytest.mark.parametrize("gameweek", [STANDOUT_PPG_FROM_GW - 1, STANDOUT_PPG_FROM_GW])
+    def test_no_heading_calls_the_ranking_a_draft(self, gameweek: int):
+        """One FPL ranking shared by every draft league, never this one's draft."""
+        assert "draft" not in standout_blanks_heading(self._league(gameweek)).lower()
 
     def test_a_top_scorer_carries_no_rank_or_average(self):
         standouts = _standouts(_standout_league(

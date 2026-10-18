@@ -1120,11 +1120,15 @@ for more managers; the blanks are up to three players who counted for someone an
 or fewer. In classic the blank that counted for the most managers comes first, then the lowest. In
 draft a player has one owner, so that would leave only the lowest scores, which are squad fillers
 nobody drafted with any hope; draft blanks are ordered instead by what the manager could expect of
-the player. Before GW19 that is FPL's pre-season draft rank, best first ("B.Fernandes (Manchester
-United, pre-season draft rank 2) managed 1 point for Alice."); the draft game sets it before the
-season, on last season's points and its view of each player's potential, and never updates it, so
-from GW19 the season's points per game takes over ("Saka (Arsenal, averaging 5.7 points a game this
-season) managed 2 points for Bob."). A draft blanks list only holds players its ordering can rank: a
+the player. Before GW19 that is FPL's pre-season draft rank, best first; the draft game sets it
+before the season, on last season's points and its view of each player's potential, and never
+updates it, so from GW19 the season's points per game takes over. The ordering is the heading's to
+say ("Blanks among the best-ranked players, by FPL's pre-season player ranking", or "Blanks among
+this season's best performers, by points per game") and the JSON's, never the line's: a draft blank
+reads like a classic one ("B.Fernandes (Manchester United) managed 1 point for Alice."). Given the
+rank on the line, the editorial wrote it up as this league's "number 2 draft pick", though the rank
+is one list shared by every draft league, which is also why the heading never calls it a draft. A
+draft blanks list only holds players its ordering can rank: a
 player with no draft rank, or from GW19 one with fewer than 5 appearances behind his average, is
 left off, so the list can run short of three rather than put a two-game cameo's average under a
 heading that calls it the best. The average is today's, which on the recap of the gameweek just
@@ -1146,8 +1150,8 @@ blanks are ordered by rank or average rather than counted level, so they never c
 same sentences print on the console under `Standout Players:`, in a `# Standout Players` section
 of the saved report after the standings, and, with `--summarise`, in a `## Standout Players`
 section of the editorial's prompt, which carries one line saying what the figures are and no rule
-of its own; the system prompt's rule on facts spanning more than one gameweek names the section as
-the source of a draft blank's pre-season draft rank and season average. The command builds it for the gameweek it recaps, never for a backfill's replays, and as
+of its own. Every line states this gameweek's facts only, so the system prompt needs no rule about
+the section. The command builds it for the gameweek it recaps, never for a backfill's replays, and as
 an addition nothing else reads: a squad row it cannot read skips the section with a note on stderr
 rather than costing the recap, the report or the ledger capture. Nothing of it reaches the ledger.
 

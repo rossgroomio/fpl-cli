@@ -7333,7 +7333,7 @@ class TestStandoutPlayersSurfaces:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Blanks among the best-ranked players, by FPL's pre-season draft rank" in result.stdout.replace("\n", "")
+        assert "Blanks among the best-ranked players, by FPL's pre-season player ranking" in result.stdout.replace("\n", "")
 
     def test_the_saved_report_carries_the_section(self, tmp_path: Path):
         result = _invoke_recap(self._data(), ["--save", "--output", str(tmp_path)])

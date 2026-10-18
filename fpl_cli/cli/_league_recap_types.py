@@ -429,7 +429,8 @@ class RecapStandoutPlayer(TypedDict):
     minutes: int | None
     red_cards: int
     # Draft only, null in classic: the pre-season draft rank and the season's
-    # points per game the blanks are ordered by (`blanks_order`).
+    # points per game the blanks are ordered by (`blanks_order`). Here for a
+    # consumer to read; no printed line states either.
     draft_rank: int | None
     points_per_game: float | None
     counted_for: list[RecapStandoutManager]
@@ -528,36 +529,25 @@ def _standout_for(
     return clause
 
 
-def _standout_expectation(player: RecapStandoutPlayer, order: StandoutBlanksOrder) -> str | None:
-    """What the line says was expected of a draft blank, phrased as the
-    ordering measured it: "pre-season draft rank 2", or "averaging 5.7
-    points a game this season". The rank is said to be pre-season because
-    it is, so the line stays true when the run-in has left it behind."""
-    if order == "draft_rank" and player["draft_rank"] is not None:
-        return f"pre-season draft rank {player['draft_rank']}"
-    if order == "points_per_game" and player["points_per_game"] is not None:
-        return f"averaging {player['points_per_game']:.1f} points a game this season"
-    return None
-
-
 def format_standout_player(
     player: RecapStandoutPlayer,
     *,
     managers: int,
     not_counted: Sequence[RecapStandoutManager],
     whole_league: bool,
-    blank_order: StandoutBlanksOrder | None,
+    blank: bool,
 ) -> str:
     """One standout player as a sentence a columnist could lift (#455):
     "Haaland (Manchester City) scored 17 points for 9 of the 12 managers,
     everyone but Alice, Bob and Cam; Alice left him on the bench."
 
-    `blank_order` is None for a top scorer and the blanks' ordering for a
-    blank, which "managed" his points rather than scoring them and says how
-    long he played where it was under the hour: "did not play for Cam", or
-    "managed 1 point in 27 minutes for Dan". A draft blank also carries
-    what was expected of him, inside the brackets with his club. A red card
-    is said either way ("was sent off and managed -1 point for Bob").
+    A blank "managed" his points rather than scoring them and says how long
+    he played where it was under the hour: "did not play for Cam", or
+    "managed 1 point in 27 minutes for Dan". A red card is said either way
+    ("was sent off and managed -1 point for Bob"). A draft blank reads like
+    a classic one: what his list is ordered by is the heading's to say, and
+    the payload's, never the line's. Given "pre-season draft rank 2" on the
+    line, the editorial wrote it up as this league's "number 2 draft pick".
 
     Written for a reader rather than a ledger, because the editorial lifts
     what its data sections put in front of it (audit finding 20): every
@@ -566,11 +556,8 @@ def format_standout_player(
     managers he did not count for, named when the line says "everyone but",
     which it only says when `whole_league` holds.
     """
-    blank = blank_order is not None
-    bracket = [player["team_name"]] if player["team_name"] else []
-    if blank_order is not None and (expected := _standout_expectation(player, blank_order)):
-        bracket.append(expected)
-    line = player["name"] + (f" ({', '.join(bracket)})" if bracket else "")
+    club = player["team_name"]
+    line = f"{player['name']} ({club})" if club else player["name"]
     minutes = player["minutes"]
     if blank and minutes == 0:
         line += " did not play"
@@ -604,10 +591,13 @@ def standout_players_note(fpl_format: str) -> str:
 
 def standout_blanks_heading(standouts: RecapStandoutPlayers) -> str:
     """The blanks list's heading, which says what it is ordered by, so a
-    reader, and the editorial, can tell why these three and not others."""
+    reader, and the editorial, can tell why these three and not others.
+    FPL's draft rank is one ranking shared by every draft league, so the
+    heading never calls it "draft": a reader takes that for this league's
+    own draft, and the editorial did, writing a rank up as a "draft pick"."""
     order = standouts["blanks_order"]
     if order == "draft_rank":
-        return "Blanks among the best-ranked players, by FPL's pre-season draft rank"
+        return "Blanks among the best-ranked players, by FPL's pre-season player ranking"
     if order == "points_per_game":
         return "Blanks among this season's best performers, by points per game"
     return "Blanks that counted for the most managers"

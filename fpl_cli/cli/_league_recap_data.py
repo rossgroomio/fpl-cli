@@ -2162,7 +2162,7 @@ def find_standout_players(
             managers=len(managers),
             not_counted=by_name([i for i in range(len(managers)) if i not in counted_at]),
             whole_league=whole_league,
-            blank_order=order if blank else None,
+            blank=blank,
         )
         return standout
 
