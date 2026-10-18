@@ -507,6 +507,43 @@ class TestGetDraftOwnershipMapping:
         assert ownership.provenance is not None
         assert ownership.provenance.problem == "the draft game names no gameweek to replay the history to"
 
+    def _with_lost_picks(self, game: dict | None = None):
+        """The league above once a redraft is scheduled: the feed serves no picks
+        for the GW1 draft, so who drafted whom is rebuilt from the GW1 squads."""
+        client = self._with_history(game=game)
+        client.get_draft_choices = AsyncMock(return_value={
+            "choices": [], "element_status": [{"element": 99, "owner": 7}, {"element": 55, "owner": 8}],
+        })
+        squads = {7: [99], 8: [55]}
+        client.get_entry_picks = AsyncMock(side_effect=lambda entry, gameweek: {
+            "picks": [{"element": e, "position": n} for n, e in enumerate(squads[entry], start=1)],
+        })
+        return client
+
+    async def test_a_lost_drafts_squads_are_read_by_the_first_lookup_only(self):
+        """#472: gw-prep looks players up on demand, so the lookup that rebuilt the
+        draft keeps the squads it read and the next one asks nobody."""
+        first, second = self._with_lost_picks(), self._with_lost_picks()
+
+        for client in (first, second):
+            provenance = (await self._read(client)).provenance
+            assert provenance is not None and provenance.available, provenance and provenance.problem
+            assert provenance.draft is not None and provenance.draft.rounds_known is False
+            assert provenance.players[99].owner == 7
+
+        assert sorted(call.args for call in first.get_entry_picks.await_args_list) == [(7, 1), (8, 1)]
+        second.get_entry_picks.assert_not_awaited()
+
+    async def test_before_the_drafts_gameweek_is_under_way_its_squads_are_not_kept(self):
+        """Replayed to the coming GW1 with nothing under way yet, the GW1 squads can still change."""
+        clients = [self._with_lost_picks(game={"current_event": 0, "next_event": 1}) for _ in range(2)]
+
+        for client in clients:
+            provenance = (await self._read(client)).provenance
+            assert provenance is not None and provenance.available, provenance and provenance.problem
+
+        assert [client.get_entry_picks.await_count for client in clients] == [2, 2]
+
     async def test_no_season_given_reads_the_clocks(self):
         client = self._with_history()
 

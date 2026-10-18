@@ -2405,7 +2405,9 @@ async def _attach_draft_acquisitions(
     where the gameweek did. The draft's picks come from the API's choices
     feed, or, once it serves another draft, from the snapshot kept under
     `season` (#461); where neither has them, who drafted whom is rebuilt from
-    the squads at the draft's gameweek and the lines name no round.
+    the squads at the draft's gameweek and the lines name no round. A replay
+    that passes on those squads keeps them in the cache dir, and later runs
+    rebuild from that copy rather than reading them again (#472).
 
     Returns `(problem, notice, choices)`. A problem says why the history could
     not be shown complete: every row's `acquisition` stays None, the lines read
@@ -2416,7 +2418,7 @@ async def _attach_draft_acquisitions(
     to save instead of asking for it again; `league_drafts` None means the
     league details carried no list, which the replay reports as such.
     """
-    from fpl_cli.services.draft_provenance import read_draft_logs, replay_draft_history
+    from fpl_cli.services.draft_provenance import keep_rebuild_squads, read_draft_logs, replay_draft_history
 
     observed: dict[int, int] = {}
     for m in managers:
@@ -2434,6 +2436,8 @@ async def _attach_draft_acquisitions(
         )
         choices = logs.choices_payload
         provenance = replay_draft_history(logs, gameweek, main_players=main_players, observed=observed)
+        # A recapped gameweek has finished, so every draft in force by then has started.
+        keep_rebuild_squads(logs, provenance, season=season, league_id=league_id, started=gameweek)
     except (KeyError, TypeError, ValueError, AttributeError) as e:
         logger.debug("Draft provenance could not be replayed", exc_info=True)
         return f"the league's history could not be replayed ({type(e).__name__})", None, choices

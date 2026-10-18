@@ -22,7 +22,7 @@ from fpl_cli.api.understat import UnderstatClient, match_fpl_to_understat
 from fpl_cli.constants import MIN_MINUTES_FOR_PER90
 from fpl_cli.models.types import EnrichedPlayer
 from fpl_cli.season import season_label
-from fpl_cli.services.draft_provenance import DraftProvenance, read_draft_logs, replay_draft_history
+from fpl_cli.services.draft_provenance import DraftProvenance, get_draft_provenance
 
 # Re-export: canonical location is now fpl_cli.services.scoring
 from fpl_cli.services.scoring import build_understat_by_player_id as build_understat_by_player_id
@@ -260,7 +260,8 @@ async def get_draft_ownership_mapping(
     saved picks are kept, for a draft the API no longer serves; None reads
     the clock's season. The history costs the draft's choices, the trades and
     the transaction log, plus one squad per manager at the draft's gameweek
-    when neither the API nor a snapshot holds its picks.
+    when neither the API nor a snapshot holds its picks, until a replay that
+    passes on those squads keeps them in the cache dir (#472).
     """
     league_details = await draft_client.get_league_details(draft_league_id)
     draft_bootstrap = await draft_client.get_bootstrap_static()
@@ -335,8 +336,10 @@ async def _read_ownership_provenance(
             return DraftProvenance(0, problem="the draft game names no gameweek to replay the history to")
         league = league_details.get("league")
         drafts = league.get("drafts") if isinstance(league, Mapping) else None
-        logs = await read_draft_logs(
-            draft_client, league_id,
+        current = game.get("current_event")
+        return await get_draft_provenance(
+            draft_client, league_id, gameweek,
+            main_players=main_players,
             # None makes the read fetch the details itself and report a list that is missing.
             drafts=drafts if isinstance(drafts, list) else None,
             season=season,
@@ -344,9 +347,10 @@ async def _read_ownership_provenance(
                 e["entry_id"] for e in league_details.get("league_entries", [])
                 if isinstance(e.get("entry_id"), int)
             ],
-            gameweek=gameweek,
+            # The gameweek under way, not the coming one: a lost draft's squads
+            # are kept only once its own gameweek has started (#472).
+            started=current if _is_gameweek(current) else None,
         )
-        return replay_draft_history(logs, gameweek, main_players=main_players)
     except Exception as e:  # noqa: BLE001 — optional enrichment: the ownership read beside it must survive
         logger.debug("Draft provenance could not be replayed", exc_info=True)
         return DraftProvenance(0, problem=f"the league's history could not be replayed ({type(e).__name__})")
