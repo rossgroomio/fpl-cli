@@ -86,17 +86,21 @@ from fpl_cli.prompts.league_recap import (
 from fpl_cli.prompts.league_recap_checks import (
     EDITORIAL_CHECKS,
     RECAP_WARNING_CONTESTED_MISATTRIBUTION,
+    RECAP_WARNING_CONTESTED_ROLL_CALL,
     RECAP_WARNING_KIND_NET_MISATTRIBUTION,
     RECAP_WARNING_NET_MISATTRIBUTION,
     RECAP_WARNING_UNSUPPORTED_TIE,
     RecapNames,
     check_contested_attributions,
+    check_contested_roll_calls,
     check_kind_net_scopes,
     check_net_attributions,
     check_recap_editorial,
     check_tie_claims,
     editorial_warning_message,
     get_recap_editorial_retry_prompt,
+    recap_editorial_flaw,
+    split_recap_problems,
 )
 from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
 from fpl_cli.services.league_history_notes import (
@@ -6885,6 +6889,24 @@ class TestRecapTitleIsTheReportsNotTheModels:
         assert content.splitlines()[0] == "# Gameweek 1 Recap: Draft League"
         assert result.data["report_path"].endswith("gw1-league-recap-draft.md")
 
+    async def test_a_problems_dict_with_nothing_listed_opens_no_callout(self, tmp_path):
+        """PR #462 review: the callout opens on the same lists it prints, so a
+        problems dict that lists nothing cannot leave an empty warning block."""
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = {
+            "gameweek": 4, "league_name": "Sunday League", "fpl_format": "draft",
+            "managers": [], "awards": {},
+            "synthesis_summary": "## Chaos\n\nAlice ran away with it.",
+            "synthesis_problems": {"synthesis_contested_roll_call": []},
+        }
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 4, "data": data})
+
+        assert result.data is not None
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "[!WARNING]" not in content
+        assert "Alice ran away with it." in content
+
 
 # ---------------------------------------------------------------------------
 # Contested attribution check (issue #357)
@@ -7120,6 +7142,300 @@ class TestContestedAttributionCheck:
         assert "Each \"Contested players\" line is one race" in system
         assert "never fold two lines into one clause" in system
         assert '"X and Y were beaten to A and B respectively"' in system
+
+
+# ---------------------------------------------------------------------------
+# Roll call of the beaten (issue #459)
+# ---------------------------------------------------------------------------
+
+
+def _roll_call_week() -> list[RecapManagerEntry]:
+    """One big race: Alice Moss won King over four beaten managers, Bob Gale,
+    Cam Hart, Dan Ford and Eve Ray. Cam Lowe claimed nothing and shares Cam
+    Hart's first name, so "Cam" alone names neither of them."""
+    return [
+        _make_manager_with_txns("Alice Moss", [_txn("King", 6, "A", 1)], entry_id=1),
+        _lost_by(_make_manager(name="Bob Gale", entry_id=2), _lost("King", "B", priority=1)),
+        _lost_by(_make_manager(name="Cam Hart", entry_id=3), _lost("King", "C", priority=2)),
+        _lost_by(_make_manager(name="Dan Ford", entry_id=4), _lost("King", "D", priority=3)),
+        _lost_by(_make_manager(name="Eve Ray", entry_id=5), _lost("King", "E", priority=4)),
+        _make_manager(name="Cam Lowe", entry_id=6),
+    ]
+
+
+class TestContestedRollCallCheck:
+    """Issue #459: five rounds of prompt and data changes never stopped the
+    editorial reciting the week's biggest race as a list of the managers
+    beaten. The check counts known names in one paragraph; it never judges
+    tone, so it fires on a true sentence the contradiction checks would pass."""
+
+    def _check(self, summary: str, managers: list[RecapManagerEntry] | None = None) -> list[str]:
+        managers = managers or _roll_call_week()
+        return check_contested_roll_calls(summary, contested_draft_claims(managers), RecapNames.of(managers))
+
+    def test_three_beaten_managers_of_one_race_in_one_paragraph_is_one_problem(self):
+        assert self._check(
+            "Alice Moss took King, with Bob Gale, Cam Hart and Dan Ford all beaten to him."
+        ) == ["one paragraph names 3 of the 4 managers beaten to King"]
+
+    def test_the_full_roll_call_counts_every_beaten_manager(self):
+        assert self._check(
+            "Bob Gale, Cam Hart, Dan Ford and Eve Ray all wanted King, and Alice Moss got him."
+        ) == ["one paragraph names 4 of the 4 managers beaten to King"]
+
+    def test_two_beaten_managers_are_not_a_roll_call(self):
+        assert self._check("Alice Moss took King, and Bob Gale and Cam Hart both missed out.") == []
+
+    def test_the_same_names_spread_one_per_paragraph_are_not_a_roll_call(self):
+        assert self._check(
+            "Bob Gale missed out on King.\n\nCam Hart was beaten to him too.\n\nDan Ford rounded out the field."
+        ) == []
+
+    def test_a_single_line_break_does_not_end_a_paragraph(self):
+        assert self._check(
+            "Bob Gale missed out on King.\nCam Hart was beaten to him too.\nDan Ford rounded out the field."
+        ) == ["one paragraph names 3 of the 4 managers beaten to King"]
+
+    def test_blank_lines_with_stray_whitespace_still_end_a_paragraph(self):
+        assert self._check("Bob Gale missed out on King.\n  \t\nCam Hart and Dan Ford did not.") == []
+
+    def test_paragraphs_that_list_them_at_the_same_count_are_one_line_saying_so(self):
+        """PR #462 review: a line per paragraph was the same sentence twice,
+        with nothing to tell the paragraphs apart."""
+        listed = "Bob Gale, Cam Hart and Dan Ford were beaten to King."
+        assert self._check(f"{listed}\n\nAlice Moss enjoyed it.\n\n{listed}") == [
+            "2 paragraphs each name 3 of the 4 managers beaten to King",
+        ]
+
+    def test_paragraphs_that_list_them_at_different_counts_are_a_line_each(self):
+        assert self._check(
+            "Bob Gale, Cam Hart and Dan Ford were beaten to King.\n\n"
+            "Bob Gale, Cam Hart, Dan Ford and Eve Ray all lost King."
+        ) == [
+            "one paragraph names 3 of the 4 managers beaten to King",
+            "one paragraph names 4 of the 4 managers beaten to King",
+        ]
+
+    def test_a_paragraph_that_never_names_the_race_s_player_is_not_about_the_race(self):
+        """PR #462 review: three of a five-way race's losers in a standings
+        paragraph is no roll call, and the retry would be told to drop names
+        it was never shown as losers."""
+        assert self._check(
+            "Alice Moss took King.\n\n"
+            "At the top of the table Bob Gale leads Cam Hart and Dan Ford by four points."
+        ) == []
+
+    def test_the_player_named_only_as_a_possessive_still_makes_it_the_races_paragraph(self):
+        assert self._check("King's other suitors were Bob Gale, Cam Hart and Dan Ford.") == [
+            "one paragraph names 3 of the 4 managers beaten to King",
+        ]
+
+    def test_names_in_the_paragraph_after_the_player_is_named_are_an_accepted_miss(self):
+        """The player has to be in the same paragraph as the names. A roll call
+        that leans on "him" across a blank line is missed, which is the price
+        of not firing on every paragraph that happens to name three losers."""
+        assert self._check("Alice Moss took King.\n\nBob Gale, Cam Hart and Dan Ford were beaten to him.") == []
+
+    def test_a_heading_ends_the_paragraph_above_it_without_a_blank_line(self):
+        """PR #462 review: a heading is a block of its own in the report, so
+        two sections separated by one must not be counted together."""
+        assert self._check(
+            "King went to Alice Moss, and Bob Gale lost him.\n"
+            "## Fines\n"
+            "Cam Hart and Dan Ford were fined, King or no King."
+        ) == []
+
+    def test_a_headline_that_lists_them_is_a_roll_call_of_its_own(self):
+        assert self._check("## Bob Gale, Cam Hart and Dan Ford miss out on King\n\nAlice Moss took him.") == [
+            "one paragraph names 3 of the 4 managers beaten to King",
+        ]
+
+    def test_a_unique_surname_counts(self):
+        assert self._check("King went to Alice Moss; Gale, Hart and Ford were all beaten to him.") == [
+            "one paragraph names 3 of the 4 managers beaten to King",
+        ]
+
+    def test_a_first_name_another_manager_shares_does_not_count(self):
+        # "Cam" is Cam Hart and Cam Lowe alike, so it names neither.
+        assert self._check("Bob Gale, Cam and Dan Ford were beaten to King.") == []
+        assert self._check("Bob Gale, Cam Hart and Dan Ford were beaten to King.") == [
+            "one paragraph names 3 of the 4 managers beaten to King",
+        ]
+
+    def test_a_manager_named_twice_counts_once(self):
+        assert self._check("Bob Gale, Gale again and Bob Gale a third time, then Cam Hart, lost King.") == []
+
+    def test_the_winner_named_beside_two_losers_passes(self):
+        # Three managers named, two of them beaten: the winner never counts.
+        assert self._check("Alice Moss beat Bob Gale and Cam Hart to King.") == []
+
+    def test_a_loser_named_for_an_unrelated_reason_still_counts_as_the_accepted_cost(self):
+        """A paragraph that names three beaten managers reads as a roll call to
+        a reader whatever the reason, so this is not a false alarm to avoid."""
+        assert self._check(
+            "Alice Moss beat Bob Gale to King. Cam Hart posted the week's worst captain, "
+            "and Dan Ford took the biggest hit."
+        ) == ["one paragraph names 3 of the 4 managers beaten to King"]
+
+    def test_a_name_read_inside_a_longer_one_does_not_count(self):
+        """The third beaten manager's surname is only found inside a hyphenated
+        player, which is not a mention of her (#379)."""
+        managers = [
+            _make_manager_with_txns("Alice Moss", [_txn("King", 6, "A", 1)], entry_id=1),
+            _lost_by(_make_manager(name="Bob Gale", entry_id=2), _lost("King", "B")),
+            _lost_by(_make_manager(name="Cam Hart", entry_id=3), _lost("King", "C")),
+            _lost_by(_make_manager(name="Dan White", entry_id=4), _lost("King", "D")),
+        ]
+        managers[0]["squad"] = [_make_squad_player(name="Gibbs-White")]
+        summary = "Gibbs-White did nothing for Alice Moss, who beat Bob Gale and Cam Hart to King."
+        assert self._check(summary, managers) == []
+        assert self._check(f"{summary} Dan White was beaten too.", managers) == [
+            "one paragraph names 3 of the 3 managers beaten to King",
+        ]
+
+    def test_a_short_form_that_is_also_a_player_is_not_read_as_the_manager(self):
+        managers = _roll_call_week()
+        managers[0]["squad"] = [_make_squad_player(name="Ford")]
+        assert self._check("Ford fired in for Alice Moss; Bob Gale and Cam Hart missed out on King.", managers) == []
+
+    def test_beaten_managers_of_different_races_do_not_add_up(self):
+        managers = [
+            _make_manager_with_txns("Alice Moss", [_txn("King", 6, "A", 1)], entry_id=1),
+            _make_manager_with_txns("Fay Wood", [_txn("Bogle", 4, "F", 1)], entry_id=2),
+            _lost_by(_make_manager(name="Bob Gale", entry_id=3), _lost("King", "B")),
+            _lost_by(_make_manager(name="Cam Hart", entry_id=4), _lost("King", "C")),
+            _lost_by(_make_manager(name="Dan Ford", entry_id=5), _lost("Bogle", "D")),
+            _lost_by(_make_manager(name="Eve Ray", entry_id=6), _lost("Bogle", "E")),
+        ]
+        assert self._check("Bob Gale and Cam Hart lost King; Dan Ford and Eve Ray lost Bogle.", managers) == []
+
+    def test_each_race_is_counted_against_its_own_beaten_managers(self):
+        managers = [
+            _make_manager_with_txns("Alice Moss", [_txn("King", 6, "A", 1)], entry_id=1),
+            _make_manager_with_txns("Fay Wood", [_txn("Bogle", 4, "F", 1)], entry_id=2),
+            _lost_by(_make_manager(name="Bob Gale", entry_id=3), _lost("King", "B"), _lost("Bogle", "B2")),
+            _lost_by(_make_manager(name="Cam Hart", entry_id=4), _lost("King", "C"), _lost("Bogle", "C2")),
+            _lost_by(_make_manager(name="Dan Ford", entry_id=5), _lost("King", "D"), _lost("Bogle", "D2")),
+        ]
+        # Level on claimants and priorities, the races rank by player name.
+        assert self._check("Bob Gale, Cam Hart and Dan Ford lost both King and Bogle.", managers) == [
+            "one paragraph names 3 of the 3 managers beaten to Bogle",
+            "one paragraph names 3 of the 3 managers beaten to King",
+        ]
+
+    def test_classic_data_is_inert(self):
+        """Classic has no claims, hence no races: no format switch needed."""
+        managers = [
+            _make_manager(name="Alice Moss", entry_id=1),
+            _make_manager(name="Bob Gale", entry_id=2),
+            _make_manager(name="Cam Hart", entry_id=3),
+            _make_manager(name="Dan Ford", entry_id=4),
+        ]
+        data = _make_recap_data(managers=managers)
+        assert data["fpl_format"] == "classic"
+        assert check_recap_editorial("Bob Gale, Cam Hart and Dan Ford all had a week to forget.", data) == {}
+        assert self._check("Bob Gale, Cam Hart and Dan Ford all had a week to forget.", managers) == []
+
+    def test_nothing_is_checked_without_a_contested_race(self):
+        names = RecapNames.of(_roll_call_week())
+        assert check_contested_roll_calls("Bob Gale, Cam Hart and Dan Ford.", [], names) == []
+
+    def test_a_race_nobody_won_is_still_a_list_of_the_beaten(self):
+        managers = [
+            _lost_by(_make_manager(name="Bob Gale", entry_id=2), _lost("King", "B")),
+            _lost_by(_make_manager(name="Cam Hart", entry_id=3), _lost("King", "C")),
+            _lost_by(_make_manager(name="Dan Ford", entry_id=4), _lost("King", "D")),
+        ]
+        assert contested_draft_claims(managers)[0]["winner"] is None
+        assert self._check("Bob Gale, Cam Hart and Dan Ford all wanted King.", managers) == [
+            "one paragraph names 3 of the 3 managers beaten to King",
+        ]
+
+    def test_it_answers_under_its_own_code_beside_the_other_checks(self):
+        data = _make_recap_data(managers=_roll_call_week())
+        data["fpl_format"] = "draft"
+        found = check_recap_editorial("Alice Moss took King; Bob Gale, Cam Hart and Dan Ford missed out.", data)
+        assert found == {
+            RECAP_WARNING_CONTESTED_ROLL_CALL: ["one paragraph names 3 of the 4 managers beaten to King"],
+        }
+
+    def test_the_warning_message_opens_with_the_lead_and_states_the_count(self):
+        assert editorial_warning_message(
+            RECAP_WARNING_CONTESTED_ROLL_CALL, ["one paragraph names 5 of the 5 managers beaten to King"],
+        ) == (
+            "The editorial lists the managers beaten to one player. "
+            "One paragraph names 5 of the 5 managers beaten to King."
+        )
+
+
+class TestBrokenBriefIsToldApartFromContradiction:
+    """Issue #459: the roll call is the first problem that is a true sentence,
+    so "contradicted the data it was given" would be a lie told to the retry,
+    to the reader on stderr and in the saved report."""
+
+    _ROLL = "one paragraph names 5 of the 5 managers beaten to King"
+    _WRONG = "the editorial says Bob was beaten to Giles"
+
+    def test_only_the_roll_call_is_registered_as_a_broken_brief(self):
+        assert {check.code for check in EDITORIAL_CHECKS if check.broken_brief} == {
+            RECAP_WARNING_CONTESTED_ROLL_CALL,
+        }
+
+    def test_the_retry_prompt_for_a_roll_call_carries_the_instruction_and_a_header_that_fits(self):
+        prompt = get_recap_editorial_retry_prompt("ORIGINAL", {RECAP_WARNING_CONTESTED_ROLL_CALL: [self._ROLL]})
+
+        assert prompt.startswith("ORIGINAL\n\nYour previous draft broke the brief it was given:\n")
+        assert f"- {self._ROLL}\n" in prompt
+        assert "contradicted the data" not in prompt
+        assert "A race needs only its count and its winner" in prompt
+        assert "name at most two of the managers beaten to any one player" in prompt
+        assert "only where the loss is their story" in prompt
+        assert prompt.endswith("never as a list.")
+
+    def test_a_contradiction_alone_keeps_the_header_it_always_had(self):
+        prompt = get_recap_editorial_retry_prompt("ORIGINAL", {RECAP_WARNING_CONTESTED_MISATTRIBUTION: [self._WRONG]})
+
+        assert f"Your previous draft contradicted the data it was given:\n- {self._WRONG}\n" in prompt
+        assert "broke the brief" not in prompt
+        assert "name at most two" not in prompt
+
+    def test_a_draft_with_both_gets_a_header_for_each_over_its_own_lines(self):
+        prompt = get_recap_editorial_retry_prompt(
+            "ORIGINAL",
+            {RECAP_WARNING_CONTESTED_MISATTRIBUTION: [self._WRONG], RECAP_WARNING_CONTESTED_ROLL_CALL: [self._ROLL]},
+        )
+
+        contradicted = prompt.index("Your previous draft contradicted the data it was given:")
+        broke = prompt.index("Your previous draft broke the brief it was given:")
+        assert contradicted < prompt.index(f"- {self._WRONG}") < broke < prompt.index(f"- {self._ROLL}")
+        assert '"respectively"' in prompt
+        assert "name at most two" in prompt
+
+    def test_a_cut_off_roll_call_is_told_both_without_the_word_contradicted(self):
+        prompt = get_recap_editorial_retry_prompt(
+            "ORIGINAL", {RECAP_WARNING_CONTESTED_ROLL_CALL: [self._ROLL]}, stop_reason="max_tokens",
+        )
+
+        assert "cut off before it finished" in prompt
+        assert "Your previous draft broke the brief it was given:" in prompt
+        assert "contradicted" not in prompt
+
+    def test_a_code_the_registry_does_not_know_is_read_as_a_contradiction(self):
+        contradicted, broken = split_recap_problems({"synthesis_from_a_newer_version": [self._WRONG]})
+
+        assert (contradicted, broken) == ([self._WRONG], [])
+
+    def test_the_flaw_names_what_is_wrong_in_the_words_it_fits(self):
+        assert recap_editorial_flaw({}) is None
+        assert recap_editorial_flaw({RECAP_WARNING_CONTESTED_MISATTRIBUTION: [self._WRONG]}) == (
+            "contradicts the data it was given"
+        )
+        assert recap_editorial_flaw({RECAP_WARNING_CONTESTED_ROLL_CALL: [self._ROLL]}) == (
+            "breaks the brief it was given"
+        )
+        assert recap_editorial_flaw({
+            RECAP_WARNING_CONTESTED_MISATTRIBUTION: [self._WRONG], RECAP_WARNING_CONTESTED_ROLL_CALL: [self._ROLL],
+        }) == "contradicts the data and breaks the brief it was given"
 
 
 # ---------------------------------------------------------------------------
@@ -7691,6 +8007,7 @@ class TestEditorialChecks:
         assert sorted(codes) == sorted({
             RECAP_WARNING_CONTESTED_MISATTRIBUTION, RECAP_WARNING_NET_MISATTRIBUTION,
             RECAP_WARNING_KIND_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE,
+            RECAP_WARNING_CONTESTED_ROLL_CALL,
         })
         assert all(check.lead and check.retry_instruction for check in EDITORIAL_CHECKS)
 

@@ -10,9 +10,14 @@ has already ignored once.
 Each check is narrow by design. It reads only the clauses it can pin down
 and lets everything else pass, so a problem it returns is a sentence the
 data contradicts, never a guess -- a false alarm costs a retry and puts a
-warning above a correct editorial. `EDITORIAL_CHECKS` is the one registry:
-each check's warning code, the prose its JSON warning opens with, what the
-retry is told, and the checker itself.
+warning above a correct editorial. The one check that breaks that wording is
+the roll call of beaten managers (#459), which fires on a true sentence:
+its contract is the mechanical analogue, a count of known names in one
+paragraph and never a judgement of tone. It is registered as a broken brief
+rather than a contradiction, so the retry, stderr and the saved report say
+the draft broke its brief instead of claiming the data contradicts it.
+`EDITORIAL_CHECKS` is the one registry: each check's warning code, the prose
+its JSON warning opens with, what the retry is told, and the checker itself.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ RECAP_WARNING_CONTESTED_MISATTRIBUTION = "synthesis_contested_misattribution"
 RECAP_WARNING_NET_MISATTRIBUTION = "synthesis_net_misattribution"
 RECAP_WARNING_KIND_NET_MISATTRIBUTION = "synthesis_kind_net_misattribution"
 RECAP_WARNING_UNSUPPORTED_TIE = "synthesis_unsupported_tie"
+RECAP_WARNING_CONTESTED_ROLL_CALL = "synthesis_contested_roll_call"
 
 
 # =============================================================================
@@ -431,6 +437,105 @@ def check_contested_attributions(
             assert_role(mentions[winner].name, mentions[player].name, won=True)
         for beaten, player in _pairs(summary, mentions, claim.beaten, claim.players):
             assert_role(mentions[beaten].name, mentions[player].name, won=False)
+    return problems
+
+
+# =============================================================================
+# Roll calls of the beaten (#459)
+# =============================================================================
+
+# How many of one race's beaten managers a paragraph may name before it reads
+# as a list of them. The prompt allows a beaten manager whose loss is the
+# story (the leader missed out, one manager lost two races), and two such
+# stories in one race are plausible; three is a roll call.
+ROLL_CALL_MIN_NAMED = 3
+# An ATX heading is a block of its own in markdown, blank line before it or
+# not, so it never runs into the paragraph above or below.
+_HEADING_LINE_RE = re.compile(r"\s{0,3}#{1,6}(?:\s|$)")
+
+
+def _paragraphs(text: str) -> list[str]:
+    """The blocks `text` renders as: runs of lines between blank lines, with
+    each heading line a block of its own. A single line break stays inside its
+    paragraph, as it does in the report the editorial is saved to."""
+    blocks: list[str] = []
+    lines: list[str] = []
+    for line in text.splitlines():
+        if line.strip() and not _HEADING_LINE_RE.match(line):
+            lines.append(line)
+            continue
+        if lines:
+            blocks.append("\n".join(lines))
+            lines = []
+        if line.strip():
+            blocks.append(line)
+    if lines:
+        blocks.append("\n".join(lines))
+    return blocks
+
+
+def check_contested_roll_calls(
+    summary: str,
+    contests: Sequence[RecapContestedClaim],
+    names: RecapNames,
+) -> list[str]:
+    """Every paragraph that lists the managers beaten to one player (#459).
+
+    The prompt says a race needs only its count and its winner and a beaten
+    manager is named only when that is the story, and five rounds of prompt
+    and data changes on #452 and #455 never stopped the model reciting the
+    week's biggest race as a list. Unlike every other check this fires on a
+    true sentence, so it holds itself to what a machine can count: the
+    distinct beaten managers of one race that a paragraph naming the race's
+    player also names. It never judges tone, and it does not ask why a
+    manager is named.
+
+    Managers are matched through `RecapNames` as the other checks match them,
+    so a full name, or a first or last name no other manager shares, counts
+    and a name read inside a longer one does not. A short form that is also
+    the name of any player the data carries is left unread, as in
+    `check_kind_net_scopes`: "Wood" beside a squad player of that name could
+    be either, and a false alarm costs more here than a missed one.
+
+    Three or more of one race's beaten managers in one paragraph that names
+    the race's player is one problem. A paragraph that never names him is not
+    about the race, however many of its managers lost it: a standings
+    paragraph naming three of a five-way race's losers is no roll call. Two
+    beaten managers is not one, nor is the same set spread one per
+    paragraph, nor is the winner, who is never among the beaten. A beaten
+    manager named in the race's paragraph for an unrelated reason counts all
+    the same: the paragraph reads as a roll call to a reader too, so that is
+    an accepted cost rather than a false alarm to engineer around.
+    Paragraphs are `_paragraphs()`'s. Classic rows carry no lost claims,
+    hence no races, and the check returns nothing there.
+
+    Returns one line per race and count, in the order the editorial first
+    reaches them. A race listed at the same count by more than one paragraph
+    is one line saying so, since a line per paragraph would be the same
+    sentence twice with nothing to tell the paragraphs apart.
+    """
+    if not contests:
+        return []
+    aliases = _mention_aliases(names.managers, set(names.players))
+    rolls: dict[tuple[int, int], int] = {}
+    for paragraph in _paragraphs(summary):
+        players = {m.group(0) for m in names.find(paragraph)}
+        named = {m.name for m in _find_mentions(paragraph, names, aliases) if m.is_manager}
+        for index, race in enumerate(contests):
+            if race["player"] not in players:
+                continue
+            # A winner who shares a display name with a loser is ambiguous in
+            # prose, so that name is left out rather than guessed at.
+            beaten = {loser["manager_name"] for loser in race["losers"]} - {race["winner"]}
+            if (count := len(beaten & named)) >= ROLL_CALL_MIN_NAMED:
+                rolls[index, count] = rolls.get((index, count), 0) + 1
+    problems: list[str] = []
+    for (index, count), paragraphs in rolls.items():
+        race = contests[index]
+        beaten = f"{count} of the {len(race['losers'])} managers beaten to {race['player']}"
+        problems.append(
+            f"one paragraph names {beaten}" if paragraphs == 1 else f"{paragraphs} paragraphs each name {beaten}"
+        )
     return problems
 
 
@@ -1179,10 +1284,20 @@ class EditorialCheck:
     # What the retry is told to do about it.
     retry_instruction: str
     run: Callable[[str, LeagueRecapData, RecapNames], list[str]]
+    # False for a claim the data contradicts, which every check but one
+    # reads. True for a draft that said nothing false and still broke the
+    # brief (#459): the words that name it to the retry, to the reader on
+    # stderr and in the saved report change with it, because "contradicted
+    # the data" would not be true of it.
+    broken_brief: bool = False
 
 
 def _contested(summary: str, data: LeagueRecapData, names: RecapNames) -> list[str]:
     return check_contested_attributions(summary, contested_draft_claims(data["managers"]), names)
+
+
+def _contested_roll_calls(summary: str, data: LeagueRecapData, names: RecapNames) -> list[str]:
+    return check_contested_roll_calls(summary, contested_draft_claims(data["managers"]), names)
 
 
 EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
@@ -1226,6 +1341,17 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
         ),
         run=lambda summary, data, names: check_tie_claims(summary, data["managers"], names),
     ),
+    EditorialCheck(
+        code=RECAP_WARNING_CONTESTED_ROLL_CALL,
+        lead="The editorial lists the managers beaten to one player",
+        retry_instruction=(
+            "A race needs only its count and its winner, so name at most two of the managers beaten "
+            "to any one player, and only where the loss is their story (the leader missed out, or one "
+            "manager lost two races), never as a list."
+        ),
+        run=_contested_roll_calls,
+        broken_brief=True,
+    ),
 )
 _CHECKS_BY_CODE = {check.code: check for check in EDITORIAL_CHECKS}
 
@@ -1240,6 +1366,33 @@ def check_recap_editorial(summary: str, data: LeagueRecapData) -> dict[str, list
     names = RecapNames.of(data["managers"])
     found = {check.code: check.run(summary, data, names) for check in EDITORIAL_CHECKS}
     return {code: problems for code, problems in found.items() if problems}
+
+
+def split_recap_problems(problems: Mapping[str, Sequence[str]]) -> tuple[list[str], list[str]]:
+    """`check_recap_editorial()`'s problems as (the claims the data
+    contradicts, the briefs the draft broke), each in the order given.
+
+    The two are told apart wherever the editorial's fault is named, since
+    only the first is a sentence the data contradicts (#459). A code the
+    registry does not know is read as a contradiction, as every problem was
+    before the split, so naming the fault never costs a report its callout."""
+    contradicted: list[str] = []
+    broken: list[str] = []
+    for code, found in problems.items():
+        check = _CHECKS_BY_CODE.get(code)
+        (broken if check is not None and check.broken_brief else contradicted).extend(found)
+    return contradicted, broken
+
+
+def recap_editorial_flaw(problems: Mapping[str, Sequence[str]]) -> str | None:
+    """What is wrong with the editorial, completing "The editorial ...": it
+    contradicts the data, breaks its brief, or both. None for a clean one."""
+    contradicted, broken = split_recap_problems(problems)
+    if contradicted and broken:
+        return "contradicts the data and breaks the brief it was given"
+    if broken:
+        return "breaks the brief it was given"
+    return "contradicts the data it was given" if contradicted else None
 
 
 def get_recap_editorial_retry_prompt(
@@ -1259,15 +1412,25 @@ def get_recap_editorial_retry_prompt(
     token ceiling: that draft gets told it was cut off, since a clean check on
     text that stopped short proves nothing (#372). A refusal was not cut off,
     so the caller never passes one.
+
+    A claim the data contradicts and a draft that broke the brief while
+    saying nothing false (#459) are told apart: each kind of problem gets
+    its own header, so the retry is never told the data contradicted a
+    sentence that was true.
     """
     feedback: list[str] = []
     if stop_reason:
         feedback.append(
             f"Your previous draft was cut off before it finished (the provider stopped with {stop_reason})."
         )
-    if problems:
-        corrections = "\n".join(f"- {problem}" for found in problems.values() for problem in found)
-        feedback.append(f"Your previous draft contradicted the data it was given:\n{corrections}")
+    contradicted, broken = split_recap_problems(problems)
+    for header, found in (
+        ("Your previous draft contradicted the data it was given", contradicted),
+        ("Your previous draft broke the brief it was given", broken),
+    ):
+        if found:
+            corrections = "\n".join(f"- {problem}" for problem in found)
+            feedback.append(f"{header}:\n{corrections}")
     instructions = " ".join(_CHECKS_BY_CODE[code].retry_instruction for code in problems)
     if stop_reason:
         instructions = f"{instructions} Keep it to the length asked for and finish it.".lstrip()

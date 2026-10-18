@@ -1050,6 +1050,8 @@ async def _editorial_with_data_checks(
     from fpl_cli.prompts.league_recap_checks import (
         check_recap_editorial,
         get_recap_editorial_retry_prompt,
+        recap_editorial_flaw,
+        split_recap_problems,
     )
 
     def judge(summary: str, response: LLMResponse) -> dict[str, list[str]]:
@@ -1067,9 +1069,16 @@ async def _editorial_with_data_checks(
 
     # A cut-off attempt ranks below any complete one: it may simply have
     # stopped before reaching the claim the other got wrong, so its clean
-    # check proves nothing. Among equals, fewer wrong claims wins.
-    def damage(attempt: SynthesisAttempt[dict[str, list[str]]]) -> tuple[int, int]:
-        return int(attempt.response.stopped_early), sum(len(found) for found in attempt.verdict.values())
+    # check proves nothing. Among equals, fewer claims the data contradicts
+    # wins, then fewer broken briefs (#459). A contradicted claim is stated as
+    # fact and a roll call is a lesser fault, so the two are never traded at
+    # any count: a retry that fixes a false claim but rolls the call still
+    # ships, and one that clears the roll call by adding a false claim never
+    # does. Weighing every problem as one tied the first of those, and let
+    # several roll calls buy the second.
+    def damage(attempt: SynthesisAttempt[dict[str, list[str]]]) -> tuple[int, int, int]:
+        contradicted, broken = split_recap_problems(attempt.verdict)
+        return int(attempt.response.stopped_early), len(contradicted), len(broken)
 
     return await synthesise_with_retry(
         provider,
@@ -1077,7 +1086,7 @@ async def _editorial_with_data_checks(
         system_prompt=system_prompt,
         subject="The editorial",
         judge=judge,
-        retry_reason=lambda problems: "contradicts the data it was given" if problems else None,
+        retry_reason=recap_editorial_flaw,
         damage=damage,
         retry_prompt=get_recap_editorial_retry_prompt,
         # The report writes its own title; whatever heading the model opened
@@ -1119,6 +1128,7 @@ async def _recap_llm_summarise(
         format_recap_waivers_context,
         get_recap_synthesis_prompt,
     )
+    from fpl_cli.prompts.league_recap_checks import recap_editorial_flaw
 
     # Setup debug directory
     debug_dir = None
@@ -1201,7 +1211,7 @@ async def _recap_llm_summarise(
                 # claim is never read as fact weeks later (#357, #359).
                 collected_data["synthesis_problems"] = problems
                 error_console.print(
-                    "[yellow]  ⚠ The editorial still contradicts the data it was given:[/yellow]"
+                    f"[yellow]  ⚠ The editorial still {recap_editorial_flaw(problems)}:[/yellow]"
                 )
                 for found in problems.values():
                     for problem in found:
