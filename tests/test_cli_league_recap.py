@@ -1695,6 +1695,159 @@ class TestContestedMisattribution:
         assert self._WRONG in envelope["metadata"]["synthesis_summary"]
 
 
+class TestContestedRollCall:
+    """#459: the draft editorial used to name every manager who lost the
+    week's big waiver race, as one list, whatever the prompt said. A paragraph
+    that names three or more of one race's beaten managers now fails its check
+    and earns the one retry -- told the brief was broken, since nothing it said
+    was false -- and a roll call that survives the retry rides the warnings."""
+
+    # King went to Alice; Bob, Cam, Dan and Eve were beaten to him.
+    _ROLL = "Alice took King, and Bob, Cam and Dan were all beaten to him."
+    _CLEAN = "Alice took King ahead of four rivals, and Bob missed out on him."
+    # A claim the data contradicts: Alice won King, Dan did not.
+    _SWAPPED = "Alice took King, and Dan beat Bob to King."
+    _BOTH = f"{_ROLL} Alice was beaten to King."
+
+    def _data(self) -> LeagueRecapData:
+        def _lost_king(priority: int) -> RecapDraftLostClaim:
+            return _lost_claim("King", player_in_code=1, priority=priority)
+
+        return _recap_data(
+            gameweek=5, fpl_format="draft",
+            managers=[
+                _manager(
+                    name="Alice", entry_id=1, league_entry_id=10,
+                    transactions=[RecapDraftTransaction(
+                        player_in="King", player_in_team="MCI", player_in_points=5, player_in_code=1,
+                        player_out="Dud", player_out_team="TOT", player_out_points=1, net=4, kind="w",
+                    )],
+                ),
+                _manager(name="Bob", entry_id=2, league_entry_id=20, gw_rank=2, overall_rank=2,
+                         transactions=[], lost_claims=[_lost_king(1)]),
+                _manager(name="Cam", entry_id=3, league_entry_id=30, gw_rank=3, overall_rank=3,
+                         transactions=[], lost_claims=[_lost_king(2)]),
+                _manager(name="Dan", entry_id=4, league_entry_id=40, gw_rank=4, overall_rank=4,
+                         transactions=[], lost_claims=[_lost_king(3)]),
+                _manager(name="Eve", entry_id=5, league_entry_id=50, gw_rank=5, overall_rank=5,
+                         transactions=[], lost_claims=[_lost_king(4)]),
+            ],
+            cohort=_cohort(
+                (10, "Alice", 1, 60, 300), (20, "Bob", 2, 50, 290), (30, "Cam", 3, 40, 280),
+                (40, "Dan", 4, 30, 270), (50, "Eve", 5, 20, 260),
+            ),
+        )
+
+    def _invoke(self, args: list[str], *replies: str | tuple[str, str] | Exception):
+        stub, provider = _queued_provider(*replies)
+        with provider:
+            result = _invoke_recap(
+                self._data(), ["--draft", "--summarise", *args],
+                settings={"fpl": {"draft_league_id": 42}},
+            )
+        return stub, result
+
+    def test_a_clean_editorial_is_one_call_and_no_warning(self):
+        stub, result = self._invoke(["--format", "json"], self._CLEAN)
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 1
+        metadata = json.loads(result.stdout)["metadata"]
+        assert metadata["synthesis_attempts"] == 1
+        assert "synthesis_contested_roll_call" not in [w["code"] for w in metadata["warnings"]]
+
+    def test_a_roll_call_is_retried_and_the_clean_retry_ships(self):
+        stub, result = self._invoke(["--format", "json"], self._ROLL, self._CLEAN)
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 2
+        assert "The editorial breaks the brief it was given -- retrying once" in result.stderr.replace("\n", " ")
+        assert "contradicts" not in result.stderr
+        metadata = json.loads(result.stdout)["metadata"]
+        assert self._CLEAN in metadata["synthesis_summary"]
+        assert (metadata["synthesis_attempts"], metadata["synthesis_shipped_attempt"]) == (2, 2)
+        assert "synthesis_contested_roll_call" not in [w["code"] for w in metadata["warnings"]]
+
+    def test_the_retry_is_told_the_brief_was_broken_and_not_that_the_data_was_contradicted(self):
+        stub, result = self._invoke([], self._ROLL, self._CLEAN)
+
+        assert result.exit_code == 0, result.output
+        first, retry = stub.prompts
+        assert retry.startswith(first)
+        corrections = retry[len(first):]
+        assert "Your previous draft broke the brief it was given:" in corrections
+        assert "- one paragraph names 3 of the 4 managers beaten to King" in corrections
+        assert "name at most two of the managers beaten to any one player" in corrections
+        assert "contradicted" not in corrections
+
+    def test_a_roll_call_that_survives_the_retry_is_named_everywhere(self, tmp_path: Path):
+        stub, result = self._invoke(
+            ["--format", "json", "--save", "--output", str(tmp_path)], self._ROLL, self._ROLL,
+        )
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 2
+        stderr = result.stderr.replace("\n", " ")
+        assert "The editorial still breaks the brief it was given:" in stderr
+        assert "- one paragraph names 3 of the 4 managers beaten to King" in stderr
+        assert "contradicts" not in stderr
+
+        metadata = json.loads(result.stdout)["metadata"]
+        # Both drafts roll the call, so neither is strictly better: the
+        # first stays, and the retry shows in the attempts.
+        assert (metadata["synthesis_attempts"], metadata["synthesis_shipped_attempt"]) == (2, 1)
+        assert self._ROLL in metadata["synthesis_summary"]
+        warnings = {w["code"]: w["message"] for w in metadata["warnings"]}
+        assert warnings["synthesis_contested_roll_call"] == (
+            "The editorial lists the managers beaten to one player. "
+            "One paragraph names 3 of the 4 managers beaten to King."
+        )
+        assert [code for code in warnings if code.startswith("synthesis_")] == ["synthesis_contested_roll_call"]
+
+        report = next(tmp_path.rglob("gw5-league-recap-draft.md")).read_text(encoding="utf-8")
+        assert report.index("> [!WARNING]") < report.index(self._ROLL)
+        assert "> **The editorial below breaks the brief it was given:**" in report
+        assert "> - one paragraph names 3 of the 4 managers beaten to King" in report
+        assert "contradicts the data" not in report
+
+    def test_table_mode_names_it_on_stderr_and_keeps_stdout_for_the_table(self):
+        _, result = self._invoke([], self._ROLL, self._ROLL)
+
+        assert result.exit_code == 0, result.output
+        assert "The editorial still breaks the brief it was given:" in result.stderr.replace("\n", " ")
+        assert "one paragraph names 3 of the 4 managers beaten to King" in result.stderr.replace("\n", " ")
+        assert "still breaks the brief" not in result.stdout
+
+    def test_a_retry_that_clears_the_roll_call_but_adds_a_contradiction_does_not_ship(self):
+        """Equal weight: one roll call traded for one contradicted claim ties,
+        so the first draft stays and the factual error never ships."""
+        stub, result = self._invoke(["--format", "json"], self._ROLL, self._SWAPPED)
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 2
+        metadata = json.loads(result.stdout)["metadata"]
+        assert self._ROLL in metadata["synthesis_summary"]
+        assert (metadata["synthesis_attempts"], metadata["synthesis_shipped_attempt"]) == (2, 1)
+        codes = [w["code"] for w in metadata["warnings"]]
+        assert "synthesis_contested_roll_call" in codes
+        assert "synthesis_contested_misattribution" not in codes
+
+    def test_a_roll_call_and_a_contradiction_are_each_named_in_their_own_words(self, tmp_path: Path):
+        _, result = self._invoke(["--save", "--output", str(tmp_path)], self._BOTH, self._BOTH)
+
+        assert result.exit_code == 0, result.output
+        stderr = result.stderr.replace("\n", " ")
+        assert "The editorial still contradicts the data and breaks the brief it was given:" in stderr
+
+        report = next(tmp_path.rglob("gw5-league-recap-draft.md")).read_text(encoding="utf-8")
+        assert report.count("> [!WARNING]") == 1
+        contradicts = report.index("**The editorial below contradicts the data it was given.**")
+        breaks = report.index("**The editorial below breaks the brief it was given:**")
+        assert contradicts < report.index("> - the editorial says Alice was beaten to King") < breaks
+        assert breaks < report.index("> - one paragraph names 3 of the 4 managers beaten to King")
+        assert breaks < report.index(self._BOTH)
+
+
 class TestNetAndTieClaims:
     """#359: a classic editorial pinned a manager's whole-gameweek net on one
     named transfer, and called an outright lowest score "joint-lowest". Both

@@ -1033,6 +1033,7 @@ async def _editorial_with_data_checks(
     from fpl_cli.prompts.league_recap_checks import (
         check_recap_editorial,
         get_recap_editorial_retry_prompt,
+        recap_editorial_flaw,
     )
 
     def judge(summary: str, response: LLMResponse) -> dict[str, list[str]]:
@@ -1050,7 +1051,13 @@ async def _editorial_with_data_checks(
 
     # A cut-off attempt ranks below any complete one: it may simply have
     # stopped before reaching the claim the other got wrong, so its clean
-    # check proves nothing. Among equals, fewer wrong claims wins.
+    # check proves nothing. Among equals, fewer problems wins, each weighing
+    # one whichever check raised it. Equal weight is the call for the roll
+    # call (#459) too: a retry that swaps one roll call for one contradicted
+    # claim ties, so the first draft stays and a retry never ships by trading
+    # a lesser fault for a worse one. What equal weight still lets through is
+    # several roll calls cleared for one contradicted claim, which takes two
+    # races each listed in a paragraph of its own.
     def damage(attempt: SynthesisAttempt[dict[str, list[str]]]) -> tuple[int, int]:
         return int(attempt.response.stopped_early), sum(len(found) for found in attempt.verdict.values())
 
@@ -1060,7 +1067,7 @@ async def _editorial_with_data_checks(
         system_prompt=system_prompt,
         subject="The editorial",
         judge=judge,
-        retry_reason=lambda problems: "contradicts the data it was given" if problems else None,
+        retry_reason=recap_editorial_flaw,
         damage=damage,
         retry_prompt=get_recap_editorial_retry_prompt,
         # The report writes its own title; whatever heading the model opened
@@ -1102,6 +1109,7 @@ async def _recap_llm_summarise(
         format_recap_waivers_context,
         get_recap_synthesis_prompt,
     )
+    from fpl_cli.prompts.league_recap_checks import recap_editorial_flaw
 
     # Setup debug directory
     debug_dir = None
@@ -1184,7 +1192,7 @@ async def _recap_llm_summarise(
                 # claim is never read as fact weeks later (#357, #359).
                 collected_data["synthesis_problems"] = problems
                 error_console.print(
-                    "[yellow]  ⚠ The editorial still contradicts the data it was given:[/yellow]"
+                    f"[yellow]  ⚠ The editorial still {recap_editorial_flaw(problems)}:[/yellow]"
                 )
                 for found in problems.values():
                     for problem in found:

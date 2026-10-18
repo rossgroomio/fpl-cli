@@ -21,6 +21,7 @@ from fpl_cli.cli._league_recap_types import (
     standout_players_note,
 )
 from fpl_cli.paths import TEMPLATE_DIR
+from fpl_cli.prompts.league_recap_checks import split_recap_problems
 from fpl_cli.services.team_ratings import fdr_columns_footer
 from fpl_cli.utils.text import md_table_cell, ordinal_suffix
 from fpl_cli.utils.time import format_generated_at
@@ -683,6 +684,12 @@ class ReportAgent(Agent):
         data["title"] = recap_title(gameweek, data.get("league_name", ""))
         data.setdefault("generated_at", format_generated_at())
         data["standings_block"] = _format_standings_block(data.get("managers", []))
+        # The editorial's problems the data contradicts apart from those that
+        # only broke its brief (#459), so the callout never says the data
+        # contradicts a sentence that was true.
+        data["synthesis_contradictions"], data["synthesis_brief_problems"] = split_recap_problems(
+            data.get("synthesis_problems") or {},
+        )
         # Standout players (#455): the sentences the console and the
         # editorial's prompt get, worked out here like the standings block so
         # the template needs no knowledge of the section's shape.
