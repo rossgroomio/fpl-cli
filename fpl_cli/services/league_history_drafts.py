@@ -118,18 +118,24 @@ def _is_id(value: Any) -> bool:
 def is_recognised_draft(entry: Any) -> bool:
     """Whether a `league.drafts` entry has the shape this module reads.
 
-    A numeric `id` and a true-or-false `draft_completed`. An entry missing
-    either cannot be told apart from a draft still to be held, so a caller
-    that skipped it quietly would lose a held draft's picks with no sign.
+    A numeric `id` and a `draft_completed` key. The live API sends the time the
+    draft was held as a timestamp string and `null` for one still to be held; a
+    bool is accepted too. An entry missing the key, or carrying any other type,
+    cannot be told apart from a draft still to be held, so a caller that
+    skipped it quietly would lose a held draft's picks with no sign.
     """
     return (
         isinstance(entry, dict) and _is_id(entry.get("id"))
-        and isinstance(entry.get("draft_completed"), bool)
+        and "draft_completed" in entry
+        and isinstance(entry["draft_completed"], (str, bool, type(None)))
     )
 
 
 def completed_drafts(league_drafts: Iterable[Any]) -> list[dict[str, Any]]:
     """The entries of `league.drafts` the league says have been held.
+
+    Held means a truthy `draft_completed`: the completion timestamp the API
+    sends, or `True`. `null` is a draft still to be held.
 
     A draft still to be held, or under way, has no settled picks to keep: a
     partial draft saved now would read as a conflict once it finished.

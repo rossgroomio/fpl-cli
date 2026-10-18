@@ -78,7 +78,12 @@ def _picks(draft: int = DRAFT_ID) -> list[dict[str, Any]]:
     return [_choice(1, draft=draft), _choice(2, draft=draft, entry=101), _choice(3, draft=draft)]
 
 
-def _league_draft(draft_id: int = DRAFT_ID, *, completed: bool = True, event: int = 1) -> dict[str, Any]:
+HELD_AT = "2026-08-13T19:47:59.528867Z"
+
+
+def _league_draft(
+    draft_id: int = DRAFT_ID, *, completed: bool | str | None = True, event: int = 1,
+) -> dict[str, Any]:
     return {
         "id": draft_id,
         "event": event,
@@ -152,13 +157,33 @@ class TestDraftRecognition:
 
         assert [d["id"] for d in completed_drafts(drafts)] == [DRAFT_ID]
 
+    def test_the_live_api_shape_a_timestamp_when_held_and_null_when_scheduled(self):
+        drafts = [
+            _league_draft(DRAFT_ID, completed=HELD_AT),
+            _league_draft(REDRAFT_ID, completed=None, event=19),
+        ]
+
+        assert all(is_recognised_draft(d) for d in drafts)
+        assert [d["id"] for d in completed_drafts(drafts)] == [DRAFT_ID]
+
+    def test_a_held_draft_with_a_timestamp_is_snapshotted(self):
+        [outcome] = _snapshot(
+            [_league_draft(DRAFT_ID, completed=HELD_AT), _league_draft(REDRAFT_ID, completed=None)],
+            _response(*_picks()),
+        )
+
+        assert outcome.status is DraftSnapshotStatus.SAVED
+
     @pytest.mark.parametrize(
         ("entry", "recognised"),
         [
             pytest.param(_league_draft(), True, id="held"),
             pytest.param(_league_draft(completed=False), True, id="scheduled"),
+            pytest.param(_league_draft(completed=HELD_AT), True, id="held-timestamp"),
+            pytest.param(_league_draft(completed=None), True, id="scheduled-null"),
             pytest.param({"id": DRAFT_ID}, False, id="no-completed-flag"),
-            pytest.param({"id": DRAFT_ID, "draft_completed": 1}, False, id="flag-not-a-bool"),
+            pytest.param({"id": DRAFT_ID, "draft_completed": 1}, False, id="flag-an-int"),
+            pytest.param({"id": DRAFT_ID, "draft_completed": {}}, False, id="flag-an-object"),
             pytest.param({"id": "901", "draft_completed": True}, False, id="id-not-a-number"),
             pytest.param({"draft_id": DRAFT_ID, "draft_completed": True}, False, id="id-renamed"),
             pytest.param(None, False, id="not-an-object"),

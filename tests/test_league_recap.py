@@ -2132,12 +2132,12 @@ class TestDraftPointInTimeReconstruction:
         [
             pytest.param(
                 {"name": "Draft League", "drafts": [
-                    {"id": 901, "event": 1, "draft_completed": True},
-                    {"id": 902, "event": 20, "draft_completed": False},
+                    {"id": 901, "event": 1, "draft_completed": "2026-08-13T19:47:59Z"},
+                    {"id": 902, "event": 20, "draft_completed": None},
                 ]},
                 [
-                    {"id": 901, "event": 1, "draft_completed": True},
-                    {"id": 902, "event": 20, "draft_completed": False},
+                    {"id": 901, "event": 1, "draft_completed": "2026-08-13T19:47:59Z"},
+                    {"id": 902, "event": 20, "draft_completed": None},
                 ],
                 id="verbatim",
             ),
