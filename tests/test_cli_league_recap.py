@@ -3870,7 +3870,7 @@ class TestLeagueRecapFailedSave:
             in result.stderr
         )
 
-    def test_a_failed_save_under_json_is_the_error_envelope(self, tmp_path: Path):
+    def test_a_failed_save_under_json_keeps_the_payload_and_flags_the_save(self, tmp_path: Path):
         result = self._invoke(
             ["--format", "json", "--save", "--output", str(tmp_path)],
             make_agent(success=False, message="disk full"),
@@ -3878,10 +3878,20 @@ class TestLeagueRecapFailedSave:
 
         assert result.exit_code == 1
         payload = json.loads(result.stdout)
-        assert payload == {
-            "command": "league-recap",
-            "error": "Failed to save report: disk full",
-        }
+        assert "error" not in payload
+        assert payload["command"] == "league-recap"
+        assert payload["data"], "the recap payload was dropped with the failed save"
+        assert "first_capture_store_path" in payload["metadata"]
+        warnings = {w["code"]: w["message"] for w in payload["metadata"]["warnings"]}
+        assert warnings["report_not_saved"] == "Failed to save report: disk full"
+        assert "Failed to save report: disk full" in result.stderr
+
+    def test_a_save_that_worked_raises_no_report_warning(self, tmp_path: Path):
+        result = _invoke_recap(_recap_data(), ["--format", "json", "--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        codes = [w["code"] for w in json.loads(result.stdout)["metadata"]["warnings"]]
+        assert "report_not_saved" not in codes
 
     def test_the_ledger_capture_still_happened_before_the_save_failed(self, tmp_path: Path):
         result = self._invoke(

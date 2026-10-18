@@ -69,6 +69,10 @@ RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
 # Also a collection warning: FPL has not finished processing the recapped
 # gameweek, so the league table it read may not have caught up (issue #424).
 RECAP_WARNING_LEAGUE_TABLES_UPDATING = "league_tables_updating"
+# `--save` could not write the report. The recap, the ledger capture and the
+# JSON payload are all complete, so the failure rides the warnings channel and
+# the run exits 1 after emitting them (#474).
+RECAP_WARNING_REPORT_NOT_SAVED = "report_not_saved"
 # A draft recap asked how each player came to his manager and could not say:
 # the league's draft, waiver and trade history was unreadable or did not agree
 # with FPL's own record of who owns whom (#458). The Standout Players lines
@@ -153,6 +157,8 @@ def league_recap_command(
 
     async def _run() -> None:
         from contextlib import AsyncExitStack, nullcontext
+
+        save_failure: str | None = None
 
         async with AsyncExitStack() as stack:
             # The output format is a separate concept from the FPL classic/
@@ -632,25 +638,24 @@ def league_recap_command(
             # Generate report if saving
             if save or output:
                 output_dir = resolve_output_dir(settings, output, season=season)
-                agent = ReportAgent(config={"output_dir": output_dir})
-                result = await agent.run(context={
-                    "report_type": "league-recap",
-                    "gameweek": gw,
-                    "data": dict(collected_data),
-                })
-                if not result.success:
-                    # A failure, so exit 1 in both formats, like `review` and
-                    # `preview`. The ledger capture ran above and has already
-                    # written, so nothing is lost by failing here; what the
-                    # exit code protects is a caller that reads 0 as "the
-                    # report exists" (#474).
-                    emit_failure(
-                        "league-recap",
-                        f"Failed to save report: {save_failure_message(result)}",
-                        output_format,
-                    )
-                if result.data and result.data.get("report_path"):
-                    console.print(f"\n[green]Report saved to {result.data['report_path']}[/green]")
+                async with ReportAgent(config={"output_dir": output_dir}) as agent:
+                    result = await agent.run(context={
+                        "report_type": "league-recap",
+                        "gameweek": gw,
+                        "data": dict(collected_data),
+                    })
+                if result.success:
+                    if result.data and result.data.get("report_path"):
+                        console.print(f"\n[green]Report saved to {result.data['report_path']}[/green]")
+                else:
+                    # Reported now and the exit deferred to the end of the run,
+                    # as `preview` does (#387): under `--format json` the
+                    # payload holds what exists nowhere else -- the capture's
+                    # own warnings, `first_capture_store_path`, the editorial
+                    # a paid call produced -- so exiting here would drop it
+                    # along with the one line saying the save failed (#474).
+                    save_failure = save_failure_message(result)
+                    error_console.print(f"[red]{rich_escape(save_failure)}[/red]")
 
             if output_format == "json":
                 from fpl_cli.prompts.league_recap_checks import editorial_warning_message
@@ -763,6 +768,15 @@ def league_recap_command(
                                 "code": RECAP_WARNING_DRAFT_ROUNDS_UNKNOWN,
                                 "message": rounds_notice,
                             }] if rounds_notice else []
+                        ) + (
+                            # The run still exits 1 after this payload, so the
+                            # code is how a consumer reading it tells a recap
+                            # whose report was not written from one whose
+                            # report was never asked for (#474).
+                            [{
+                                "code": RECAP_WARNING_REPORT_NOT_SAVED,
+                                "message": save_failure,
+                            }] if save_failure else []
                         ),
                         # Only set on this partition's very first capture --
                         # the one moment a container-local data directory is
@@ -780,6 +794,9 @@ def league_recap_command(
                     },
                     file=stdout,
                 )
+
+            if save_failure:
+                raise SystemExit(1)
 
     with api_failure_boundary("league-recap", output_format):
         asyncio.run(_run())

@@ -1086,11 +1086,12 @@ fpl league-recap --format json     # JSON envelope for scripting/agents
 ```
 
 **A `--save` that did not save** exits **1** with `Failed to save report: <reason>` on stderr,
-the same as `review` and `preview`; under `--format json` the stdout is the `{command, error}`
-envelope instead of the recap payload. The ledger capture runs before the report is written, so
-a failed save never costs the ledger its row. It used to exit 0 and print only the agent's own
-`Failed to generate report` line, so a script treating exit 0 as "the report exists" could not
-tell.
+the same as `review` and `preview`, once the rest of the run has finished. Under `--format json`
+the recap payload is still emitted on stdout, with a `report_not_saved` warning in
+`metadata.warnings` carrying the same line, and the run then exits 1: the payload holds the
+capture's own warnings, `first_capture_store_path` and any editorial, none of which a rerun can
+reproduce. This is the one `--format json` failure that carries a payload rather than the
+`{command, error}` envelope.
 
 **When to run it:** any time after the gameweek has finished, but the fullest capture is the
 window between its last whistle and the next deadline. Only in that window does the league
@@ -1591,12 +1592,12 @@ notes pack — an unreadable store, or no league id configured for the format.
 
 Every capture problem is reported on stderr as prose and, under `--format json`, in
 `metadata.warnings` as a `{"code", "message"}` pair. The prose is rewritable; the codes
-are stable, so scripts should key on those. Eleven non-capture codes share the list, since
+are stable, so scripts should key on those. Twelve non-capture codes share the list, since
 they share the channel: `synthesis_provider_unavailable`, `synthesis_stopped_early`,
 `synthesis_contested_misattribution`, `synthesis_net_misattribution`,
 `synthesis_kind_net_misattribution`, `synthesis_unsupported_tie`, `synthesis_contested_roll_call`,
-`league_standings_moved_on`, `league_tables_updating`, `draft_provenance_unavailable` and
-`draft_rounds_unknown`.
+`league_standings_moved_on`, `league_tables_updating`, `draft_provenance_unavailable`,
+`draft_rounds_unknown` and `report_not_saved`.
 
 | Code | Raised when |
 |---|---|
@@ -1631,8 +1632,9 @@ they share the channel: `synthesis_provider_unavailable`, `synthesis_stopped_ear
 | `league_tables_updating` | FPL's processing feed for the recapped game covers the recapped gameweek and says bonus is not yet confirmed for every match day, or the league tables are still updating, so the positions and totals the recap read may be stale. The gameweek is recorded anyway; re-run before the next deadline and the later capture supersedes this one — see [When to run it](#league-recap) |
 | `draft_provenance_unavailable` | Draft only. The Standout Players lines could not say how each player came to his manager, so they read without it: the history of the league's draft, waivers and trades (or its list of drafts) could not be read, did not end where FPL's own ownership list says everyone is, did not match the squads the gameweek recorded, or the draft's picks are held by neither the choices feed nor a saved snapshot (see [How a draft player came to his manager](#league-recap)). The message names which. Nothing else in the recap changes |
 | `draft_rounds_unknown` | Draft only. A held draft's picks are held by neither the choices feed nor a saved snapshot (a redraft was scheduled before the first snapshot was taken), so the Standout Players lines say who drafted each player but not in which round: each manager's drafted set was rebuilt from their squad at the draft's gameweek and the moves made before it. A notice, not a failure: the lines are labelled all the same. The message says where a copy of the draft's choices response would restore the rounds, and the warning stops once one exists or the redraft is held (see [How a draft player came to his manager](#league-recap)) |
+| `report_not_saved` | `--save` or `--output` was given and the report could not be written. The recap and the ledger capture are complete; this is the one code that goes with exit 1, emitted after the payload |
 
-None of these change the exit code — `league-recap` exits 0 whenever the recap itself
+None of these but `report_not_saved` change the exit code — `league-recap` exits 0 whenever the recap itself
 rendered, and a skipped, truncated, self-contradicting or brief-breaking editorial (`synthesis_provider_unavailable`,
 `synthesis_stopped_early`, `synthesis_contested_misattribution`, `synthesis_net_misattribution`,
 `synthesis_kind_net_misattribution`, `synthesis_unsupported_tie`, `synthesis_contested_roll_call`) is no
