@@ -19,7 +19,7 @@
 
 {% if synthesis_summary is defined and synthesis_summary %}
 {% set editorial_cut_off = synthesis_stop_reason is defined and synthesis_stop_reason %}
-{% set editorial_wrong = synthesis_problems is defined and synthesis_problems %}
+{% set editorial_wrong = (synthesis_contradictions is defined and synthesis_contradictions) or (synthesis_brief_problems is defined and synthesis_brief_problems) %}
 {% if editorial_cut_off or editorial_wrong %}
 > [!WARNING]
 {% if editorial_cut_off %}

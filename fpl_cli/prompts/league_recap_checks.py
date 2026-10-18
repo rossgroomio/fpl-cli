@@ -449,7 +449,29 @@ def check_contested_attributions(
 # story (the leader missed out, one manager lost two races), and two such
 # stories in one race are plausible; three is a roll call.
 ROLL_CALL_MIN_NAMED = 3
-_PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t\r]*\n")
+# An ATX heading is a block of its own in markdown, blank line before it or
+# not, so it never runs into the paragraph above or below.
+_HEADING_LINE_RE = re.compile(r"\s{0,3}#{1,6}(?:\s|$)")
+
+
+def _paragraphs(text: str) -> list[str]:
+    """The blocks `text` renders as: runs of lines between blank lines, with
+    each heading line a block of its own. A single line break stays inside its
+    paragraph, as it does in the report the editorial is saved to."""
+    blocks: list[str] = []
+    lines: list[str] = []
+    for line in text.splitlines():
+        if line.strip() and not _HEADING_LINE_RE.match(line):
+            lines.append(line)
+            continue
+        if lines:
+            blocks.append("\n".join(lines))
+            lines = []
+        if line.strip():
+            blocks.append(line)
+    if lines:
+        blocks.append("\n".join(lines))
+    return blocks
 
 
 def check_contested_roll_calls(
@@ -464,41 +486,56 @@ def check_contested_roll_calls(
     and data changes on #452 and #455 never stopped the model reciting the
     week's biggest race as a list. Unlike every other check this fires on a
     true sentence, so it holds itself to what a machine can count: the
-    distinct beaten managers of one race a paragraph names, matched the way
-    the other checks match managers (`RecapNames`, so a full name or a first
-    or last name no other manager shares, and never a name read inside a
-    longer one). It never judges tone, and it does not ask why a manager is
-    named.
+    distinct beaten managers of one race that a paragraph naming the race's
+    player also names. It never judges tone, and it does not ask why a
+    manager is named.
 
-    Three or more of one race's beaten managers in one blank-line-separated
-    paragraph is one problem. Two is not, nor is the same set spread one per
+    Managers are matched through `RecapNames` as the other checks match them,
+    so a full name, or a first or last name no other manager shares, counts
+    and a name read inside a longer one does not. A short form that is also
+    the name of any player the data carries is left unread, as in
+    `check_kind_net_scopes`: "Wood" beside a squad player of that name could
+    be either, and a false alarm costs more here than a missed one.
+
+    Three or more of one race's beaten managers in one paragraph that names
+    the race's player is one problem. A paragraph that never names him is not
+    about the race, however many of its managers lost it: a standings
+    paragraph naming three of a five-way race's losers is no roll call. Two
+    beaten managers is not one, nor is the same set spread one per
     paragraph, nor is the winner, who is never among the beaten. A beaten
     manager named in the race's paragraph for an unrelated reason counts all
-    the same: a paragraph that names three of them reads as a roll call to a
-    reader too, so that is an accepted cost rather than a false alarm to
-    engineer around. Classic rows carry no lost claims, hence no races, and
-    the check returns nothing there. Returns one line per (race, paragraph),
-    in paragraph order and, within one, the most contested race first.
+    the same: the paragraph reads as a roll call to a reader too, so that is
+    an accepted cost rather than a false alarm to engineer around.
+    Paragraphs are `_paragraphs()`'s. Classic rows carry no lost claims,
+    hence no races, and the check returns nothing there.
+
+    Returns one line per race and count, in the order the editorial first
+    reaches them. A race listed at the same count by more than one paragraph
+    is one line saying so, since a line per paragraph would be the same
+    sentence twice with nothing to tell the paragraphs apart.
     """
     if not contests:
         return []
     aliases = _mention_aliases(names.managers, set(names.players))
-    problems: list[str] = []
-    for paragraph in _PARAGRAPH_BREAK_RE.split(summary):
+    rolls: dict[tuple[int, int], int] = {}
+    for paragraph in _paragraphs(summary):
+        players = {m.group(0) for m in names.find(paragraph)}
         named = {m.name for m in _find_mentions(paragraph, names, aliases) if m.is_manager}
-        for race in contests:
+        for index, race in enumerate(contests):
+            if race["player"] not in players:
+                continue
             # A winner who shares a display name with a loser is ambiguous in
             # prose, so that name is left out rather than guessed at.
             beaten = {loser["manager_name"] for loser in race["losers"]} - {race["winner"]}
-            if (count := len(beaten & named)) < ROLL_CALL_MIN_NAMED:
-                continue
-            # Not de-duplicated like the other checks' lines: two paragraphs
-            # that each list the race are two rolls of the call, not one
-            # claim made twice.
-            problems.append(
-                f"one paragraph names {count} of the {len(race['losers'])} "
-                f"managers beaten to {race['player']}"
-            )
+            if (count := len(beaten & named)) >= ROLL_CALL_MIN_NAMED:
+                rolls[index, count] = rolls.get((index, count), 0) + 1
+    problems: list[str] = []
+    for (index, count), paragraphs in rolls.items():
+        race = contests[index]
+        beaten = f"{count} of the {len(race['losers'])} managers beaten to {race['player']}"
+        problems.append(
+            f"one paragraph names {beaten}" if paragraphs == 1 else f"{paragraphs} paragraphs each name {beaten}"
+        )
     return problems
 
 

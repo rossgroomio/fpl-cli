@@ -6843,6 +6843,24 @@ class TestRecapTitleIsTheReportsNotTheModels:
         assert content.splitlines()[0] == "# Gameweek 1 Recap: Draft League"
         assert result.data["report_path"].endswith("gw1-league-recap-draft.md")
 
+    async def test_a_problems_dict_with_nothing_listed_opens_no_callout(self, tmp_path):
+        """PR #462 review: the callout opens on the same lists it prints, so a
+        problems dict that lists nothing cannot leave an empty warning block."""
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = {
+            "gameweek": 4, "league_name": "Sunday League", "fpl_format": "draft",
+            "managers": [], "awards": {},
+            "synthesis_summary": "## Chaos\n\nAlice ran away with it.",
+            "synthesis_problems": {"synthesis_contested_roll_call": []},
+        }
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 4, "data": data})
+
+        assert result.data is not None
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "[!WARNING]" not in content
+        assert "Alice ran away with it." in content
+
 
 # ---------------------------------------------------------------------------
 # Contested attribution check (issue #357)
@@ -7135,10 +7153,54 @@ class TestContestedRollCallCheck:
     def test_blank_lines_with_stray_whitespace_still_end_a_paragraph(self):
         assert self._check("Bob Gale missed out on King.\n  \t\nCam Hart and Dan Ford did not.") == []
 
-    def test_each_paragraph_that_lists_them_is_a_problem_of_its_own(self):
+    def test_paragraphs_that_list_them_at_the_same_count_are_one_line_saying_so(self):
+        """PR #462 review: a line per paragraph was the same sentence twice,
+        with nothing to tell the paragraphs apart."""
         listed = "Bob Gale, Cam Hart and Dan Ford were beaten to King."
         assert self._check(f"{listed}\n\nAlice Moss enjoyed it.\n\n{listed}") == [
+            "2 paragraphs each name 3 of the 4 managers beaten to King",
+        ]
+
+    def test_paragraphs_that_list_them_at_different_counts_are_a_line_each(self):
+        assert self._check(
+            "Bob Gale, Cam Hart and Dan Ford were beaten to King.\n\n"
+            "Bob Gale, Cam Hart, Dan Ford and Eve Ray all lost King."
+        ) == [
             "one paragraph names 3 of the 4 managers beaten to King",
+            "one paragraph names 4 of the 4 managers beaten to King",
+        ]
+
+    def test_a_paragraph_that_never_names_the_race_s_player_is_not_about_the_race(self):
+        """PR #462 review: three of a five-way race's losers in a standings
+        paragraph is no roll call, and the retry would be told to drop names
+        it was never shown as losers."""
+        assert self._check(
+            "Alice Moss took King.\n\n"
+            "At the top of the table Bob Gale leads Cam Hart and Dan Ford by four points."
+        ) == []
+
+    def test_the_player_named_only_as_a_possessive_still_makes_it_the_races_paragraph(self):
+        assert self._check("King's other suitors were Bob Gale, Cam Hart and Dan Ford.") == [
+            "one paragraph names 3 of the 4 managers beaten to King",
+        ]
+
+    def test_names_in_the_paragraph_after_the_player_is_named_are_an_accepted_miss(self):
+        """The player has to be in the same paragraph as the names. A roll call
+        that leans on "him" across a blank line is missed, which is the price
+        of not firing on every paragraph that happens to name three losers."""
+        assert self._check("Alice Moss took King.\n\nBob Gale, Cam Hart and Dan Ford were beaten to him.") == []
+
+    def test_a_heading_ends_the_paragraph_above_it_without_a_blank_line(self):
+        """PR #462 review: a heading is a block of its own in the report, so
+        two sections separated by one must not be counted together."""
+        assert self._check(
+            "King went to Alice Moss, and Bob Gale lost him.\n"
+            "## Fines\n"
+            "Cam Hart and Dan Ford were fined, King or no King."
+        ) == []
+
+    def test_a_headline_that_lists_them_is_a_roll_call_of_its_own(self):
+        assert self._check("## Bob Gale, Cam Hart and Dan Ford miss out on King\n\nAlice Moss took him.") == [
             "one paragraph names 3 of the 4 managers beaten to King",
         ]
 

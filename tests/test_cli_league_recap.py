@@ -1819,8 +1819,8 @@ class TestContestedRollCall:
         assert "still breaks the brief" not in result.stdout
 
     def test_a_retry_that_clears_the_roll_call_but_adds_a_contradiction_does_not_ship(self):
-        """Equal weight: one roll call traded for one contradicted claim ties,
-        so the first draft stays and the factual error never ships."""
+        """A roll call is the lesser fault, so a contradicted claim is never
+        the price of clearing it: the first draft stays."""
         stub, result = self._invoke(["--format", "json"], self._ROLL, self._SWAPPED)
 
         assert result.exit_code == 0, result.stderr
@@ -1831,6 +1831,32 @@ class TestContestedRollCall:
         codes = [w["code"] for w in metadata["warnings"]]
         assert "synthesis_contested_roll_call" in codes
         assert "synthesis_contested_misattribution" not in codes
+
+    def test_a_retry_that_fixes_a_contradiction_but_rolls_the_call_ships(self):
+        """PR #462 review: before the roll call existed this retry scored clean
+        and shipped. A contradicted claim is stated as fact, a roll call is a
+        lesser fault, so the corrected draft must still win."""
+        stub, result = self._invoke(["--format", "json"], self._SWAPPED, self._ROLL)
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 2
+        metadata = json.loads(result.stdout)["metadata"]
+        assert self._ROLL in metadata["synthesis_summary"]
+        assert (metadata["synthesis_attempts"], metadata["synthesis_shipped_attempt"]) == (2, 2)
+        codes = [w["code"] for w in metadata["warnings"]]
+        assert "synthesis_contested_roll_call" in codes
+        assert "synthesis_contested_misattribution" not in codes
+
+    def test_a_retry_that_clears_two_roll_calls_for_a_contradiction_still_does_not_ship(self):
+        """Contradictions rank above roll calls however many of them there are,
+        so no count of lesser faults buys a false claim a place in the report."""
+        two_races = f"{self._ROLL}\n\nAlice took King, and Bob, Cam and Dan lost him again."
+        stub, result = self._invoke(["--format", "json"], two_races, self._SWAPPED)
+
+        metadata = json.loads(result.stdout)["metadata"]
+        assert len(stub.prompts) == 2
+        assert two_races.split("\n\n")[0] in metadata["synthesis_summary"]
+        assert (metadata["synthesis_attempts"], metadata["synthesis_shipped_attempt"]) == (2, 1)
 
     def test_a_roll_call_and_a_contradiction_are_each_named_in_their_own_words(self, tmp_path: Path):
         _, result = self._invoke(["--save", "--output", str(tmp_path)], self._BOTH, self._BOTH)

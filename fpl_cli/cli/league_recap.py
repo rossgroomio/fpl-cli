@@ -1034,6 +1034,7 @@ async def _editorial_with_data_checks(
         check_recap_editorial,
         get_recap_editorial_retry_prompt,
         recap_editorial_flaw,
+        split_recap_problems,
     )
 
     def judge(summary: str, response: LLMResponse) -> dict[str, list[str]]:
@@ -1051,15 +1052,16 @@ async def _editorial_with_data_checks(
 
     # A cut-off attempt ranks below any complete one: it may simply have
     # stopped before reaching the claim the other got wrong, so its clean
-    # check proves nothing. Among equals, fewer problems wins, each weighing
-    # one whichever check raised it. Equal weight is the call for the roll
-    # call (#459) too: a retry that swaps one roll call for one contradicted
-    # claim ties, so the first draft stays and a retry never ships by trading
-    # a lesser fault for a worse one. What equal weight still lets through is
-    # several roll calls cleared for one contradicted claim, which takes two
-    # races each listed in a paragraph of its own.
-    def damage(attempt: SynthesisAttempt[dict[str, list[str]]]) -> tuple[int, int]:
-        return int(attempt.response.stopped_early), sum(len(found) for found in attempt.verdict.values())
+    # check proves nothing. Among equals, fewer claims the data contradicts
+    # wins, then fewer broken briefs (#459). A contradicted claim is stated as
+    # fact and a roll call is a lesser fault, so the two are never traded at
+    # any count: a retry that fixes a false claim but rolls the call still
+    # ships, and one that clears the roll call by adding a false claim never
+    # does. Weighing every problem as one tied the first of those, and let
+    # several roll calls buy the second.
+    def damage(attempt: SynthesisAttempt[dict[str, list[str]]]) -> tuple[int, int, int]:
+        contradicted, broken = split_recap_problems(attempt.verdict)
+        return int(attempt.response.stopped_early), len(contradicted), len(broken)
 
     return await synthesise_with_retry(
         provider,
