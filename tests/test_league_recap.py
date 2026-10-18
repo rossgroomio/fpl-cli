@@ -7778,27 +7778,47 @@ class TestKindNetScopeCheck:
 
     _ASIDE = (
         "Dan Ford had a busy week. Belloumi came in on a free agent for Kluivert and scored 6, "
-        "and with Dunk's +1 on waivers he finished +7"
+        "and with Dunk's +1 on waivers {subject} finished +7"
     )
 
-    @pytest.mark.parametrize("closer", [" overall", " in all", " for the week", " net overall", " all told"])
-    def test_the_week_s_net_said_after_a_kind_aside_passes(self, closer):
-        """Issue #465: the waiver is an aside and "he finished +7 overall" is
-        the manager's whole week, which +7 is."""
-        assert self._check(self._ASIDE + closer + ".", self._aside_line()) == []
+    @pytest.mark.parametrize("subject", ["he", "she", "they"])
+    @pytest.mark.parametrize("closer", ["", " overall", " in all", " over the week", " this week", " for GW6"])
+    def test_the_week_s_net_said_after_a_kind_aside_passes(self, subject, closer):
+        """Issue #465: the waiver already has its figure (+1), so it is an
+        aside, and the +7 after a new subject is the manager's whole week,
+        however the sentence ends."""
+        assert self._check(self._ASIDE.format(subject=subject) + closer + ".", self._aside_line()) == []
 
     @pytest.mark.parametrize("summary", [
-        # Without the closer "on waivers he finished +7" reads as the waivers'.
-        _ASIDE + ".",
-        # A closer with no new subject is the kind's "overall" (#390).
+        # The kind is the subject: its "overall" is the waivers' (#390).
         "Dan Ford's waiver moves netted +7 overall.",
         "Dan Ford's waivers made him +7.",
         "Dan Ford's waivers made him +7 overall.",
+        # PR #468 review: a new subject with no aside figure is still the
+        # waivers' figure, closer or not.
+        "Dan Ford's waivers he netted +7 overall.",
+        "Dan Ford on waivers he went +7 in total.",
+        "Dan Ford's waiver moves he made were +7 overall.",
+        # ...and a relative clause's pronoun opens no new subject.
+        "Dan Ford's waivers, which he netted +7 overall, did little.",
+        "Dan Ford's waivers, which they netted +7 for the week, did little.",
+        # The aside's own figure with no new subject carries on to the kind.
+        "Dan Ford's +1 on waivers left him +7.",
     ])
     def test_the_week_s_net_said_of_the_kind_is_still_caught(self, summary):
         problems = self._check(summary, self._aside_line())
         assert len(problems) == 1
         assert "+7 is Dan Ford's net for the whole gameweek (2 moves: 1 waiver, 1 free agent)" in problems[0]
+
+    def test_a_kind_named_after_the_week_s_net_is_still_read(self):
+        # The aside frees the figure from the waivers before it, not from a
+        # kind it is then said to come from.
+        problems = self._check(
+            "Dan Ford had a busy week. With Dunk's +1 on waivers he finished +7 from his free agents.",
+            self._aside_line(),
+        )
+        assert len(problems) == 1
+        assert "not the free agents' own net of +6" in problems[0]
 
     def test_each_kind_s_own_net_beside_the_aside_line_passes(self):
         assert self._check("Dan Ford went +6 on the free agent and +1 on waivers.", self._aside_line()) == []
