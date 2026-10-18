@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from fpl_cli.agents.common import DraftOwnership
+    from fpl_cli.cli._draft_provenance import DraftStanding
     from fpl_cli.services.player_prior import PlayerPrior
     from fpl_cli.services.scoring import ConsistencySignals
 
@@ -23,6 +25,15 @@ from fpl_cli.cli._context import (
     get_format,
     get_settings,
     is_custom_analysis_enabled,
+)
+from fpl_cli.cli._draft_provenance import (
+    STATS_TAG_KEY,
+    draft_history_season,
+    manager_name,
+    ownership_warnings,
+    standing_for,
+    standings_tagged,
+    stats_tag,
 )
 from fpl_cli.cli._helpers import _format_sort_value, _validate_team_filter
 from fpl_cli.cli._json import (
@@ -159,11 +170,13 @@ def stats_command(
             all_players = await client.get_players()
             all_teams = await client.get_teams()
             team_map = {t.id: t for t in all_teams}
+            # Before the draft reads, so a mistyped club costs none of them.
+            team_upper = _validate_team_filter(
+                team, all_teams, command="stats", output_format=output_format,
+            )
 
             # Draft ownership lookup
-            draft_owned: dict[int, int] = {}
-            draft_entries: dict[int, str] = {}
-            main_to_draft_id: dict[int, int] = {}
+            ownership: DraftOwnership | None = None
             draft_warnings: list[dict[str, str]] = []
 
             if show_draft:
@@ -171,32 +184,30 @@ def stats_command(
                 if not draft_league_id:
                     error_console.print("[yellow]No draft_league_id configured in settings.yaml[/yellow]")
                 else:
+                    # The table alone shows the draft column, so only it pays
+                    # for the league's history behind each owner (#460).
+                    with_provenance = output_format != "json"
+                    season = await draft_history_season(client) if with_provenance else None
                     try:
                         from fpl_cli.agents.common import get_draft_ownership_mapping
-                        from fpl_cli.api.fpl_draft import FPLDraftClient, unread_squads_warning
+                        from fpl_cli.api.fpl_draft import FPLDraftClient
+
                         async with FPLDraftClient() as draft_client:
-                            draft_owned, draft_entries, main_to_draft_id, unread_squads = (
-                                await get_draft_ownership_mapping(
-                                    draft_client, all_players, draft_league_id,
-                                    main_teams=all_teams,
-                                )
+                            ownership = await get_draft_ownership_mapping(
+                                draft_client, all_players, draft_league_id,
+                                main_teams=all_teams, with_provenance=with_provenance, season=season,
                             )
                         # A rival squad the read missed leaves its players
-                        # labelled Available below (#438): both channels.
-                        unread_warning = unread_squads_warning(unread_squads)
-                        if unread_warning is not None:
-                            draft_warnings.append(unread_warning)
-                            if output_format != "json":
-                                error_console.print(
-                                    f"[yellow]{rich_escape(unread_warning['message'])}[/yellow]"
-                                )
+                        # labelled Available below (#438), and a history that
+                        # could not be shown complete leaves the owners untagged.
+                        draft_warnings = ownership_warnings(ownership)
+                        if output_format != "json":
+                            for draft_warning in draft_warnings:
+                                error_console.print(f"[yellow]{rich_escape(draft_warning['message'])}[/yellow]")
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment
                         error_console.print(f"[yellow]Draft ownership lookup failed: {e}[/yellow]")
 
             # Filter
-            team_upper = _validate_team_filter(
-                team, all_teams, command="stats", output_format=output_format,
-            )
             filtered = all_players
             if position:
                 target_pos = position_map[position.upper()]
@@ -542,10 +553,15 @@ def stats_command(
                 table.add_column(r_header, justify="right")
                 table.add_column(c_header, justify="right")
 
-            # Draft ownership column
-            has_draft_col = show_draft and main_to_draft_id
-            if has_draft_col:
+            # Draft ownership column, each owner tagged with how they came by
+            # him where the league's history says (#460)
+            draft_column = ownership if show_draft and ownership and ownership.main_to_draft_id else None
+            draft_standings: dict[int, DraftStanding | None] = {}
+            if draft_column is not None:
                 table.add_column("Draft", justify="left")
+                draft_standings = {p.id: standing_for(draft_column, p.id) for p in filtered}
+                if standings_tagged(list(draft_standings.values())):
+                    table.caption = STATS_TAG_KEY
 
             for p in filtered:
                 row = [
@@ -582,12 +598,13 @@ def stats_command(
                     else:
                         row.append("-")
 
-                if has_draft_col:
-                    draft_pid = main_to_draft_id.get(p.id)
-                    if draft_pid is not None and draft_pid in draft_owned:
-                        owner_id = draft_owned[draft_pid]
-                        owner_name = draft_entries.get(owner_id, f"Team #{owner_id}")
-                        row.append(f"[red]{owner_name}[/red]")
+                if draft_column is not None:
+                    owner_id = draft_column.owner_of(p.id)
+                    if owner_id is not None:
+                        owner_name = rich_escape(manager_name(owner_id, draft_column.entries))
+                        standing = draft_standings.get(p.id)
+                        tag = stats_tag(standing) if standing else None
+                        row.append(f"[red]{owner_name}[/red]" + (f" [dim]{tag}[/dim]" if tag else ""))
                     else:
                         row.append("[green]Available[/green]")
                 table.add_row(*row)

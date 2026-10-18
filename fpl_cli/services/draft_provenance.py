@@ -28,9 +28,10 @@ the chains are as trustworthy; they just start from a draft step with no round
 (``DraftStep.pick`` is None, ``DraftInForce.rounds_known`` False). Rounds
 return on their own once a snapshot of the draft exists.
 
-One helper for every draft command that says where a player came from; the
-league recap's Standout Players section is the first (#458), and ``fpl
-player``, ``fpl stats`` and ``fpl waivers`` follow (#460).
+One helper for every draft command that says where a player came from: the
+league recap's Standout Players section (#458), and the draft lines of ``fpl
+player`` and ``fpl stats`` (#460), which also read the replay's free agents
+(``DraftProvenance.released``) for the last exit of a player nobody holds.
 """
 
 from __future__ import annotations
@@ -144,6 +145,33 @@ class DraftPlayerHistory:
 
 
 @dataclass(frozen=True)
+class DraftFreeAgentHistory:
+    """A player in nobody's squad as of the gameweek whom the history has held since the draft in force (#460).
+
+    Drafted and let go, or signed and let go: ``chain`` runs oldest first as
+    an owned player's does and always ends on the release that freed him. A
+    player the history never touched (nobody drafted him in the draft in
+    force, nobody has signed him since) has no history at all, here or among
+    the owned, which is how a caller tells him apart. ``id`` and ``code`` as
+    on ``DraftPlayerHistory``.
+    """
+
+    element: int
+    id: int | None
+    code: int | None
+    chain: tuple[DraftStep, ...]
+
+
+def drafted_step(chain: Sequence[DraftStep]) -> DraftStep | None:
+    """A player's pick in the draft in force, or None if nobody drafted him in it.
+
+    Only a chain's first link can be a draft step: every chain starts at the
+    draft in force or at the first move that put him in a squad after it.
+    """
+    return chain[0] if chain and chain[0].kind == "draft" else None
+
+
+@dataclass(frozen=True)
 class DraftInForce:
     """The draft whose picks started the chains: the latest completed one at the gameweek."""
 
@@ -160,13 +188,16 @@ class DraftInForce:
 class DraftProvenance:
     """What the replay established for a league at one gameweek.
 
-    ``players`` is empty and ``problem`` says why whenever the history could
-    not be shown to be complete.
+    ``players`` are the owned, by draft element id; ``released`` the players
+    the history held and let go, whom nobody holds at the gameweek. Both are
+    empty and ``problem`` says why whenever the history could not be shown to
+    be complete.
     """
 
     gameweek: int
     draft: DraftInForce | None = None
     players: Mapping[int, DraftPlayerHistory] = field(default_factory=dict)
+    released: Mapping[int, DraftFreeAgentHistory] = field(default_factory=dict)
     problem: str | None = None
 
     @property
@@ -814,6 +845,18 @@ def replay_draft_history(
         )
         for element, owner in replay.owner.items()
     }
+    # Every chain of a player nobody holds ends on his release: only a release
+    # takes a player out of the replay's ownership.
+    released = {
+        element: DraftFreeAgentHistory(
+            element=element,
+            id=main.id if (main := (main_players or {}).get(element)) else None,
+            code=usable_code(main.code) if main else None,
+            chain=tuple(chain),
+        )
+        for element, chain in replay.chains.items()
+        if element not in replay.owner
+    }
     return DraftProvenance(
         gameweek,
         draft=DraftInForce(
@@ -822,6 +865,7 @@ def replay_draft_history(
             rounds_known=replay.rounds_known,
         ),
         players=players,
+        released=released,
     )
 
 

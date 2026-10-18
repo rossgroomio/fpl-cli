@@ -29,6 +29,7 @@ from fpl_cli.services.draft_provenance import (
     DraftLogs,
     DraftProvenance,
     draft_in_force,
+    drafted_step,
     get_draft_provenance,
     read_draft_logs,
     replay_draft_history,
@@ -198,6 +199,35 @@ class TestTheDraftAndTheLogsAfterIt:
 
         assert set(histories) == set(OWNERS_NOW)
         assert {h.owner for h in histories.values()} == {ALICE, BOB, CAM}
+
+    def test_the_players_let_go_keep_their_chains_to_the_release_that_freed_them(self):
+        """#460: the lookups say a free agent's last exit and whether he was drafted."""
+        main = {5: make_player(id=505, code=7005)}
+        provenance = replay_draft_history(_logs(), 5, main_players=main)
+
+        released = provenance.released
+        assert set(released) == {5, 7, 12}
+        assert [(s.kind, s.entry, s.gameweek) for s in released[5].chain] == [("draft", BOB, 1), ("release", BOB, 2)]
+        drafted = drafted_step(released[5].chain)
+        assert drafted is not None and drafted.pick is not None and drafted.pick.round == 2
+        assert (released[5].id, released[5].code) == (505, 7005)
+        # Signed, never drafted, let go again.
+        assert [s.kind for s in released[12].chain] == ["free_agent", "release"]
+        assert drafted_step(released[12].chain) is None
+        # Nobody in either set was untouched: 13 is in neither.
+        assert 13 not in released and 13 not in provenance.players
+
+    def test_an_owned_players_draft_pick_is_found_whatever_came_after_it(self):
+        histories = _histories(replay_draft_history(_logs(), 5))
+
+        drafted = drafted_step(histories[3].chain)
+        assert drafted is not None and drafted.entry == CAM
+        assert drafted_step(histories[10].chain) is None
+
+    def test_a_replay_it_cannot_trust_lets_nobody_go_either(self):
+        provenance = replay_draft_history(_logs(trades=None), 5)
+
+        assert provenance.released == {}
 
     def test_the_main_games_id_and_code_ride_beside_the_draft_element(self):
         main = {1: make_player(id=501, code=7001), 2: make_player(id=502, code=0)}

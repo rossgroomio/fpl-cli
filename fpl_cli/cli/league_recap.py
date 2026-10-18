@@ -22,6 +22,7 @@ from fpl_cli.cli._context import (
     get_settings,
     resolve_output_dir,
 )
+from fpl_cli.cli._draft_provenance import DRAFT_PROVENANCE_UNAVAILABLE
 from fpl_cli.cli._json import (
     api_failure_boundary,
     config_failure_boundary,
@@ -71,7 +72,7 @@ RECAP_WARNING_LEAGUE_TABLES_UPDATING = "league_tables_updating"
 # the league's draft, waiver and trade history was unreadable or did not agree
 # with FPL's own record of who owns whom (#458). The Standout Players lines
 # read without it.
-RECAP_WARNING_DRAFT_PROVENANCE_UNAVAILABLE = "draft_provenance_unavailable"
+RECAP_WARNING_DRAFT_PROVENANCE_UNAVAILABLE = DRAFT_PROVENANCE_UNAVAILABLE
 # A draft recap could say who drafted each player but not in which round,
 # because the draft's picks are held by neither the API nor a snapshot and were
 # rebuilt from the squads (#458). A notice: the lines are labelled all the same.

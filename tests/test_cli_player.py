@@ -28,6 +28,7 @@ def _make_mocks():
     client.get_players = AsyncMock(return_value=[player])
     client.get_teams = AsyncMock(return_value=[team, opponent])
     client.get_next_gameweek = AsyncMock(return_value={"id": 30})
+    client.get_season_year = AsyncMock(return_value=2026)
     client.get_fixtures = AsyncMock(return_value=[
         make_fixture(id=1, gameweek=30, home_team_id=1, away_team_id=2),
     ])
@@ -1312,16 +1313,25 @@ class TestUnderstatFetchDeferral:
         mock_understat.get_league_players.assert_awaited_once()
 
 
-def _make_draft_client():
+def _make_draft_client(
+    *, choices=None, transactions=None, trades=None, owners=None, ownership=None, entries=None, drafts=None,
+):
     """FPLDraftClient mock owning Salah (draft id 99) via entry 7.
 
     The element carries no code, so it joins on name and club, and its club
     is draft team 5, which is main-game team 1 by club code: the join only
     lands if the draft club is translated first (#423).
+
+    The league's history (#460) is one GW1 draft in which entry 7 took Salah
+    with the first pick, and nothing since; pass *choices*, *transactions*,
+    *trades*, *owners* (FPL's ownership list, element to entry) and
+    *ownership* (the squads, element to entry) to tell another story,
+    *entries* for more managers and *drafts* for more drafts.
     """
     mock = MagicMock()
     mock.get_league_details = AsyncMock(return_value={
-        "league_entries": [
+        "league": {"drafts": drafts or [{"id": 10, "event": 1, "draft_completed": "2026-08-10T12:00:00Z"}]},
+        "league_entries": entries or [
             {"entry_id": 7, "player_first_name": "Alice", "player_last_name": "Smith"},
         ],
     })
@@ -1329,7 +1339,18 @@ def _make_draft_client():
         "elements": [{"id": 99, "web_name": "Salah", "team": 5}],
         "teams": [make_draft_team(id=5, code=team_code_for(1), short_name="LIV")],
     })
-    mock.get_league_ownership = AsyncMock(return_value={99: 7})
+    mock.get_league_ownership = AsyncMock(return_value={99: 7} if ownership is None else ownership)
+    mock.unread_squads = {}
+    mock.get_game_state = AsyncMock(return_value={"current_event": 5})
+    owners = {99: 7} if owners is None else owners
+    mock.get_draft_choices = AsyncMock(return_value={
+        "choices": [
+            {"element": 99, "entry": 7, "round": 1, "pick": 1, "index": 1, "draft": 10, "was_auto": False},
+        ] if choices is None else choices,
+        "element_status": [{"element": e, "owner": o} for e, o in owners.items()] or [{"element": 99, "owner": None}],
+    })
+    mock.get_league_transactions = AsyncMock(return_value={"transactions": transactions or []})
+    mock.get_league_trades = AsyncMock(return_value={"trades": trades or []})
     mock.__aenter__ = AsyncMock(return_value=mock)
     mock.__aexit__ = AsyncMock(return_value=False)
     return mock
@@ -1446,6 +1467,234 @@ class TestPlayerDraftSquadsUnread:
             else:
                 assert "Team B" in result.stderr
                 assert "could not be read" in result.stderr
+
+
+class TestPlayerDraftProvenance:
+    """The draft line says how the player came to stand where he does (#460).
+
+    Placeholder league of two: Bea drafted Salah (99) in round 3 and Ann took
+    55 first; Bea let Salah go for a free agent (77) in GW2, and Ann claimed
+    him on waivers in GW4, releasing 55.
+    """
+
+    ENTRIES = [
+        {"entry_id": 7, "player_first_name": "Ann", "player_last_name": "Lee"},
+        {"entry_id": 8, "player_first_name": "Bea", "player_last_name": "Kay"},
+    ]
+    CHOICES = [
+        {"element": 55, "entry": 7, "round": 1, "pick": 1, "index": 1, "draft": 10, "was_auto": False},
+        {"element": 99, "entry": 8, "round": 3, "pick": 2, "index": 6, "draft": 10, "was_auto": False},
+    ]
+    TRANSACTIONS = [
+        {"id": 1, "entry": 8, "element_in": 77, "element_out": 99, "event": 2, "kind": "f",
+         "result": "a", "added": "2026-08-20T10:00:00Z", "index": 0},
+        {"id": 2, "entry": 7, "element_in": 99, "element_out": 55, "event": 4, "kind": "w",
+         "result": "a", "added": "2026-09-03T10:00:00Z", "index": 1},
+    ]
+
+    def _draft_client(self, **overrides):
+        story = {
+            "choices": self.CHOICES, "transactions": self.TRANSACTIONS, "owners": {99: 7, 77: 8},
+            "ownership": {99: 7, 77: 8}, "entries": self.ENTRIES,
+        }
+        return _make_draft_client(**{**story, **overrides})
+
+    def _invoke(self, draft_client, *, json_mode):
+        from fpl_cli.cli._context import Format
+
+        client, fixture_agent, ratings_svc = _make_mocks()
+        runner = CliRunner()
+        with (
+            patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
+            patch("fpl_cli.cli.player.get_settings",
+                  return_value={"fpl": {"draft_league_id": 12345}}),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=_make_empty_understat()),
+        ):
+            result = runner.invoke(main, ["player", "Salah"] + (["--format", "json"] if json_mode else []))
+        assert result.exit_code == 0, result.output
+        return result
+
+    def test_the_line_names_the_acquisition_and_the_history_runs_beneath_it(self):
+        result = self._invoke(self._draft_client(), json_mode=False)
+
+        assert "Draft: Owned by Ann Lee (GW4 waiver pickup; Bea Kay's round-3 pick)" in result.stdout
+        assert "Draft history: Bea Kay's round-3 pick; released GW2; waiver to Ann Lee GW4" in result.stdout
+        assert "draft_provenance" not in result.stderr
+
+    def test_a_player_still_with_his_drafter_has_no_history_line(self):
+        draft_client = self._draft_client(
+            choices=[{"element": 99, "entry": 7, "round": 1, "pick": 1, "index": 1, "draft": 10}],
+            transactions=[], owners={99: 7}, ownership={99: 7},
+        )
+
+        result = self._invoke(draft_client, json_mode=False)
+
+        assert "Draft: Owned by Ann Lee (round-1 pick)" in result.stdout
+        assert "Draft history" not in result.stdout
+
+    def test_a_free_agent_nobody_drafted_says_so(self):
+        draft_client = self._draft_client(
+            choices=[{"element": 55, "entry": 7, "round": 1, "pick": 1, "index": 1, "draft": 10}],
+            transactions=[], owners={55: 7, 99: None}, ownership={55: 7},
+        )
+
+        result = self._invoke(draft_client, json_mode=False)
+
+        assert "Draft: Available (undrafted)" in result.stdout
+
+    def test_json_carries_the_facts_beside_the_string_it_always_had(self):
+        result = self._invoke(self._draft_client(), json_mode=True)
+
+        payload = json.loads(result.stdout)
+        info = payload["data"][0]["info"]
+        assert info["draft_ownership"] == "Owned by Ann Lee"
+        draft = info["draft"]
+        assert draft["owner"] == {"entry_id": 7, "name": "Ann Lee"}
+        assert (draft["acquisition"], draft["gameweek"]) == ("waiver", 4)
+        assert draft["drafter"] == {"entry_id": 8, "name": "Bea Kay"}
+        assert (draft["round"], draft["pick"], draft["overall_pick"], draft["round_unknown"]) == (3, 2, 6, False)
+        assert [(s["kind"], s["gameweek"]) for s in draft["history"]] == [("draft", 1), ("release", 2), ("waiver", 4)]
+        assert payload["metadata"]["warnings"] == []
+        assert_player_rows_carry_code(payload["data"], command="player")
+
+    def test_a_history_that_cannot_be_read_leaves_the_line_as_it_was_and_says_why(self):
+        import httpx
+
+        for json_mode in (True, False):
+            draft_client = self._draft_client()
+            draft_client.get_league_trades = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+            result = self._invoke(draft_client, json_mode=json_mode)
+
+            if json_mode:
+                payload = json.loads(result.stdout)
+                info = payload["data"][0]["info"]
+                assert (info["draft_ownership"], info["draft"]) == ("Owned by Ann Lee", None)
+                [warning] = payload["metadata"]["warnings"]
+                assert warning["code"] == "draft_provenance_unavailable"
+                assert "trades could not be read" in warning["message"]
+            else:
+                [line] = [line for line in result.stdout.splitlines() if "Draft:" in line]
+                assert line.strip("│ ") == "Draft: Owned by Ann Lee"
+                assert "Draft history" not in result.stdout
+                assert "trades could not be read" in result.stderr
+
+    def test_a_player_the_squads_show_elsewhere_than_fpls_list_gets_the_plain_line(self):
+        # The waiver window: the history (and FPL's list) have Salah with Ann
+        # since GW4, the squads read still show him with Bea. Nobody else is
+        # affected, so nothing is wrong with the history and nothing is warned.
+        draft_client = self._draft_client(ownership={99: 8, 77: 8})
+
+        result = self._invoke(draft_client, json_mode=True)
+
+        payload = json.loads(result.stdout)
+        info = payload["data"][0]["info"]
+        assert (info["draft_ownership"], info["draft"]) == ("Owned by Bea Kay", None)
+        assert payload["metadata"]["warnings"] == []
+
+    def test_a_player_in_a_squad_the_read_missed_gets_the_plain_line(self):
+        draft_client = self._draft_client(ownership={77: 8})
+        draft_client.unread_squads = {7: "Ann's XI"}
+
+        for json_mode in (True, False):
+            result = self._invoke(draft_client, json_mode=json_mode)
+
+            if json_mode:
+                payload = json.loads(result.stdout)
+                info = payload["data"][0]["info"]
+                assert (info["draft_ownership"], info["draft"]) == ("Available", None)
+                assert [w["code"] for w in payload["metadata"]["warnings"]] == ["draft_squads_unread"]
+            else:
+                [line] = [line for line in result.stdout.splitlines() if "Draft:" in line]
+                assert line.strip("│ ") == "Draft: Available"
+
+    def test_a_redraft_pick_names_the_redraft(self):
+        draft_client = self._draft_client(
+            drafts=[
+                {"id": 10, "event": 1, "draft_completed": "2026-08-10T12:00:00Z"},
+                {"id": 20, "event": 4, "draft_completed": "2026-09-01T12:00:00Z"},
+            ],
+            choices=[
+                {"element": 99, "entry": 7, "round": 1, "pick": 1, "index": 1, "draft": 10},
+                {"element": 99, "entry": 8, "round": 2, "pick": 1, "index": 3, "draft": 20},
+            ],
+            transactions=[], owners={99: 8}, ownership={99: 8},
+        )
+
+        result = self._invoke(draft_client, json_mode=False)
+
+        assert "Draft: Owned by Bea Kay (round-2 pick in the GW4 redraft)" in result.stdout
+
+    def test_a_draft_whose_picks_are_lost_names_the_drafter_and_not_the_round(self):
+        draft_client = self._draft_client(
+            choices=[], transactions=[], owners={99: 7, 55: 8}, ownership={99: 7, 55: 8},
+        )
+        draft_client.get_entry_picks = AsyncMock(
+            side_effect=lambda entry, gameweek: {"picks": [{"element": 99 if entry == 7 else 55}]},
+        )
+
+        table = self._invoke(draft_client, json_mode=False)
+        payload = json.loads(self._invoke(draft_client, json_mode=True).stdout)
+
+        assert "Draft: Owned by Ann Lee (drafted, round unknown)" in table.stdout
+        draft = payload["data"][0]["info"]["draft"]
+        assert (draft["acquisition"], draft["round"], draft["round_unknown"]) == ("draft", None, True)
+        assert draft["drafter"] == {"entry_id": 7, "name": "Ann Lee"}
+
+    def test_a_failure_outside_the_http_layer_costs_the_history_not_the_ownership(self):
+        with patch("fpl_cli.services.draft_provenance.read_saved_choices", side_effect=RuntimeError("bad dir")):
+            result = self._invoke(self._draft_client(), json_mode=True)
+
+        payload = json.loads(result.stdout)
+        info = payload["data"][0]["info"]
+        assert (info["draft_ownership"], info["draft"]) == ("Owned by Ann Lee", None)
+        [warning] = payload["metadata"]["warnings"]
+        assert warning["code"] == "draft_provenance_unavailable"
+        assert "could not be replayed (RuntimeError)" in warning["message"]
+
+    def test_a_season_that_cannot_be_read_costs_nothing(self):
+        from fpl_cli.cli._context import Format
+
+        client, fixture_agent, ratings_svc = _make_mocks()
+        client.get_season_year = AsyncMock(side_effect=RuntimeError("no gameweeks"))
+        with (
+            patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {"draft_league_id": 12345}}),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=self._draft_client()),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
+            patch("fpl_cli.api.understat.UnderstatClient", return_value=_make_empty_understat()),
+        ):
+            result = CliRunner().invoke(main, ["player", "Salah", "--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        draft = json.loads(result.stdout)["data"][0]["info"]["draft"]
+        assert draft is not None and draft["acquisition"] == "waiver"
+
+    def test_classic_reads_no_history(self):
+        from fpl_cli.cli._context import Format
+
+        client, fixture_agent, ratings_svc = _make_mocks()
+        draft_client = self._draft_client()
+        with (
+            patch("fpl_cli.cli.resolve_format", return_value=Format.CLASSIC),
+            patch("fpl_cli.cli.player.get_settings",
+                  return_value={"fpl": {"draft_league_id": 12345}}),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
+        ):
+            result = CliRunner().invoke(main, ["player", "Salah", "--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert "draft" not in json.loads(result.stdout)["data"][0]["info"]
+        draft_client.get_draft_choices.assert_not_awaited()
 
 
 class TestPlayerHistoryPriorCoverage:
