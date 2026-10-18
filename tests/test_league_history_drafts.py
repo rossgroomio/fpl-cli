@@ -31,11 +31,15 @@ from fpl_cli.services.league_history_drafts import (
     LEAGUE_DRAFT_KEY,
     DraftSnapshotOutcome,
     DraftSnapshotStatus,
+    api_id,
+    api_time,
     completed_drafts,
     draft_snapshot_path,
     has_saved_picks,
+    is_draft_lost,
     is_recognised_draft,
     lost_draft_path,
+    read_saved_choices,
     snapshot_draft_choices,
 )
 from tests.conftest import make_history_row
@@ -143,6 +147,71 @@ class TestSnapshotPath:
 
         store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
         assert store.partition_exists() is True
+
+
+class TestReadingASnapshotBack:
+    """What a reader (the provenance replay, #458) sees of a snapshot: the same
+    file `has_saved_picks()` and the writer judge, read once by one loader."""
+
+    def test_rows_of_the_asked_draft_only(self):
+        other = _choice(1, draft=REDRAFT_ID)
+        _write(_snapshot_file(), json.dumps(_response(*_picks(), other)))
+
+        rows = read_saved_choices(SEASON, LEAGUE_ID, DRAFT_ID)
+
+        assert [r["draft"] for r in rows] == [DRAFT_ID] * len(_picks())
+
+    @pytest.mark.parametrize("text", ["{not json", "[]", '{"choices": "nope"}', '{"idle": []}'])
+    def test_a_file_that_is_not_a_snapshot_reads_as_no_copy_and_as_no_saved_picks(self, text: str):
+        _write(_snapshot_file(), text)
+
+        assert read_saved_choices(SEASON, LEAGUE_ID, DRAFT_ID) == []
+        assert has_saved_picks(SEASON, LEAGUE_ID, DRAFT_ID) is False
+
+    def test_no_file_is_no_copy(self):
+        assert read_saved_choices(SEASON, LEAGUE_ID, DRAFT_ID) == []
+
+
+class TestLostMarker:
+    def test_a_recorded_loss_is_lost(self):
+        assert is_draft_lost(SEASON, LEAGUE_ID, DRAFT_ID) is False
+
+        _write(lost_draft_path(SEASON, LEAGUE_ID, DRAFT_ID), "{}")
+
+        assert is_draft_lost(SEASON, LEAGUE_ID, DRAFT_ID) is True
+
+    def test_a_marker_that_cannot_be_probed_is_not_a_loss_and_not_a_crash(self, monkeypatch: pytest.MonkeyPatch):
+        """`Path.is_file()` re-raises PermissionError on a directory the process
+        may not search (Python 3.11-3.13)."""
+        real = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name.startswith("lost-draft-"):
+                raise PermissionError(13, "Permission denied")
+            return real(path)
+
+        monkeypatch.setattr(Path, "is_file", is_file)
+
+        assert is_draft_lost(SEASON, LEAGUE_ID, DRAFT_ID) is False
+
+
+class TestApiValueParsing:
+    @pytest.mark.parametrize("value", [True, False, "7", 7.0, None])
+    def test_only_a_real_int_is_an_id(self, value: Any):
+        assert api_id(value) is None
+
+    def test_an_int_is_its_own_id(self):
+        assert api_id(7) == 7
+
+    def test_a_timestamp_is_aware_whether_or_not_it_names_a_zone(self):
+        zoned, bare = api_time("2026-08-13T19:47:59.528867Z"), api_time("2026-08-13T19:47:59")
+
+        assert zoned is not None and zoned.utcoffset() is not None
+        assert bare is not None and bare.utcoffset() is not None
+
+    @pytest.mark.parametrize("value", ["", "yesterday", 5, None, True])
+    def test_anything_else_is_no_time(self, value: Any):
+        assert api_time(value) is None
 
 
 class TestDraftRecognition:

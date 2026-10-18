@@ -1177,8 +1177,9 @@ changes nothing) by its `response_time`, in one time order (`services/draft_prov
 The replay is trusted only if it agrees twice: its whole history must end exactly where FPL's own
 ownership list (`element_status`) says everyone is now, and, stopped at the recapped gameweek, it
 must put every fetched manager's players in the squad that gameweek recorded. Any disagreement, a
-move that does not fit the squad it applies to, or a log that cannot be read (a failed trades read
-counts, once a trade has happened) labels nobody: the lines read as before and a
+move that does not fit the squad it applies to, or a log that cannot be read (the trades included:
+a trade sent away and sent back leaves no mark on either check) labels nobody: the lines read as
+before and a
 `draft_provenance_unavailable` warning names why. The picks come from the choices feed first and,
 when it has none for the draft in force (it serves a league's latest draft only, so a scheduled
 redraft empties it), from the snapshot `league-recap --draft` kept ([Draft pick
@@ -1191,9 +1192,9 @@ that manager, and the player who left in the same move was). The replay runs on 
 faces the same two checks, and the lines say "who drafted him" with no round ("...in the GW20
 redraft" after a redraft). Rounds return on their own once a snapshot of the draft exists. This
 tier is stricter about its logs, because a start derived from them cannot reveal a move they are
-missing: a trades log that could not be read, a trade before the gameweek in a state nobody has
-seen move players, a squad that could not be read, or an undone move that does not fit the squads
-all refuse it. It costs one request per manager (their squad at the draft's gameweek), only when
+missing: a trade made since the draft, before the gameweek, in a state nobody has seen move
+players, a squad that could not be read, or an undone move that does not fit the squads all
+refuse it. It costs one request per manager (their squad at the draft's gameweek), only when
 the picks are lost, and is reported as a `draft_rounds_unknown` notice on stderr and in
 `metadata.warnings`, saying where a copy of the draft's choices response would restore the rounds,
 not as `draft_provenance_unavailable`. With neither the picks nor squads that can be rebuilt from,
@@ -1201,8 +1202,8 @@ the warning says so and the lines read as before.
 
 Verified on public leagues: the replay reproduced FPL's ownership in every league whose picks were
 served, and each manager's squad for earlier gameweeks; the rebuild did the same on every league
-tried whose feed returned no picks for a held draft. Costs two requests more per draft recap (the
-choices again, and the trades). Under `--format json` each standout row of a draft recap carries
+tried whose feed returned no picks for a held draft. Costs one request more per draft recap (the
+trades): the choices response the replay reads is the one the picks snapshot saves. Under `--format json` each standout row of a draft recap carries
 `acquisition`: `null` where it could not be established, else `kind` (`draft`, `waiver`,
 `free_agent`, `trade`), `gameweek` (the one the move first applied to), `draft_id`,
 `draft_gameweek`, `redraft`, `round_unknown`, `round`, `pick`, `overall_pick`, `auto_pick` and
@@ -1370,8 +1371,11 @@ The file is the endpoint's response with one key added, so the response saved by
 (`curl -s https://draft.premierleague.com/api/draft/<league id>/choices > draft-<draft id>.json`
 into that directory) is a valid snapshot too: it is read as the same picks and kept as it
 is, without `league_draft`. That is the fallback for a league whose redraft is scheduled
-before a recap has run. Nothing reads the snapshots yet; they are captured now because
-they cannot be fetched later.
+before a recap has run. The draft recap's Standout Players read them back once the
+feed has moved on to another draft (see [How a draft player came to his
+manager](#league-recap)), and they are captured every run because they cannot be fetched
+later. The recap hands the snapshot the choices response it has already read, so the
+endpoint is requested once per run.
 
 Three fields say nothing rather than something convenient, because a row outlives the
 API that could correct it.
@@ -1549,7 +1553,7 @@ they share the channel: `synthesis_provider_unavailable`, `synthesis_stopped_ear
 | `synthesis_contested_roll_call` | Draft only. The shipped editorial still has a paragraph that names a contested race's player and three or more of its beaten managers. The message says how many of the race's beaten managers the paragraph names and which player they were beaten to, or, where more than one paragraph lists the race at the same count, how many paragraphs do. Unlike the codes above, the sentence is true: this is a draft that broke its brief, not one the data contradicts, so the saved report's callout says so in its own words. Two beaten managers in a paragraph, three spread across paragraphs, or a paragraph that never names the player never raise it. A retry ships over the first draft only when it has fewer contradicted claims, or as many and fewer roll calls, so the warning means the draft that shipped is one that lists them. Saved as written, with the same line in the report's callout |
 | `league_standings_moved_on` | The recapped gameweek is the most recently finished one, but a later gameweek has started, so the league table no longer describes it. The gameweek is recapped and recorded from each manager's own gameweek history instead — see [When to run it](#league-recap) |
 | `league_tables_updating` | FPL's processing feed for the recapped game covers the recapped gameweek and says bonus is not yet confirmed for every match day, or the league tables are still updating, so the positions and totals the recap read may be stale. The gameweek is recorded anyway; re-run before the next deadline and the later capture supersedes this one — see [When to run it](#league-recap) |
-| `draft_provenance_unavailable` | Draft only. The Standout Players lines could not say how each player came to his manager, so they read without it: the history of the league's draft, waivers and trades could not be read, did not end where FPL's own ownership list says everyone is, did not match the squads the gameweek recorded, or the draft's picks are held by neither the choices feed nor a saved snapshot (see [How a draft player came to his manager](#league-recap)). The message names which. Nothing else in the recap changes |
+| `draft_provenance_unavailable` | Draft only. The Standout Players lines could not say how each player came to his manager, so they read without it: the history of the league's draft, waivers and trades (or its list of drafts) could not be read, did not end where FPL's own ownership list says everyone is, did not match the squads the gameweek recorded, or the draft's picks are held by neither the choices feed nor a saved snapshot (see [How a draft player came to his manager](#league-recap)). The message names which. Nothing else in the recap changes |
 | `draft_rounds_unknown` | Draft only. A held draft's picks are held by neither the choices feed nor a saved snapshot (a redraft was scheduled before the first snapshot was taken), so the Standout Players lines say who drafted each player but not in which round: each manager's drafted set was rebuilt from their squad at the draft's gameweek and the moves made before it. A notice, not a failure: the lines are labelled all the same. The message says where a copy of the draft's choices response would restore the rounds, and the warning stops once one exists or the redraft is held (see [How a draft player came to his manager](#league-recap)) |
 
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself

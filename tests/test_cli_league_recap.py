@@ -7559,7 +7559,7 @@ class TestDraftPicksSnapshot:
     @staticmethod
     def _invoke(
         league_drafts: list[dict[str, Any]], choices: dict[str, Any], args: list[str],
-        *, gw: int = 5,
+        *, gw: int = 5, held: dict[str, Any] | None = None,
     ) -> tuple[Any, MagicMock]:
         data = _recap_data(
             managers=[_manager(league_entry_id=10)],
@@ -7568,6 +7568,8 @@ class TestDraftPicksSnapshot:
             fpl_format="draft",
         )
         data["league_drafts"] = league_drafts
+        if held is not None:
+            data["draft_choices"] = held
         draft_client = _draft_feed_client()
         draft_client.get_draft_choices = AsyncMock(return_value=choices)
         result = _invoke_recap(
@@ -7592,6 +7594,16 @@ class TestDraftPicksSnapshot:
         # finds its partition new and says where it is recording.
         assert "Recording league history to" in stderr
         assert _store("draft").captured_gameweeks() == [5]
+
+    def test_choices_the_recap_already_read_are_saved_without_asking_again(self):
+        """The provenance replay reads the same endpoint, so the snapshot takes
+        its response rather than making the request a second time."""
+        result, draft_client = self._invoke([self._DRAFT], self._CHOICES, [], held=self._CHOICES)
+
+        assert result.exit_code == 0, result.output
+        draft_client.get_draft_choices.assert_not_awaited()
+        stored = json.loads(self._snapshot_path().read_text(encoding="utf-8"))
+        assert stored == {**self._CHOICES, "league_draft": self._DRAFT}
 
     def test_a_replay_of_an_earlier_gameweek_saves_them_too(self):
         result, _ = self._invoke([self._DRAFT], self._CHOICES, ["-g", "3"], gw=3)

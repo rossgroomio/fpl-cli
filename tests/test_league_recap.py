@@ -8922,6 +8922,24 @@ class TestStandoutAcquisitionSentences:
 
         assert text == "Wissa (Newcastle United) scored 11 points for Dan, who acquired him in a GW7 trade."
 
+    def test_a_namesake_whose_picks_were_not_fetched_still_keeps_the_name_out_of_the_line(self):
+        """The counterparty comes from the league's entries, so the names that
+        make "from Alex" ambiguous are the league's, not just the fetched ones."""
+        alex = {"manager_key": 2, "manager_name": "Alex"}
+        managers = _standout_league(
+            ("Dan", [_came_by(_standout_row("Wissa", 11, 5, club="Newcastle United"), _acquired("trade", 7, from_manager=alex))]),
+            ("Alex", []),
+        )
+
+        names = ["Dan", "Alex", "Alex"]
+        unaware = _standouts(managers, fpl_format="draft")["top_scorers"][0]["text"]
+        aware = find_standout_players(
+            managers, fpl_format="draft", gameweek=7, live=True, whole_league=False, league_names=names,
+        )["top_scorers"][0]["text"]
+
+        assert unaware == "Wissa (Newcastle United) scored 11 points for Dan, who acquired him from Alex in a GW7 trade."
+        assert aware == "Wissa (Newcastle United) scored 11 points for Dan, who acquired him in a GW7 trade."
+
     def test_a_line_the_history_could_not_label_reads_as_it_always_has(self):
         assert self._scorer(None) == "Haaland (Manchester City) scored 17 points for Alice."
 
@@ -9163,21 +9181,46 @@ class TestCollectorDraftAcquisitions:
         assert "owned differently from FPL's own ownership list" in data["draft_provenance_problem"]
         assert all("acquisition" not in p for p in data["managers"][0]["squad"])
 
-    async def test_a_failed_trades_read_degrades_when_a_trade_has_happened(self):
-        """P15 was traded away, which only the trades log says: without it the
-        replay still has him with his drafter and disagrees with the list."""
+    async def test_a_failed_trades_read_labels_nobody_whatever_the_ownership_list_says(self):
+        """Not only when a trade shows up as a disagreement (P15 traded away):
+        a trade and its reversal leave no trace, so an unread log cannot be
+        vouched for either way."""
         owners = {**{900 + i: 1 for i in range(1, 15)}, 915: 2}
 
-        data = await self._collect(self._client(owners=owners, trades=httpx.ConnectError("down")))
+        for held in (owners, None):
+            data = await self._collect(self._client(owners=held, trades=httpx.ConnectError("down")))
 
-        assert "the trades could not be read" in data["draft_provenance_problem"]
-        assert all("acquisition" not in p for p in data["managers"][0]["squad"])
+            assert "trades could not be read" in data["draft_provenance_problem"]
+            assert all("acquisition" not in p for p in data["managers"][0]["squad"])
 
-    async def test_a_failed_trades_read_costs_nothing_while_no_trade_has_happened(self):
-        data = await self._collect(self._client(trades=httpx.ConnectError("down")))
+    async def test_the_choices_the_replay_read_ride_on_the_data_for_the_snapshot(self):
+        client = self._client()
 
-        assert "draft_provenance_problem" not in data
-        assert all(p["acquisition"] is not None for p in data["managers"][0]["squad"])
+        data = await self._collect(client)
+
+        assert data["draft_choices"] == await client.get_draft_choices(1)
+
+    async def test_no_choices_ride_along_when_provenance_was_not_collected_or_the_read_failed(self):
+        unasked = await self._collect(self._client(), provenance_season=None)
+        failed_client = self._client()
+        failed_client.get_draft_choices = AsyncMock(side_effect=httpx.ConnectError("down"))
+        failed = await self._collect(failed_client)
+
+        assert "draft_choices" not in unasked
+        assert "draft_choices" not in failed
+
+    async def test_league_details_without_a_drafts_list_say_so_rather_than_that_no_draft_was_held(self):
+        client = self._client()
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"name": "Draft League"},
+            "standings": [{"league_entry": 10, "event_total": 0, "total": 0}],
+            "league_entries": [{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
+        })
+
+        data = await self._collect(client)
+
+        assert "list of drafts could not be read" in data["draft_provenance_problem"]
+        assert "no draft had been held" not in data["draft_provenance_problem"]
 
     def _picks_by_gameweek(self, unreadable_at: int | None = None) -> Any:
         """get_entry_picks that answers every gameweek alike, bar one that fails."""
@@ -9272,7 +9315,7 @@ class TestCollectorDraftAcquisitions:
 
         data = await self._collect(client)
 
-        assert "the trades could not be read" in data["draft_provenance_problem"]
+        assert "the league's trades could not be read" in data["draft_provenance_problem"]
         assert all("acquisition" not in p for p in data["managers"][0]["squad"])
 
     async def test_a_snapshot_appearing_later_promotes_the_same_draft_to_known_rounds(self):

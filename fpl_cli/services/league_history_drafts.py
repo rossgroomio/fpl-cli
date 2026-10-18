@@ -111,17 +111,21 @@ def lost_draft_path(season: str, league_id: int, draft_id: int) -> Path:
     return draft_snapshot_dir(season, league_id) / f"lost-draft-{draft_id}.json"
 
 
-def _is_id(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
+def api_id(value: object) -> int | None:
+    """*value* if it is an int (a bool is not one), else None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _is_timestamp(value: str) -> bool:
-    """Whether a string is an ISO 8601 time, as the API sends `draft_completed`."""
+def api_time(value: object) -> datetime | None:
+    """An API timestamp as an aware datetime (UTC when it names no zone), or
+    None for anything else, as the API sends `draft_completed`."""
+    if not isinstance(value, str):
+        return None
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return False
-    return True
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def is_recognised_draft(entry: Any) -> bool:
@@ -134,11 +138,11 @@ def is_recognised_draft(entry: Any) -> bool:
     draft still to be held, so a caller that skipped it quietly would lose a
     held draft's picks with no sign.
     """
-    if not (isinstance(entry, dict) and _is_id(entry.get("id")) and "draft_completed" in entry):
+    if not (isinstance(entry, dict) and api_id(entry.get("id")) is not None and "draft_completed" in entry):
         return False
     completed = entry["draft_completed"]
     if isinstance(completed, str):
-        return _is_timestamp(completed)
+        return api_time(completed) is not None
     return completed is None or isinstance(completed, bool)
 
 
@@ -170,12 +174,13 @@ def _picks(rows: Iterable[Mapping[str, Any]], draft_id: int) -> Counter[str]:
     )
 
 
-def _stored_picks(path: Path, draft_id: int) -> tuple[Counter[str] | None, str | None]:
-    """The picks a file holds for one draft, or what is wrong with it.
+def _load_snapshot(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """The snapshot a file holds, or what is wrong with it.
 
     `(None, None)` when there is no file. Read without probing first, so a
     permission problem on the directory is a problem with the file rather
-    than an exception for the caller.
+    than an exception for the caller. This is the one place that decides what
+    a readable snapshot is: a JSON object with a `choices` list.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -189,7 +194,16 @@ def _stored_picks(path: Path, draft_id: int) -> tuple[Counter[str] | None, str |
         return None, f"is not valid JSON ({exc})"
     if not isinstance(stored, dict) or not isinstance(stored.get("choices"), list):
         return None, "holds no `choices` list"
-    return _picks(_choice_rows(stored), draft_id), None
+    return stored, None
+
+
+def _stored_picks(path: Path, draft_id: int) -> tuple[Counter[str] | None, str | None]:
+    """The picks a file holds for one draft, or what is wrong with it.
+
+    `(None, None)` when there is no file.
+    """
+    stored, problem = _load_snapshot(path)
+    return (None, problem) if stored is None else (_picks(_choice_rows(stored), draft_id), None)
 
 
 def read_saved_choices(season: str, league_id: int, draft_id: int) -> list[dict[str, Any]]:
@@ -201,13 +215,20 @@ def read_saved_choices(season: str, league_id: int, draft_id: int) -> list[dict[
     A file that is wrong says nothing here: `snapshot_draft_choices()` is what
     reports it, so a reader treats it as no copy rather than a second voice.
     """
+    stored, _ = _load_snapshot(draft_snapshot_path(season, league_id, draft_id))
+    return [] if stored is None else [row for row in _choice_rows(stored) if row.get("draft") == draft_id]
+
+
+def is_draft_lost(season: str, league_id: int, draft_id: int) -> bool:
+    """Whether a run recorded that this draft's picks were gone before any was saved.
+
+    A marker that cannot be probed (a permission problem on the directory) is
+    no marker: a reader must not fail for want of a note about a note.
+    """
     try:
-        stored = json.loads(draft_snapshot_path(season, league_id, draft_id).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    if not isinstance(stored, dict):
-        return []
-    return [row for row in _choice_rows(stored) if row.get("draft") == draft_id]
+        return lost_draft_path(season, league_id, draft_id).is_file()
+    except OSError:
+        return False
 
 
 def has_saved_picks(season: str, league_id: int, draft_id: int) -> bool:
@@ -260,7 +281,7 @@ def snapshot_draft_choices(
     outcome, so the caller reports it and carries on.
     """
     rows = _choice_rows(choices)
-    served_ids = sorted({row["draft"] for row in rows if _is_id(row.get("draft"))})
+    served_ids = sorted({row["draft"] for row in rows if api_id(row.get("draft")) is not None})
 
     outcomes: list[DraftSnapshotOutcome] = []
     for draft in completed:

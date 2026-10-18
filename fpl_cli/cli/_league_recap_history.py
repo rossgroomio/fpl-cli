@@ -2680,7 +2680,8 @@ async def capture_draft_picks(
     current draft's picks from it the moment it is scheduled (#461). Every
     draft recap therefore checks each draft the league has held: one still
     served is saved once, and one no longer served is either already saved
-    or already lost, which is said once. Nothing reads the snapshots yet.
+    or already lost, which is said once. The provenance replay reads them back
+    when the feed has moved on (#458).
 
     Every warning is also shown on stderr. Never raises for an unreachable
     API, a reshaped response or a file problem: the picks cost a warning,

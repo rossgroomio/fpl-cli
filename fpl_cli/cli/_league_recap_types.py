@@ -869,6 +869,11 @@ class LeagueRecapData(TypedDict):
     # the API (#461). None when the details carry no such list; absent on
     # classic.
     league_drafts: NotRequired[list[Any] | None]
+    # Draft only: the draft API's choices response the provenance replay
+    # already read (#458), handed on for the same snapshot to save rather
+    # than asked for again. Absent when the read failed or provenance was not
+    # collected.
+    draft_choices: NotRequired[dict[str, Any]]
     # Every member of the league table, in standings order.
     standings_cohort: NotRequired[list[RecapStandingsEntry]]
     # The standings response reported members beyond the ones fetched (classic

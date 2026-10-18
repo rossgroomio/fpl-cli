@@ -79,6 +79,7 @@ RECAP_WARNING_DRAFT_ROUNDS_UNKNOWN = "draft_rounds_unknown"
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse, TokenUsage
+    from fpl_cli.cli._league_recap_history import FetchDraftChoices
     from fpl_cli.cli._synthesis_retry import SynthesisAttempt
 
 logger = logging.getLogger(__name__)
@@ -510,7 +511,8 @@ def league_recap_command(
                 # Each held draft's picks, kept beside the ledger while the
                 # API still serves them (#461). A no-op off draft.
                 draft_picks = await capture_draft_picks(
-                    collected_data, season=season, fetch_choices=_fetch_draft_choices,
+                    collected_data, season=season,
+                    fetch_choices=_draft_choices_source(collected_data.get("draft_choices")),
                 )
             notes_pack = capture_result.notes_pack
 
@@ -793,6 +795,7 @@ def _standout_players_or_none(
         return find_standout_players(
             managers, fpl_format=data["fpl_format"], gameweek=gw,
             live=is_live_gw, whole_league=whole_league,
+            league_names=[c["manager_name"] for c in cohort] if cohort else None,
         )
     except (KeyError, TypeError, ValueError) as e:
         logger.debug("Standout players could not be built", exc_info=True)
@@ -808,6 +811,16 @@ async def _fetch_draft_choices(league_id: int) -> dict[str, Any]:
 
     async with FPLDraftClient() as draft_client:
         return await draft_client.get_draft_choices(league_id)
+
+
+def _draft_choices_source(held: dict[str, Any] | None) -> FetchDraftChoices:
+    """Where the picks snapshot gets the choices response: the one the recap's
+    provenance replay already read, so both see the same payload and the
+    request is made once; a fresh read when the replay had none."""
+    async def fetch(league_id: int) -> dict[str, Any]:
+        return held if held is not None else await _fetch_draft_choices(league_id)
+
+    return fetch
 
 
 def _provenance_unavailable_message(reason: str) -> str:

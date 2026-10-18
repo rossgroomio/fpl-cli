@@ -14,8 +14,11 @@ so the league ends with Alice on 1, 8, 11; Bob on 2, 4, 10; Cam on 3, 6, 9.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -353,25 +356,33 @@ class TestWhenTheHistoryCannotBeTrusted:
         assert provenance.players == {}
         assert "1 player owned differently from FPL's own ownership list" in (provenance.problem or "")
 
-    def test_a_failed_trades_read_is_a_disagreement_once_a_trade_has_happened(self):
+    def test_a_failed_trades_read_refuses_the_replay(self):
         provenance = replay_draft_history(_logs(trades=None), 5)
 
         assert not provenance.available
         assert provenance.players == {}
-        assert "the trades could not be read" in (provenance.problem or "")
+        assert "the league's trades could not be read" in (provenance.problem or "")
 
-    def test_a_failed_trades_read_costs_nothing_while_no_trade_has_happened(self):
-        """Nothing was lost by not reading them, and the ownership list says
-        so: the replay still ends exactly where FPL does."""
-        txns = [t for t in TRANSACTIONS if t["id"] in (1, 2)]
-        owners = {1: ALICE, 4: ALICE, 11: ALICE, 2: BOB, 8: BOB, 10: BOB, 3: CAM, 6: CAM, 9: CAM}
+    def test_a_failed_trades_read_refuses_even_when_no_trade_leaves_a_mark_on_ownership(self):
+        """A player sent away and sent back leaves every owner where the draft
+        put him, so the ownership list and the squads agree with a replay that
+        never saw either trade: only the trades log can say that Alice's 1 was
+        last moved by a trade."""
+        there_and_back = [
+            _trade(1, ALICE, BOB, [(1, 2)], 4, "2026-09-03T12:00:00Z"),
+            _trade(2, BOB, ALICE, [(1, 2)], 5, "2026-09-11T12:00:00Z"),
+        ]
+        owners = {1: ALICE, 4: ALICE, 7: ALICE, 2: BOB, 5: BOB, 8: BOB, 3: CAM, 6: CAM, 9: CAM}
+        logs = {"transactions": [], "element_status": _status(owners)}
 
-        provenance = replay_draft_history(
-            _logs(trades=None, transactions=txns, element_status=_status(owners)), 5,
-        )
+        read = replay_draft_history(_logs(trades=there_and_back, **logs), 5)
+        unread = replay_draft_history(_logs(trades=None, **logs), 5)
 
-        assert provenance.available
-        assert provenance.players[11].latest.kind == "free_agent"
+        histories = _histories(read)
+        assert (histories[1].latest.kind, histories[1].latest.gameweek) == ("trade", 5)
+        assert (histories[2].latest.kind, histories[2].latest.gameweek) == ("trade", 5)
+        assert not unread.available and unread.players == {}
+        assert "trades could not be read" in (unread.problem or "")
 
     def test_a_missing_ownership_list_leaves_nothing_to_check_against(self):
         for status in (None, []):
@@ -383,6 +394,19 @@ class TestWhenTheHistoryCannotBeTrusted:
     def test_unread_logs_say_which(self):
         assert "choices" in (replay_draft_history(_logs(choices=None), 5).problem or "")
         assert "transactions" in (replay_draft_history(_logs(transactions=None), 5).problem or "")
+        assert "trades" in (replay_draft_history(_logs(trades=None), 5).problem or "")
+
+    def test_a_list_of_drafts_that_could_not_be_read_is_not_a_league_that_held_none(self):
+        unread = replay_draft_history(_logs(drafts=None), 5)
+        none_held = replay_draft_history(_logs(drafts=[]), 5)
+
+        assert "list of drafts could not be read" in (unread.problem or "")
+        assert "no draft had been held in the league" in (none_held.problem or "")
+
+    def test_a_disagreement_with_the_ownership_list_says_a_fresh_run_may_not_have_caught_up(self):
+        provenance = replay_draft_history(_logs(element_status=_status({**OWNERS_NOW, 2: ALICE})), 5)
+
+        assert "re-run once FPL has caught up" in (provenance.problem or "")
 
     def test_no_picks_for_the_draft_is_an_answer_not_a_crash(self):
         provenance = replay_draft_history(_logs(choices=[]), 5)
@@ -494,6 +518,50 @@ class TestReadingTheLogs:
         }[failing]
         assert all(log is None for log in missing)
 
+    async def test_a_failed_read_is_not_logged_as_a_warning(self, caplog: pytest.LogCaptureFixture):
+        """fpl-cli configures no handlers, so a warning would print raw to stderr
+        under the problem the CLI already shows."""
+        client = self._client(
+            get_draft_choices=AsyncMock(side_effect=httpx.ConnectError("down")),
+            get_league_trades=AsyncMock(side_effect=httpx.ConnectError("down")),
+            get_league_transactions=AsyncMock(return_value=["not", "a", "dict"]),
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="fpl_cli.services.draft_provenance"):
+            await read_draft_logs(client, 7, drafts=[_draft_row(DRAFT, 1, DRAFTED_AT)])
+
+        assert caplog.records
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    async def test_the_choices_response_is_kept_for_a_caller_that_also_saves_it(self):
+        payload = {"choices": FIRST_DRAFT, "element_status": _status(OWNERS_NOW), "idle": []}
+        client = self._client(get_draft_choices=AsyncMock(return_value=payload))
+
+        logs = await read_draft_logs(client, 7, drafts=[], transactions=[])
+
+        assert logs.choices_payload is payload
+
+    async def test_a_choices_response_without_a_choices_list_is_not_kept(self):
+        client = self._client(get_draft_choices=AsyncMock(return_value={"detail": "maintenance"}))
+
+        logs = await read_draft_logs(client, 7, drafts=[], transactions=[])
+
+        assert logs.choices is None and logs.choices_payload is None
+
+    async def test_a_drafts_list_the_caller_could_not_find_is_read_and_reported_when_still_missing(self):
+        client = self._client(get_league_details=AsyncMock(return_value={"league": {"name": "x"}}))
+
+        logs = await read_draft_logs(client, 7, drafts=None, transactions=[])
+
+        assert logs.drafts is None
+
+    async def test_entries_of_the_drafts_list_that_are_not_objects_are_left_out(self):
+        logs = await read_draft_logs(
+            self._client(), 7, drafts=[_draft_row(DRAFT, 1, DRAFTED_AT), "junk", None], transactions=[],  # type: ignore[list-item]
+        )
+
+        assert [d["id"] for d in logs.drafts or []] == [DRAFT]
+
     async def test_a_reply_in_a_shape_nobody_expected_is_a_missing_log(self):
         client = self._client(get_league_trades=AsyncMock(return_value=["not", "a", "dict"]))
 
@@ -602,6 +670,24 @@ class TestWhenTheFeedHasMovedOn:
         provenance = await self._provenance(self._client([]))
 
         assert "already recorded that they were gone before any was saved" in (provenance.problem or "")
+
+    async def test_a_lost_marker_that_cannot_be_probed_is_no_marker_not_a_crash(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A directory the process may not search raises from `is_file()` itself."""
+        real = Path.is_file
+
+        def is_file(path: Path) -> bool:
+            if path.name.startswith("lost-draft-"):
+                raise PermissionError(13, "Permission denied")
+            return real(path)
+
+        monkeypatch.setattr(Path, "is_file", is_file)
+
+        provenance = await self._provenance(self._client([]))
+
+        assert not provenance.available
+        assert "already recorded" not in (provenance.problem or "")
 
     async def test_a_snapshot_written_by_hand_without_the_leagues_entry_reads_the_same(self):
         """A response saved straight from the feed lacks `league_draft`."""
@@ -767,12 +853,29 @@ class TestWhenThePicksAreLost:
         provenance = replay_draft_history(self._lost(trades=None), 4)
 
         assert not provenance.available and provenance.players == {}
-        assert "the trades could not be read" in (provenance.problem or "")
+        assert "the league's trades could not be read" in (provenance.problem or "")
 
     def test_a_pre_gameweek_trade_in_a_state_nobody_has_seen_move_players_refuses_the_rebuild(self):
         pending = _trade(3, ALICE, BOB, [(1, 2)], 1, "2026-08-12T11:00:00Z", state="o")
 
         provenance = replay_draft_history(self._lost(trades=[*self.TRADES, pending]), 4)
+
+        assert not provenance.available
+        assert "state this client has not seen move players" in (provenance.problem or "")
+
+    def test_a_trade_in_an_odd_state_from_before_the_draft_was_held_cannot_refuse_it(self):
+        """The guard is for trades that could have moved players since the draft;
+        one last touched before it was completed belongs to an earlier era."""
+        earlier = _trade(3, ALICE, BOB, [(1, 2)], 1, "2026-08-01T11:00:00Z", state="r")
+
+        assert replay_draft_history(self._lost(trades=[*self.TRADES, earlier]), 4).available
+
+    def test_a_trade_in_an_odd_state_with_no_usable_time_still_refuses_the_rebuild(self):
+        """Nothing places it before the draft, so it counts."""
+        untimed = {**_trade(3, ALICE, BOB, [(1, 2)], 1, "2026-08-01T11:00:00Z", state="r"),
+                   "offer_time": None, "response_time": None}
+
+        provenance = replay_draft_history(self._lost(trades=[*self.TRADES, untimed]), 4)
 
         assert not provenance.available
         assert "state this client has not seen move players" in (provenance.problem or "")
@@ -868,6 +971,58 @@ class TestReadingTheSquadsAtTheDraftsGameweek:
 
         client.get_entry_picks.assert_not_awaited()
         assert logs.draft_squads == {}
+
+    @pytest.mark.parametrize("failing", ["get_draft_choices", "get_league_trades"])
+    async def test_no_squad_is_read_for_a_replay_a_missing_log_has_already_refused(self, failing: str):
+        client = self._client()
+        setattr(client, failing, AsyncMock(side_effect=httpx.ConnectError("down")))
+
+        logs = await self._read(client, gameweek=5)
+
+        client.get_entry_picks.assert_not_awaited()
+        assert logs.draft_squads == {} and logs.unread_squads == {}
+
+    async def test_no_squad_is_read_when_the_transactions_could_not_be_read(self):
+        client = self._client()
+        client.get_league_transactions = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+        await read_draft_logs(client, 7, drafts=[_draft_row(DRAFT, 1, DRAFTED_AT)], entry_ids=[ALICE, BOB, CAM])
+
+        client.get_entry_picks.assert_not_awaited()
+
+    async def test_no_squad_is_read_when_there_is_no_ownership_list_to_check_against(self):
+        client = self._client()
+        client.get_draft_choices = AsyncMock(return_value={"choices": [], "element_status": [], "idle": []})
+
+        await self._read(client, gameweek=5)
+
+        client.get_entry_picks.assert_not_awaited()
+
+    async def test_two_drafts_without_picks_are_read_together_within_one_limit(self):
+        redraft = _draft_row(REDRAFT, 19, REDRAFTED_AT)
+        in_flight = peak = 0
+
+        async def picks(entry: int, gameweek: int) -> dict[str, Any]:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0)
+            in_flight -= 1
+            return {"picks": [{"element": 100 * gameweek + entry, "position": 1}]}
+
+        client = self._client()
+        client.get_entry_picks = AsyncMock(side_effect=picks)
+
+        logs = await read_draft_logs(
+            client, 7, drafts=[_draft_row(DRAFT, 1, DRAFTED_AT), redraft], transactions=[],
+            entry_ids=[ALICE, BOB, CAM],
+        )
+
+        assert set(logs.draft_squads) == {DRAFT, REDRAFT}
+        assert sorted(call.args for call in client.get_entry_picks.await_args_list) == sorted(
+            (e, g) for e in (ALICE, BOB, CAM) for g in (1, 19)
+        )
+        assert peak > 3
 
     async def test_nobody_is_asked_without_the_entries(self):
         client = self._client()
