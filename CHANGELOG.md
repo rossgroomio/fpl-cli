@@ -1,6 +1,42 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.9.0] - 2026-10-18
+
+### Bug Fixes
+
+- review --compare-recs reads captains whose rationale has a dash (#407)
+- stop fpl review printing an empty Draft heading on stdout (#412)
+- say why a report failed to save and stop calling refusals cut off (#413)
+- gw-prep stops when the Draft waiver table cannot be read (#414)
+- review --compare-recs stops marking ranked alternatives as missed (#415)
+- review --compare-recs stops marking waiver fallbacks as missed (#417)
+- waivers JSON carries `code` so gw-prep joins returnees to the pool (#420)
+- cached sell prices follow price changes since the scrape (#427)
+- gw-prep draft Returning Soon flags an unreadable returnee radar (#435)
+- fpl waivers drop advice accounts for injured players again (#440)
+- draft commands read each club in the main game's numbering (#430)
+- fixture-adjusted npxG scales xG down against weak sides, not up (#443)
+- fpl waivers credits draft defenders for defensive contributions (#444)
+- scoring keeps Core-Insights matches with blank Elo or xG (#447)
+- fpl waivers reports unmatched keepers and defenders in JSON (#449)
+- league-recap --draft saves draft picks when the API sends a completion time (#467)
+- league-recap stops flagging a week's net said after a waiver aside (#468)
+
+### Features
+
+- JSON player rows carry `code` beside `id` on every command (#421)
+- league-recap and status say when FPL is still updating leagues (#428)
+- history JSON names each season's club code `team_code` (#441)
+- fpl doctor --providers checks the draft and main club lists agree (#442)
+- --summarise records attempts and token usage, and pins effort (#451)
+- shorter league-recap editorials that tell the week's best stories (#453)
+- scoring commands warn when a feed reached only part of the pool (#454)
+- league-recap names the week's top scorers and costliest blanks (#457)
+- league-recap --draft saves draft picks a redraft would erase (#464)
+- league-recap retries editorials that list a race's beaten managers (#462)
+- league-recap says where each standout draft player came from (#463)
+
 ## [2.8.0] - 2026-10-14
 
 ### Bug Fixes
