@@ -14,6 +14,25 @@ from fpl_cli.season import resolve_season_year
 
 BASE_URL = "https://fantasy.premierleague.com/api"
 
+# The keys the scoring signals read off each `element-summary` history row
+# (`services/scoring/signals.py`, `value_quality.py`, the stats agent's
+# windowed stats). Every one is read with a 0 default, so a key the API
+# renames zeroes that stat for every gameweek of every player without a
+# word; the `fpl doctor --providers` probe asserts a live row against this
+# list so the drift is named (#438).
+PLAYER_HISTORY_ROW_KEYS: tuple[str, ...] = (
+    "round",
+    "fixture",
+    "minutes",
+    "total_points",
+    "goals_scored",
+    "assists",
+    "expected_goals",
+    "expected_assists",
+    "clearances_blocks_interceptions",
+    "tackles",
+)
+
 
 def finished_gameweek_ids(gameweeks: list[dict[str, Any]]) -> list[int]:
     """The ids of every finished gameweek in a `get_gameweeks()` payload, in order.

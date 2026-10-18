@@ -174,6 +174,8 @@ Store the analysis as `pfdr`, the schedule as `blanks_schedule` and the draft va
 
 `data_caveat` goes into every Phase C prompt and into the report's `## Notes` section in Phase D, so a reader can see why the recommendations leaned away from fixtures.
 
+**Feed coverage entries from the scoring payloads join `data_caveat` too.** Every scoring command gathered below (`fpl captain`, `fpl waivers`, `fpl targets`, `fpl differentials`, `fpl transfer-eval`, `fpl stats --value`) and the `bench_order.py` / `starting_xi.py` / `transfer_eval.py` scripts carry `warnings` entries whose `code` ends in `_coverage_low` when a data feed reached too little of the player pool -- Understat down, Core-Insights match files missing, per-gameweek history throttled, last season's history gone, clubs unrated -- and `fpl waivers` (with the draft columns of `fpl stats`) carries `draft_squads_unread` when a rival squad could not be read. Each message says what the scores fell back to. Add every such entry to `data_caveat` verbatim, once per distinct `code` across all payloads, and treat the affected scores the way the Data quality rule treats pFDR: still shown, not decisive on their own.
+
 ### B2 -- Captain Candidates (classic only - skip if format is "draft")
 
 ```bash

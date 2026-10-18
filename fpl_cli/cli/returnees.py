@@ -150,23 +150,29 @@ async def _fetch_inputs(*, quiet: bool) -> dict[str, Any]:
     price percentile, which is a coarser watchlist rather than no watchlist.
     """
     from fpl_cli.api.fpl import FPLClient
+    from fpl_cli.services.player_prior import load_or_generate_player_priors
     from fpl_cli.services.scoring import prepare_scoring_data
 
     spinner = nullcontext() if quiet else console.status("Fetching player data...")
     with spinner:
         async with FPLClient() as client:
-            scoring_data = await prepare_scoring_data(
-                client, include_players=True, include_prior=True,
-            )
+            scoring_data = await prepare_scoring_data(client, include_players=True)
             gameweeks = await client.get_gameweeks()
+            players = list(scoring_data.players or [])
+            # Loaded directly rather than through the bundle: the bundle
+            # gates a set last season's history reached too little of to
+            # None, because its consumers blend with it and would announce
+            # pedigree, while the quality bar here judges each prior by its
+            # own source and would rather keep the price-sourced ones than
+            # report no watchlist at all (#438 review).
+            priors = await load_or_generate_player_priors(players, scoring_data.next_gw_id)
 
-    players = list(scoring_data.players or [])
     profiles = await _load_profiles()
     understat_seasons = await _load_understat_seasons(_seasons_to_score(players, profiles))
 
     return {
         "players": players,
-        "priors": scoring_data.player_priors,
+        "priors": priors,
         "next_gw_id": scoring_data.next_gw_id,
         "gameweeks": gameweeks,
         "profiles": profiles,

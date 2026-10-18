@@ -26,6 +26,11 @@ if TYPE_CHECKING:
     from fpl_cli.models.player import Player
 
 
+# `warnings` code for a bench that cannot cover a position the XI fields at
+# its formation minimum.
+BENCH_COVER_MISSING = "bench_cover_missing"
+
+
 class BenchOrderAgent(Agent):
     """Agent for optimizing bench/substitute ordering.
 
@@ -120,11 +125,21 @@ class BenchOrderAgent(Agent):
             outfield.sort(key=lambda x: x["priority_score_raw"], reverse=True)
             optimal_order = outfield[:3] + goalkeepers
 
-            warnings = [
-                f"No {pos} cover on bench; XI has {FORMATION_LIMITS[pos][0]} {pos} "
-                f"so a missing {pos} forces a formation change"
+            # `{code, message}` entries like every other agent's, so the
+            # gw-prep script's payload reads one shape: the formation gaps
+            # under their own code, then the scoring bundle's coverage
+            # entries (#438), which this agent never surfaced before.
+            warnings: list[dict[str, str]] = [
+                {
+                    "code": BENCH_COVER_MISSING,
+                    "message": (
+                        f"No {pos} cover on bench; XI has {FORMATION_LIMITS[pos][0]} {pos} "
+                        f"so a missing {pos} forces a formation change"
+                    ),
+                }
                 for pos in formation_context["coverage_gaps"]
             ]
+            warnings.extend(data.warnings)
 
             self.log_success("Bench order optimized")
 

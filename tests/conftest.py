@@ -43,8 +43,13 @@ def stub_scoring_network_seams():
     mid-test would not reach them; patch those at their own call site.
     """
     from fpl_cli.api.fpl import FPLClient
+    from fpl_cli.services.team_ratings import TeamRatingsService
 
     with (
+        # ensure_fresh refreshes the ratings from the FPL API on its own
+        # client, not the patched one, and swallows the refusal: pytest-socket
+        # still saw every bundle test reach for a socket (#454 review).
+        patch.object(TeamRatingsService, "ensure_fresh", new_callable=AsyncMock),
         patch(
             "fpl_cli.services.scoring.data_prep.build_understat_by_player_id",
             new_callable=AsyncMock,
@@ -160,11 +165,15 @@ def _isolated_user_dirs(tmp_path, monkeypatch):
     user location -- see fpl_cli/paths.py for why they are all functions.
     """
     from fpl_cli.cli import _context
+    from fpl_cli.services import player_prior
 
     user_config_dir.cache_clear()
     user_data_dir.cache_clear()
     user_cache_dir.cache_clear()
     _context._warned_missing_settings.clear()
+    # The per-process memo of an uninformed prior set would otherwise serve
+    # one test's collapse to the next (#454 review).
+    player_prior._uninformed_priors.clear()
     monkeypatch.setenv("FPL_CLI_CONFIG_DIR", str(tmp_path / "user-config"))
     monkeypatch.setenv("FPL_CLI_DATA_DIR", str(tmp_path / "user-data"))
     monkeypatch.setenv("FPL_CLI_CACHE_DIR", str(tmp_path / "user-cache"))

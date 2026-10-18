@@ -689,3 +689,19 @@ class TestTransferEvalAgent:
         assert result.status == AgentStatus.SUCCESS
         assert result.data["out_player"]["reliability"] is None
         assert result.data["in_players"][0]["reliability"] is None
+
+
+async def test_bundle_coverage_warnings_reach_the_result():
+    """A feed the bundle found short is named beside the early-season notice (#438)."""
+    marker = {"code": "adjusted_npxg_coverage_low", "message": "Opponent-adjusted npxG reached 0 of 40"}
+    _, scoring_data = _build_players_and_data()
+    with patch(
+        "fpl_cli.agents.analysis.transfer_eval.prepare_scoring_data",
+        new_callable=AsyncMock,
+        return_value=dataclasses.replace(scoring_data, warnings=[marker]),
+    ):
+        async with TransferEvalAgent() as agent:
+            result = await agent.run({"out_player_id": 10, "in_player_ids": [20]})
+
+    assert result.status == AgentStatus.SUCCESS
+    assert result.data["warnings"] == [marker]

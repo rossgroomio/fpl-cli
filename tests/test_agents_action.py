@@ -1,7 +1,7 @@
 """Tests for action agents (WaiverAgent)."""
 
 import json
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2014,3 +2014,91 @@ class TestWaiverAgentTeamExposure:
         rec = recommendations[0]
         # Should not have exposure warning since dropping Digne (AVL) for Cash (AVL)
         assert "exposure" not in rec or rec.get("exposure") is None
+
+
+_COVERAGE_MARKER = {"code": "understat_coverage_low", "message": "Understat npxG reached 0 of 30"}
+
+
+class TestWaiverAgentCarriesFeedWarnings:
+    """What the scoring bundle and the ownership read could not reach, the payload says (#438)."""
+
+    def _run(self, agent, mock_draft_bootstrap, mock_league_details):
+        return (
+            patch.object(agent.client, "get_bootstrap_static", new_callable=AsyncMock, return_value=mock_draft_bootstrap),
+            patch.object(
+                agent.client, "get_available_players", new_callable=AsyncMock,
+                return_value=[mock_draft_bootstrap["elements"][0], mock_draft_bootstrap["elements"][2]],
+            ),
+            patch.object(agent.client, "get_recent_releases", new_callable=AsyncMock, return_value=[]),
+            patch.object(agent.client, "get_league_details", new_callable=AsyncMock, return_value=mock_league_details),
+            patch.object(agent.client, "get_waiver_order", new_callable=AsyncMock, return_value=[]),
+        )
+
+    @pytest.mark.asyncio
+    async def test_bundle_warnings_reach_the_result(self, mock_draft_bootstrap, mock_league_details):
+        import dataclasses
+
+        agent = WaiverAgent(config={"draft_league_id": 12345})
+        tagged = dataclasses.replace(_mock_scoring_data(), warnings=[_COVERAGE_MARKER])
+        with _stub_upstream_fetches(), patch(
+            "fpl_cli.agents.action.waiver.prepare_scoring_data",
+            new_callable=AsyncMock, return_value=tagged,
+        ):
+            with ExitStack() as stack:
+                for p in self._run(agent, mock_draft_bootstrap, mock_league_details):
+                    stack.enter_context(p)
+                result = await agent.run()
+
+        assert result.status == AgentStatus.SUCCESS
+        assert _COVERAGE_MARKER in result.data["warnings"]
+
+    @pytest.mark.asyncio
+    async def test_an_understat_join_that_reached_none_of_the_pool_is_named(
+        self, mock_draft_bootstrap, mock_league_details,
+    ):
+        # The agent joins Understat over the draft pool itself, outside the
+        # bundle; the stubbed join answers nobody, as a 403 would.
+        agent = WaiverAgent(config={"draft_league_id": 12345})
+        pool = [
+            make_draft_player(id=i, web_name=f"P{i}", team=14, element_type=3, minutes=900)
+            for i in range(1, 31)
+        ]
+        with _stub_upstream_fetches(), ExitStack() as stack:
+            for p in self._run(agent, mock_draft_bootstrap, mock_league_details):
+                stack.enter_context(p)
+            stack.enter_context(patch.object(
+                agent.client, "get_available_players", new_callable=AsyncMock, return_value=pool,
+            ))
+            result = await agent.run()
+
+        assert result.status == AgentStatus.SUCCESS
+        understat = [w for w in result.data["warnings"] if w["code"] == "understat_coverage_low"]
+        assert len(understat) == 1
+        assert "0 of 30 players with minutes" in understat[0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_unread_rival_squads_are_named(self, mock_draft_bootstrap, mock_league_details):
+        agent = WaiverAgent(config={"draft_league_id": 12345})
+        # `get_available_players` is patched, so the record is set as the
+        # real ownership read would have left it.
+        agent.client.unread_squads = {101: "Team B", 102: "Team C"}
+        with _stub_upstream_fetches(), ExitStack() as stack:
+            for p in self._run(agent, mock_draft_bootstrap, mock_league_details):
+                stack.enter_context(p)
+            result = await agent.run()
+
+        assert result.status == AgentStatus.SUCCESS
+        unread = [w for w in result.data["warnings"] if w["code"] == "draft_squads_unread"]
+        assert len(unread) == 1
+        assert "2 league entries (Team B, Team C)" in unread[0]["message"]
+        assert "listed as available" in unread[0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_every_squad_read_adds_no_entry(self, mock_draft_bootstrap, mock_league_details):
+        agent = WaiverAgent(config={"draft_league_id": 12345})
+        with _stub_upstream_fetches(), ExitStack() as stack:
+            for p in self._run(agent, mock_draft_bootstrap, mock_league_details):
+                stack.enter_context(p)
+            result = await agent.run()
+
+        assert "draft_squads_unread" not in [w["code"] for w in result.data["warnings"]]

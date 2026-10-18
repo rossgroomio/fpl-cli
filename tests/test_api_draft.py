@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from fpl_cli.api.fpl_draft import (
@@ -941,3 +942,58 @@ class TestRecentReleasesIgnoreDeniedClaims:
 
             releases = await client.get_recent_releases(12345, mock_draft_bootstrap)
             assert [r["player"]["id"] for r in releases] == [4]
+
+
+class TestLeagueOwnershipUnreadSquads:
+    """A rival squad the ownership read could not fetch is recorded, not dropped (#438)."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_picks_fetch_is_recorded_by_entry_name(
+        self, mock_draft_bootstrap, mock_league_details, mock_game_data, mock_entry_picks, caplog
+    ):
+        import logging
+
+        client = FPLDraftClient()
+        assert client.unread_squads == {}
+
+        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+            async def side_effect(endpoint):
+                if endpoint == "game":
+                    return mock_game_data
+                if endpoint.startswith("entry/101/"):
+                    raise httpx.ConnectError("down")
+                if endpoint.startswith("entry/") and "/event/" in endpoint:
+                    return mock_entry_picks
+                return {}
+
+            mock_get.side_effect = side_effect
+            with caplog.at_level(logging.WARNING):
+                result = await client.get_league_ownership(
+                    12345, mock_draft_bootstrap, mock_league_details,
+                )
+
+        assert client.unread_squads == {101: "Team B"}
+        # The readable squads still own their players; the unread one owns none.
+        assert result
+        assert 101 not in set(result.values())
+        assert "Could not read the squad of Team B (entry 101)" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_clean_read_resets_the_record(
+        self, mock_draft_bootstrap, mock_league_details, mock_game_data, mock_entry_picks
+    ):
+        client = FPLDraftClient()
+        client.unread_squads = {101: "Team B"}
+
+        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+            async def side_effect(endpoint):
+                if endpoint == "game":
+                    return mock_game_data
+                if endpoint.startswith("entry/") and "/event/" in endpoint:
+                    return mock_entry_picks
+                return {}
+
+            mock_get.side_effect = side_effect
+            await client.get_league_ownership(12345, mock_draft_bootstrap, mock_league_details)
+
+        assert client.unread_squads == {}

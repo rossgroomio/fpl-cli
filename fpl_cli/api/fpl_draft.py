@@ -140,6 +140,35 @@ def resolve_lost_claims(txns: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(best.values())
 
 
+DRAFT_SQUADS_UNREAD = "draft_squads_unread"
+
+
+def unread_squads_warning(unread: Mapping[int, str]) -> dict[str, str] | None:
+    """The `metadata.warnings` entry for rival squads an ownership read missed, else None.
+
+    *unread* is `FPLDraftClient.unread_squads` after `get_league_ownership`
+    (or `get_available_players`, which calls it): entry id to entry name.
+    One builder for every consumer of the ownership map -- `fpl waivers`,
+    whose pool offers such a player as a claim that fails at the deadline,
+    and the draft columns of `fpl player` and `fpl stats`, which label them
+    "Available" -- so the three cannot describe the same gap differently.
+    """
+    if not unread:
+        return None
+    names = ", ".join(sorted(unread.values()))
+    plural = len(unread) > 1
+    return {
+        "code": DRAFT_SQUADS_UNREAD,
+        "message": (
+            f"The squad{'s' if plural else ''} of {len(unread)} league "
+            f"entr{'ies' if plural else 'y'} ({names}) could not be read, so "
+            f"{'their' if plural else 'its'} players may be listed as available "
+            "and a claim on one would fail. Re-run; if it persists, the draft API "
+            "may have changed."
+        ),
+    }
+
+
 class FPLDraftClient:
     """Client for the FPL Draft API.
 
@@ -160,6 +189,11 @@ class FPLDraftClient:
         self._bootstrap_data: dict[str, Any] | None = None
         self._game_state: dict[str, Any] | None = None
         self._http = httpx.AsyncClient(base_url=BASE_URL, timeout=self.timeout)
+        # League entries whose squad the last `get_league_ownership` could
+        # not read, as entry id -> entry name. Their players are absent
+        # from the ownership map and so read as available; a caller
+        # ranking claims must say so rather than offer them (#438).
+        self.unread_squads: dict[int, str] = {}
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -326,7 +360,11 @@ class FPLDraftClient:
         The element-status endpoint can return stale data. This method
         builds ownership by querying each team's actual squad.
 
-        Fetches game_state once then parallelises all entry_picks calls.
+        Fetches game_state once then parallelises all entry_picks calls. A
+        squad whose fetch fails is left out of the map and recorded on
+        ``unread_squads``; every caller reads that record and names it with
+        ``unread_squads_warning``, since the players of a squad this could
+        not read look exactly like free agents (#438).
 
         Args:
             league_id: The draft league ID.
@@ -350,6 +388,9 @@ class FPLDraftClient:
 
         entries = league_details.get("league_entries", [])
         entry_ids = [e["entry_id"] for e in entries]
+        entry_names = {
+            e["entry_id"]: str(e.get("entry_name") or e["entry_id"]) for e in entries
+        }
 
         # Fetch all squads in parallel
         results = await asyncio.gather(
@@ -358,9 +399,20 @@ class FPLDraftClient:
         )
 
         ownership: dict[int, int] = {}
+        self.unread_squads = {}
         for entry_id, picks_result in zip(entry_ids, results):
             if isinstance(picks_result, BaseException):
-                logger.debug("Failed to fetch squad for team %s: %s", entry_id, picks_result)
+                # Recorded, not just logged: a squad this could not read
+                # leaves every one of its players looking unowned, and the
+                # waiver list built on that offers them as claims (#438).
+                self.unread_squads[entry_id] = entry_names[entry_id]
+                logger.warning(
+                    "Could not read the squad of %s (entry %s): %s — its players may "
+                    "read as available",
+                    entry_names[entry_id],
+                    entry_id,
+                    picks_result,
+                )
                 continue
             picks_data: dict[str, Any] = picks_result
             pick_ids = [p.get("element") for p in picks_data.get("picks", [])]

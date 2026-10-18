@@ -50,6 +50,8 @@ class CaptainAgent(Agent):
         self.client = FPLClient()
         self._adjusted_npxg_lookup: dict[int, float] | None = None
         self._consistency_lookup: dict[int, ConsistencySignals] | None = None
+        # The scoring bundle's own `metadata.warnings` entries (#438).
+        self._coverage_warnings: list[dict[str, str]] = []
 
         # Differential thresholds
         self.differential_threshold = config.get("differential_threshold", 10.0) if config else 10.0
@@ -78,6 +80,7 @@ class CaptainAgent(Agent):
         self._player_priors = data.player_priors
         self._adjusted_npxg_lookup = data.adjusted_npxg_lookup
         self._consistency_lookup = data.consistency_lookup
+        self._coverage_warnings = list(data.warnings)
 
         return (
             player_map,
@@ -213,7 +216,10 @@ class CaptainAgent(Agent):
             return self._create_result(
                 AgentStatus.SUCCESS,
                 data={
-                    "warnings": [fallback_warning] if fallback_warning else [],
+                    "warnings": [
+                        *([fallback_warning] if fallback_warning else []),
+                        *self._coverage_warnings,
+                    ],
                     "gameweek": next_gw["id"] if next_gw else None,
                     "deadline": next_gw.get("deadline_time") if next_gw else None,
                     "top_picks": top_picks,

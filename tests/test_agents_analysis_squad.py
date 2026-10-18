@@ -1060,3 +1060,42 @@ class TestBenchOrderFormationContext:
         ctx = agent._analyze_formation_context(xi, bench)
 
         assert ctx["coverage_gaps"] == []
+
+
+class TestBenchOrderAgentWarnings:
+    """Bench warnings share the `{code, message}` shape and carry the bundle's (#438)."""
+
+    @pytest.mark.asyncio
+    async def test_formation_gaps_and_bundle_entries_share_one_shape(self, mock_players, mock_teams, mock_fixtures):
+        import dataclasses
+
+        from fpl_cli.services.scoring import prepare_scoring_data as real_prepare
+
+        marker = {"code": "gw_history_coverage_low", "message": "Per-gameweek history reached 30 of 40"}
+
+        async def tagged(*args, **kwargs):
+            data = await real_prepare(*args, **kwargs)
+            return dataclasses.replace(data, warnings=[*data.warnings, marker])
+
+        agent = BenchOrderAgent()
+        # Bench of a keeper and a defender only: the XI's three forwards and
+        # three defenders leave MID and FWD uncovered -- a formation gap each.
+        bench_ids = [10, 11]
+        starting_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        with patch.object(agent.client, "get_players", new_callable=AsyncMock, return_value=mock_players), \
+             patch.object(agent.client, "get_teams", new_callable=AsyncMock, return_value=mock_teams), \
+             patch.object(agent.client, "get_next_gameweek", new_callable=AsyncMock, return_value={"id": 25}), \
+             patch.object(agent.client, "get_fixtures", new_callable=AsyncMock, return_value=mock_fixtures), \
+             patch("fpl_cli.agents.analysis.bench_order.prepare_scoring_data", side_effect=tagged):
+            result = await agent.run(context={"bench": bench_ids, "starting_xi": starting_ids})
+
+        assert result.status == AgentStatus.SUCCESS
+        warnings = result.data["warnings"]
+        assert all(set(w) == {"code", "message"} for w in warnings)
+        gaps = [w for w in warnings if w["code"] == "bench_cover_missing"]
+        assert all(w["message"].startswith("No ") for w in gaps)
+        assert gaps == [w for w in warnings if "cover on bench" in w["message"]]
+        assert set(result.data["formation_context"]["coverage_gaps"]) == {
+            w["message"].split()[1] for w in gaps
+        }
+        assert marker in warnings

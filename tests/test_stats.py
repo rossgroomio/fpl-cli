@@ -340,7 +340,7 @@ class TestStatsAgentEarlySeasonPriorBlend:
         assert [p["id"] for p in result["all"]][-1] == 3
 
 
-def _scoring_data(*, next_gw_id: int, player_priors, players):
+def _scoring_data(*, next_gw_id: int, player_priors, players, warnings=()):
     """A minimal real ScoringData for driving StatsAgent.run().
 
     ``team_fixture_map`` is empty on purpose: matchup enrichment then
@@ -373,6 +373,7 @@ def _scoring_data(*, next_gw_id: int, player_priors, players):
         player_priors=player_priors,
         adjusted_npxg_lookup=None,
         consistency_lookup=None,
+        warnings=list(warnings),
     )
 
 
@@ -384,8 +385,17 @@ async def _run_stats(
     players=None,
     config=None,
     histories=None,
+    bundle_warnings=(),
+    understat_lookup=None,
+    bundle_kwargs=None,
 ):
-    """Drive ``StatsAgent.run`` over one qualifying player with every seam stubbed."""
+    """Drive ``StatsAgent.run`` over one qualifying player with every seam stubbed.
+
+    *bundle_warnings* ride in the stubbed bundle; *understat_lookup* is what
+    the agent's own Understat join answers, keyed by row index. A dict passed
+    as *bundle_kwargs* receives the keyword arguments the agent asked the
+    bundle for.
+    """
     from unittest.mock import AsyncMock, patch
 
     if players is None:
@@ -423,6 +433,12 @@ async def _run_stats(
             ],
         }
 
+    bundle = AsyncMock(
+        return_value=_scoring_data(
+            next_gw_id=next_gw_id, player_priors=player_priors, players=players,
+            warnings=bundle_warnings,
+        ),
+    )
     with (
         patch.object(agent.client, "get_players", new_callable=AsyncMock, return_value=players),
         patch.object(
@@ -442,17 +458,39 @@ async def _run_stats(
         patch.object(agent.client, "get_player_detail", side_effect=_player_detail),
         patch(
             "fpl_cli.agents.analysis.stats.fetch_understat_lookup",
-            new_callable=AsyncMock, return_value={},
+            new_callable=AsyncMock, return_value=understat_lookup or {},
         ),
-        patch(
-            "fpl_cli.agents.analysis.stats.prepare_scoring_data",
-            new_callable=AsyncMock,
-            return_value=_scoring_data(
-                next_gw_id=next_gw_id, player_priors=player_priors, players=players,
-            ),
-        ),
+        patch("fpl_cli.agents.analysis.stats.prepare_scoring_data", new=bundle),
     ):
-        return await agent.run()
+        result = await agent.run()
+    if bundle_kwargs is not None and bundle.await_args is not None:
+        bundle_kwargs.update(bundle.await_args.kwargs)
+    return result
+
+
+class TestStatsAgentBundleRequests:
+    """Only the ownership views read the prior and the match data (#454 review).
+
+    `fpl xg` and `fpl preview` score no prior-blended, adjusted-npxG or
+    consistency field, so they neither fetch those feeds nor carry a
+    coverage entry about them.
+    """
+
+    async def test_the_xg_views_request_neither_the_prior_nor_the_match_data(self):
+        kwargs = {}
+        await _run_stats(
+            {"underperformers", "overperformers", "value_picks", "top_xgi_per_90"},
+            next_gw_id=20, bundle_kwargs=kwargs,
+        )
+        assert kwargs["include_prior"] is False
+        assert kwargs["include_match_data"] is False
+
+    @pytest.mark.parametrize("view", ["targets", "differentials"])
+    async def test_an_ownership_view_requests_both(self, view):
+        kwargs = {}
+        await _run_stats({view}, next_gw_id=20, bundle_kwargs=kwargs)
+        assert kwargs["include_prior"] is True
+        assert kwargs["include_match_data"] is True
 
 
 class TestStatsAgentEarlySeasonNotice:
@@ -807,3 +845,41 @@ class TestFinishedGameweekIds:
         from fpl_cli.api.fpl import finished_gameweek_ids
 
         assert finished_gameweek_ids([{"id": 1}, {"id": 2, "finished": True}]) == [2]
+
+
+class TestStatsAgentFeedCoverage:
+    """`fpl xg`, `fpl targets` and `fpl differentials` learn what their feeds missed (#438)."""
+
+    @staticmethod
+    def _pool(n: int = 30):
+        return [
+            make_player(
+                id=i, web_name=f"P{i}", team_id=1, position=PlayerPosition.MIDFIELDER,
+                form=5.0, points_per_game=4.0, minutes=900, total_points=60,
+            )
+            for i in range(1, n + 1)
+        ]
+
+    async def test_bundle_warnings_reach_the_result(self):
+        marker = {"code": "fixture_ratings_coverage_low", "message": "Team ratings reached 0 of 10"}
+        result = await _run_stats({"value_picks"}, next_gw_id=20, bundle_warnings=[marker])
+        assert marker in result.data["warnings"]
+
+    async def test_an_understat_join_that_reached_nobody_is_named(self):
+        result = await _run_stats({"value_picks"}, next_gw_id=20, players=self._pool())
+        codes = [w["code"] for w in result.data["warnings"]]
+        assert "understat_coverage_low" in codes
+        message = next(w["message"] for w in result.data["warnings"] if w["code"] == "understat_coverage_low")
+        assert "0 of 30 players with minutes" in message
+
+    async def test_a_full_understat_join_is_quiet(self):
+        lookup = {i: {"npxG_per_90": 0.3, "xGChain_per_90": 0.4} for i in range(30)}
+        result = await _run_stats(
+            {"value_picks"}, next_gw_id=20, players=self._pool(), understat_lookup=lookup,
+        )
+        assert "understat_coverage_low" not in [w["code"] for w in result.data["warnings"]]
+
+    async def test_a_handful_of_players_gives_no_verdict(self):
+        # One player and no match is that player's miss, not the feed's.
+        result = await _run_stats({"value_picks"}, next_gw_id=20)
+        assert "understat_coverage_low" not in [w["code"] for w in result.data["warnings"]]

@@ -218,6 +218,12 @@ def _run(args: list[str] | None = None, *, scoring_data: Any = None,
             ))
         stack.enter_context(patch("fpl_cli.api.fpl.FPLClient", return_value=_make_client()))
         stack.enter_context(patch("fpl_cli.services.scoring.prepare_scoring_data", new=prepare))
+        # The command loads the priors itself rather than through the bundle,
+        # so the stand-in's set is what the loader answers with.
+        stack.enter_context(patch(
+            "fpl_cli.services.player_prior.load_or_generate_player_priors",
+            new=AsyncMock(return_value=scoring_data.player_priors),
+        ))
         stack.enter_context(patch(
             "fpl_cli.api.historical.make_historical_provider",
             side_effect=lambda *a, **kw: _fake_provider(),
@@ -616,6 +622,18 @@ class TestEmptyAndDegraded:
 
         assert "Sidelined" in _names(payload)
         assert payload["metadata"]["quality_bar_available"] is False
+
+    def test_a_price_only_prior_set_still_runs_the_quality_bar(self):
+        # Last season's history reached nobody: the scoring commands treat
+        # that as no prior, but the bar here judges each prior by its own
+        # source and keeps the coarser price-sourced watchlist (#454 review).
+        price_only = {
+            pid: PlayerPrior(prior_strength=prior.prior_strength, confidence=0.5, source="price")
+            for pid, prior in _default_priors().items()
+        }
+        payload = _json_run(scoring_data=_scoring_data(priors=price_only))
+
+        assert payload["metadata"]["quality_bar_available"] is True
 
 
 # ---------------------------------------------------------------------------
