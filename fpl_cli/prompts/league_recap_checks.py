@@ -927,6 +927,10 @@ _KIND_LINK_AFTER = frozenset({
     "in", "his", "her", "their", "its", "the", "a", "all", "of", "both", "between",
 })
 _KIND_LINK_MAX_WORDS = 6
+# A pronoun that opens the gap after a kind starts a clause with a new
+# subject: "with Dunk's +1 on waivers he finished +7" (#465). Its object
+# forms ("left him +3") carry a kind's figure on, so they are not here.
+_KIND_LINK_NEW_SUBJECTS = frozenset({"he", "she", "they"})
 _KIND_LINK_BREAK_RE = re.compile(r",|\d|[–—]|\s-\s")
 _KIND_LINK_COMMA_RE = re.compile(r"^\s*,\s*(?P<relative>(?:which|that)(?!\w))?", re.IGNORECASE)
 _LINK_WORD_RE = re.compile(r"[a-z]+(?:['’][a-z]+)?")
@@ -983,21 +987,38 @@ def _kind_link(gap: str, words: frozenset[str], *, comma: bool = False) -> bool:
     return len(found) <= _KIND_LINK_MAX_WORDS and all(word in words for word in found)
 
 
-def _figure_scope(clause: str, start: int, end: int, scopes: Sequence[_KindScope]) -> tuple[_KindScope, str] | None:
-    """The scope the figure at `start`-`end` is said of, with the text from
-    one to the other, or None when no scope is linked to it.
+def _kind_aside(clause: str, scope: _KindScope, gap: str, figures: Sequence[tuple[int, int, str]]) -> bool:
+    """Whether `scope` is an aside rather than the subject of the figure
+    after it, `gap` between them (#465): the kind already has a figure of
+    its own ("with Dunk's +1 on waivers") and a new subject opens the gap
+    ("he finished +7"), so the second figure is the manager's. Neither alone
+    frees it: "on waivers he netted +7" and "his +1 on waivers left him +7"
+    still say it of the kind."""
+    first = _LINK_WORD_RE.findall(_plain(gap).lower())[:1]
+    return bool(first) and first[0] in _KIND_LINK_NEW_SUBJECTS and any(
+        figure_end <= scope.start and _kind_link(clause[figure_end:scope.start], _KIND_LINK_AFTER)
+        for _, figure_end, _ in figures
+    )
 
-    Its subject is the scope nearest before it, when the two are linked, and
-    a neutral subject keeps the figure whatever kind follows. Only a figure
-    with no subject before it is read against a scope after it ("netted +3
-    overall from his waivers")."""
+
+def _figure_scope(
+    clause: str, start: int, end: int, scopes: Sequence[_KindScope], figures: Sequence[tuple[int, int, str]],
+) -> tuple[_KindScope, str] | None:
+    """The scope the figure at `start`-`end` is said of, with the text from
+    one to the other, or None when no scope is linked to it. `figures` are
+    the clause's own, from `_clause_figures`.
+
+    Its subject is the scope nearest before it, when the two are linked and
+    the scope is no aside, and a neutral subject keeps the figure whatever
+    kind follows. Only a figure with no subject before it is read against a
+    scope after it ("netted +3 overall from his waivers")."""
     before = [scope for scope in scopes if scope.end <= start]
     # A figure's leading verb ("netting +3") is part of the link it makes.
     verb = re.match(r"[a-z]+", clause[start:end], re.IGNORECASE)
-    if before and _kind_link(
-        clause[before[-1].end:start] + (verb.group(0) if verb else ""), _KIND_LINK_BEFORE, comma=True,
-    ):
-        return before[-1], clause[before[-1].start:end]
+    if before:
+        gap = clause[before[-1].end:start] + (verb.group(0) if verb else "")
+        if _kind_link(gap, _KIND_LINK_BEFORE, comma=True) and not _kind_aside(clause, before[-1], gap, figures):
+            return before[-1], clause[before[-1].start:end]
     after = [scope for scope in scopes if scope.start >= end]
     if after and _kind_link(clause[end:after[0].start], _KIND_LINK_AFTER):
         return after[0], clause[start:after[0].end]
@@ -1032,7 +1053,10 @@ def check_kind_net_scopes(summary: str, managers: Sequence[RecapManagerEntry], n
     with nothing between them that names or counts anything else -- and the
     scope names one kind. Kind-neutral scopes ("moves", "claims", "pickups",
     "the waiver wire", "one waiver and one free agent") pass, and so does a
-    figure whose own subject is one of them, whatever kind trails after it. Whose moves they are is the one manager
+    figure whose own subject is one of them, whatever kind trails after it.
+    So does a figure after a kind that is only an aside: one that already
+    has its own figure, with a new subject opening the gap to the next
+    ("with Dunk's +1 on waivers he finished +7", #465). Whose moves they are is the one manager
     the clause names, or, in a clause that names none ("his waiver moves"),
     the one manager the nearest earlier clause of the paragraph named; a
     clause naming two managers, or following one that did, is left alone.
@@ -1066,8 +1090,9 @@ def check_kind_net_scopes(summary: str, managers: Sequence[RecapManagerEntry], n
             kinds = line.kinds
             kind_nets = dict(line.kind_nets)
             scopes = _kind_scopes(clause)
-            for start, end, text in _clause_figures(clause):
-                found = _figure_scope(clause, start, end, scopes)
+            figures = _clause_figures(clause)
+            for start, end, text in figures:
+                found = _figure_scope(clause, start, end, scopes, figures)
                 kind = found[0].kind if found else None
                 if found is None or kind not in kinds:
                     continue
