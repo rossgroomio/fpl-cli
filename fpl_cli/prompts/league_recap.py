@@ -486,7 +486,7 @@ def format_recap_standout_players_context(data: LeagueRecapData) -> str:
         lines.append("Top scorers:")
         lines.extend(f"- {line}" for line in scorers)
     if blanks:
-        lines.append(f"{standout_blanks_heading(fpl_format)}:")
+        lines.append(f"{standout_blanks_heading(standouts)}:")
         lines.extend(f"- {line}" for line in blanks)
     return "\n".join(lines)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from fpl_cli.api.fpl_draft import draft_claim_priority_rank
 from fpl_cli.utils.text import ordinal_suffix, ordinal_word
@@ -32,6 +32,20 @@ class RecapManagerPlayer(TypedDict):
     # ledger, which identifies a player by `code` alone.
     main_id: NotRequired[int | None]
     points: int
+    # Minutes played this gameweek, from the same live stats as `points`, so
+    # a Standout Players blank can say he did not play, or how little he did
+    # (#455). In memory only, like `main_id`.
+    minutes: NotRequired[int]
+    # Draft only: what the Standout Players blanks are ordered by (#455).
+    # `draft_rank` is the draft game's own ranking of the player, set before
+    # the season on last season's points and FPL's view of his potential and
+    # never updated, so `points_per_game` and `appearances` -- his matched
+    # main-game player's season to date -- take over from GW19, once that
+    # ranking has gone stale. None where the draft game sent no rank, or the
+    # main game could not be matched. In memory only.
+    draft_rank: NotRequired[int | None]
+    points_per_game: NotRequired[float | None]
+    appearances: NotRequired[int | None]
     is_captain: bool
     is_vice_captain: bool
     contributed: bool
@@ -363,6 +377,15 @@ class RecapAwards(TypedDict, total=False):
     most_contested: RecapAwardEntry
 
 
+# How the blanks are ordered, best story first. Classic: the blank that
+# counted for the most managers, a template player blanking for half the
+# league at once, then the lowest. Draft, where a player has one owner, by
+# what his manager could expect of him: FPL's pre-season draft rank before
+# GW19, and the season's points per game from GW19, when that rank has gone
+# stale (#455).
+StandoutBlanksOrder = Literal["managers", "draft_rank", "points_per_game"]
+
+
 class RecapStandoutManager(TypedDict):
     """One manager a Standout Players line names, with the ledger's key for
     them, so two managers sharing a display name stay two."""
@@ -394,7 +417,13 @@ class RecapStandoutPlayer(TypedDict):
     team_name: str | None
     position: str
     points: int
+    # None where the collector recorded no minutes.
+    minutes: int | None
     red_cards: int
+    # Draft only, null in classic: the pre-season draft rank and the season's
+    # points per game the blanks are ordered by (`blanks_order`).
+    draft_rank: int | None
+    points_per_game: float | None
     counted_for: list[RecapStandoutManager]
     benched_by: list[RecapStandoutManager]
     text: str
@@ -413,17 +442,21 @@ class RecapStandoutPlayers(TypedDict):
     # How many more players scored what the last one listed did, left out
     # by the cap rather than outscored.
     top_scorers_omitted: int
-    # Blanks that counted, the one that counted for the most managers first
-    # and then the lowest -- in draft, where a player has one owner, simply
-    # the lowest.
+    # Blanks that counted, in `blanks_order`.
     blanks: list[RecapStandoutPlayer]
-    # How many more were level with the last one listed on both counts.
+    # How many more were level with the last one listed on managers and
+    # points, left out by the cap. Always 0 in draft, whose blanks are
+    # ordered by what was expected of the player rather than counted level.
     blanks_omitted: int
+    blanks_order: StandoutBlanksOrder
 
 
 # A blank is a return of no more than this: the appearance points and nothing
 # on top. The usual reading of the word, and the line the section draws.
 STANDOUT_BLANK_MAX_POINTS = 2
+# Appearances a player needs before his points per game ranks him among the
+# draft blanks: a two-game cameo averaging 8 would otherwise head the list.
+STANDOUT_PPG_MIN_APPEARANCES = 5
 # Most managers a Standout Players line names before it counts them instead,
 # the cap the awards' ties use: a template player in a fifty-manager classic
 # league would otherwise read as a roll call of the league.
@@ -465,18 +498,35 @@ def _standout_for(
     return clause
 
 
+def _standout_expectation(player: RecapStandoutPlayer, order: StandoutBlanksOrder) -> str | None:
+    """What the line says was expected of a draft blank, phrased as the
+    ordering measured it: "pre-season draft rank 2", or "averaging 5.7
+    points a game this season". The rank is said to be pre-season because
+    it is, so the line stays true when the run-in has left it behind."""
+    if order == "draft_rank" and player["draft_rank"] is not None:
+        return f"pre-season draft rank {player['draft_rank']}"
+    if order == "points_per_game" and player["points_per_game"] is not None:
+        return f"averaging {player['points_per_game']:.1f} points a game this season"
+    return None
+
+
 def format_standout_player(
     player: RecapStandoutPlayer,
     *,
     managers: int,
     not_counted: Sequence[RecapStandoutManager],
-    blank: bool,
+    blank_order: StandoutBlanksOrder | None,
 ) -> str:
     """One standout player as a sentence a columnist could lift (#455):
     "Haaland (Manchester City) scored 17 points for 9 of the 12 managers,
-    everyone but Alice, Bob and Cam; Alice left him on the bench." A blank
-    "managed" his points rather than scoring them, and a red card is said
-    ("was sent off and managed -1 point for Bob").
+    everyone but Alice, Bob and Cam; Alice left him on the bench."
+
+    `blank_order` is None for a top scorer and the blanks' ordering for a
+    blank, which "managed" his points rather than scoring them and says how
+    long he played where it was under the hour: "did not play for Cam", or
+    "managed 1 point in 27 minutes for Dan". A draft blank also carries
+    what was expected of him, inside the brackets with his club. A red card
+    is said either way ("was sent off and managed -1 point for Bob").
 
     Written for a reader rather than a ledger, because the editorial lifts
     what its data sections put in front of it (audit finding 20): every
@@ -484,11 +534,20 @@ def format_standout_player(
     behind, so the sentence can be used as it stands. `not_counted` are the
     managers he did not count for, named when the line says "everyone but".
     """
-    club = player["team_name"]
-    line = f"{player['name']} ({club})" if club else player["name"]
-    if player["red_cards"]:
-        line += " was sent off and"
-    line += f" {'managed' if blank else 'scored'} {_points_words(player['points'])}"
+    blank = blank_order is not None
+    bracket = [player["team_name"]] if player["team_name"] else []
+    if blank_order is not None and (expected := _standout_expectation(player, blank_order)):
+        bracket.append(expected)
+    line = player["name"] + (f" ({', '.join(bracket)})" if bracket else "")
+    minutes = player["minutes"]
+    if blank and minutes == 0:
+        line += " did not play"
+    else:
+        if player["red_cards"]:
+            line += " was sent off and"
+        line += f" {'managed' if blank else 'scored'} {_points_words(player['points'])}"
+        if blank and minutes is not None and minutes < 60:
+            line += f" in {minutes} minute{'s' if minutes != 1 else ''}"
     counted = player["counted_for"]
     if counted:
         line += " " + _standout_for(counted, managers=managers, not_counted=not_counted)
@@ -509,14 +568,15 @@ def standout_players_note(fpl_format: str) -> str:
     )
 
 
-def standout_blanks_heading(fpl_format: str) -> str:
-    """The blanks list's heading, which says how it is ordered: by how many
-    managers a blank counted for in classic, where a template player blanks
-    for half the league at once, and lowest first in draft, where every
-    player has one owner."""
-    if fpl_format == "classic":
-        return "Blanks that counted for the most managers"
-    return "Blanks that counted, lowest first"
+def standout_blanks_heading(standouts: RecapStandoutPlayers) -> str:
+    """The blanks list's heading, which says what it is ordered by, so a
+    reader, and the editorial, can tell why these three and not others."""
+    order = standouts["blanks_order"]
+    if order == "draft_rank":
+        return "Blanks among the best-ranked players, by FPL's pre-season draft rank"
+    if order == "points_per_game":
+        return "Blanks among this season's best performers, by points per game"
+    return "Blanks that counted for the most managers"
 
 
 def standout_players_lines(standouts: RecapStandoutPlayers) -> tuple[list[str], list[str]]:

@@ -1117,14 +1117,25 @@ disagree with an award. Points are the player's own, before any captaincy. The t
 five highest-scoring players in any manager's squad, a player left on a bench included ("Groß
 (Brighton) scored 17 points, but Alice left him on the bench."), ties going to the one who counted
 for more managers; the blanks are up to three players who counted for someone and scored 2 points
-or fewer, the one that counted for the most managers first and then the lowest, so in draft, where
-a player has one owner, simply the lowest. A player whose club had no fixture is no blank, a starter
-who never played and was replaced from the bench counted for nobody, and a draft pick the main game
-could not be matched to is left out, since its zero is not a score. Each line names the managers
+or fewer. In classic the blank that counted for the most managers comes first, then the lowest. In
+draft a player has one owner, so that would leave only the lowest scores, which are squad fillers
+nobody drafted with any hope; draft blanks are ordered instead by what the manager could expect of
+the player. Before GW19 that is FPL's pre-season draft rank, best first ("B.Fernandes (Manchester
+United, pre-season draft rank 2) managed 1 point for Alice."); the draft game sets it before the
+season, on last season's points and its view of each player's potential, and never updates it, so
+from GW19 the season's points per game takes over ("Saka (Arsenal, averaging 5.7 points a game this
+season) managed 2 points for Bob."), with a player under 5 appearances ranked after the rest so a
+cameo's average cannot head the list. On GW6 of 2026-27 the lowest scores were Bentancur, Struijk
+and Aina; the best-ranked blanks were Fernandes, Saka and Gabriel. A blank under the hour says how
+long he played ("managed 1 point in 27 minutes"), and one who did not play at all says so, since a
+starter nobody could cover is the manager's story. A player whose club had no fixture is no blank,
+a starter who never played and was replaced from the bench counted for nobody, and a draft pick the
+main game could not be matched to is left out, since its zero is not a score. Each line names the managers
 where the list is short enough to be the story and counts them where it is not: "for Dan and Eve",
 "for 9 of the 12 managers, everyone but Alice, Bob and Cam", "for 6 of the 12 managers", so a
 template player in a big league is never a roll call. Where the cap cuts through players level on
-the last one's score, a closing line counts them ("2 more players also scored 9 points."). The
+the last one's score, a closing line counts them ("2 more players also scored 9 points."); draft
+blanks are ordered by rank or average rather than counted level, so they never close on one. The
 same sentences print on the console under `Standout Players:`, in a `# Standout Players` section
 of the saved report after the standings, and, with `--summarise`, in a `## Standout Players`
 section of the editorial's prompt, which carries one line saying what the figures are and no rule
@@ -1221,10 +1232,12 @@ gameweek with a file on disk appears there with a status, a damaged one as
 count whether or not it grew this gameweek), `season_fines` (the whole
 season tally, emitted every week regardless of the milestone gate the printed surfaces use), `standout_players`
 (`managers`, the `top_scorers` and `blanks` lists, and `top_scorers_omitted` / `blanks_omitted`
-counting the players the cap left out level with the last one listed; each player row carries
-the main game's `id` (a draft recap's too) with `code` beside it, `name`, `team`, `team_name`,
-`position`, `points`, `red_cards`, `counted_for` and `benched_by` as `{manager_key, manager_name}`
-lists, and `text`, the sentence the other surfaces print; `null` only on data built without it),
+counting the players the cap left out level with the last one listed, and `blanks_order`
+(`managers`, `draft_rank` or `points_per_game`); each player row carries the main game's `id` (a
+draft recap's too) with `code` beside it, `name`, `team`, `team_name`, `position`, `points`,
+`minutes`, `red_cards`, `draft_rank` and `points_per_game` (draft only, `null` in classic),
+`counted_for` and `benched_by` as `{manager_key, manager_name}` lists, and `text`, the sentence the
+other surfaces print; `null` only on data built without it),
 `synthesis_summary` (with
 `--summarise`, as it reaches the saved report — the model's heading already demoted beneath the
 report's title or dropped, see [Report title](#league-recap)), `synthesis_attempts` (how many answers were

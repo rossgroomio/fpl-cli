@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         ) -> dict[str, Any]: ...
 from fpl_cli.cli._league_recap_types import (
     STANDOUT_BLANK_MAX_POINTS,
+    STANDOUT_PPG_MIN_APPEARANCES,
     LeagueRecapData,
     RecapAwardEntry,
     RecapAwards,
@@ -70,6 +71,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapStandoutPlayer,
     RecapStandoutPlayers,
     RecapTransfer,
+    StandoutBlanksOrder,
     contested_draft_claims,
     draft_transaction_kind_counts,
     format_contested_claim,
@@ -77,6 +79,7 @@ from fpl_cli.cli._league_recap_types import (
     format_standout_player,
 )
 from fpl_cli.models.player import usable_code
+from fpl_cli.season import CHIP_SPLIT_GW
 from fpl_cli.services.fixture_predictions import had_fixture
 from fpl_cli.services.player_clubs import gameweek_club
 from fpl_cli.services.scoring.constants import VALID_FORMATIONS
@@ -422,7 +425,7 @@ async def collect_classic_recap_data(
         fpl_format="classic",
         managers=managers,
         awards=awards,
-        standout_players=find_standout_players(managers),
+        standout_players=find_standout_players(managers, fpl_format="classic", gameweek=gw),
         league_id=classic_league_id,
         standings_cohort=cohort,
         # One page of standings is 50 entries; `has_next` says a larger league
@@ -561,6 +564,7 @@ async def _fetch_all_manager_data(
                 code=player.code or None,
                 main_id=player.id,
                 points=pts,
+                minutes=minutes,
                 is_captain=pick.get("is_captain", False),
                 is_vice_captain=pick.get("is_vice_captain", False),
                 contributed=contributed,
@@ -2051,7 +2055,29 @@ def _level_beyond(keys: Sequence[_StandoutKey], shown: int, measure: Callable[[_
     return sum(1 for key in keys[shown:] if measure(key) == last)
 
 
-def find_standout_players(managers: Sequence[RecapManagerEntry]) -> RecapStandoutPlayers:
+def standout_blanks_order(fpl_format: str, gameweek: int) -> StandoutBlanksOrder:
+    """How a gameweek's Standout Players blanks are ordered (#455).
+
+    Classic by how many managers a blank counted for: a template player
+    blanking for half the league is the costliest. Draft has one owner per
+    player, so that would leave only the lowest score, and the lowest
+    scores are squad fillers nobody drafted with any hope; the blank that
+    stings is the one from a player his manager expected something of. FPL's
+    pre-season draft rank says that until the halfway point, and is never
+    updated after it, so from `CHIP_SPLIT_GW` the season's points per game
+    takes over.
+    """
+    if fpl_format != "draft":
+        return "managers"
+    return "points_per_game" if gameweek >= CHIP_SPLIT_GW else "draft_rank"
+
+
+def find_standout_players(
+    managers: Sequence[RecapManagerEntry],
+    *,
+    fpl_format: str,
+    gameweek: int,
+) -> RecapStandoutPlayers:
     """The week's top scorers and costliest blanks in the league's squads,
     with whose team each one counted for (issue #455).
 
@@ -2066,10 +2092,11 @@ def find_standout_players(managers: Sequence[RecapManagerEntry]) -> RecapStandou
     bench" is the week's story as much as anyone's haul -- and ties go to
     the player who counted for more managers. A blank is a player who
     counted for at least one manager and scored no more than
-    `STANDOUT_BLANK_MAX_POINTS`; the costliest is the one that counted for
-    the most managers, which in draft, where a player has one owner, leaves
-    the lowest score first. A player whose club had no fixture is no blank:
-    there was nothing to play.
+    `STANDOUT_BLANK_MAX_POINTS`, ordered as `standout_blanks_order()` says:
+    in draft, a ranked player before an unranked one, and from GW19 a
+    player with `STANDOUT_PPG_MIN_APPEARANCES` behind his average before
+    one without. A player whose club had no fixture is no blank: there was
+    nothing to play.
 
     Two players are left out entirely. A draft pick the main game could not
     be matched to carries a false zero rather than a score (`unmatched`),
@@ -2078,6 +2105,7 @@ def find_standout_players(managers: Sequence[RecapManagerEntry]) -> RecapStandou
     counted for is held by position in `managers`, never by name: two
     managers can share one.
     """
+    order = standout_blanks_order(fpl_format, gameweek)
     cohort = [
         RecapStandoutManager(manager_key=recap_manager_key(m), manager_name=m["manager_name"])
         for m in managers
@@ -2109,7 +2137,10 @@ def find_standout_players(managers: Sequence[RecapManagerEntry]) -> RecapStandou
             team_name=p.get("team_name"),
             position=p["position"],
             points=p["points"],
+            minutes=p.get("minutes"),
             red_cards=p["red_cards"],
+            draft_rank=p.get("draft_rank"),
+            points_per_game=p.get("points_per_game"),
             counted_for=by_name(counted_at),
             benched_by=by_name(benched.get(key, [])),
             text="",
@@ -2118,7 +2149,7 @@ def find_standout_players(managers: Sequence[RecapManagerEntry]) -> RecapStandou
             standout,
             managers=len(managers),
             not_counted=by_name([i for i in range(len(managers)) if i not in counted_at]),
-            blank=blank,
+            blank_order=order if blank else None,
         )
         return standout
 
@@ -2131,6 +2162,17 @@ def find_standout_players(managers: Sequence[RecapManagerEntry]) -> RecapStandou
     def tie_break(key: _StandoutKey) -> tuple[str, str]:
         return players[key]["name"], players[key]["team"]
 
+    def expectation(key: _StandoutKey) -> tuple[bool, float]:
+        """Best first: whether the measure ranks him at all, then the
+        measure itself -- rank ascending, points per game descending."""
+        p = players[key]
+        if order == "draft_rank":
+            rank = p.get("draft_rank")
+            return rank is None, float(rank or 0)
+        ppg = p.get("points_per_game")
+        appearances = p.get("appearances") or 0
+        return ppg is None or appearances < STANDOUT_PPG_MIN_APPEARANCES, -(ppg or 0.0)
+
     scorers = sorted(
         (key for key in players if (key in counted or key in benched) and points(key) > STANDOUT_BLANK_MAX_POINTS),
         key=lambda key: (-points(key), -counted_for(key), *tie_break(key)),
@@ -2140,14 +2182,21 @@ def find_standout_players(managers: Sequence[RecapManagerEntry]) -> RecapStandou
             key for key in counted
             if points(key) <= STANDOUT_BLANK_MAX_POINTS and players[key].get("had_fixture", True)
         ),
-        key=lambda key: (-counted_for(key), points(key), *tie_break(key)),
+        key=lambda key: (
+            (-counted_for(key), points(key), *tie_break(key)) if order == "managers"
+            else (*expectation(key), points(key), *tie_break(key))
+        ),
     )
     return RecapStandoutPlayers(
         managers=len(managers),
         top_scorers=[row(key, blank=False) for key in scorers[:_STANDOUT_SCORERS]],
         top_scorers_omitted=_level_beyond(scorers, _STANDOUT_SCORERS, points),
         blanks=[row(key, blank=True) for key in blanks[:_STANDOUT_BLANKS]],
-        blanks_omitted=_level_beyond(blanks, _STANDOUT_BLANKS, lambda key: (counted_for(key), points(key))),
+        blanks_omitted=(
+            _level_beyond(blanks, _STANDOUT_BLANKS, lambda key: (counted_for(key), points(key)))
+            if order == "managers" else 0
+        ),
+        blanks_order=order,
     )
 
 
@@ -2425,8 +2474,10 @@ async def collect_draft_recap_data(
                     continue
 
                 main_id = draft_to_main_id.get(draft_elem_id)
+                main_player = matched_main_players.get(draft_elem_id)
                 unmatched = main_id is None
-                pts, _, red_cards = _live_player_stats(live_stats, main_id)
+                pts, minutes, red_cards = _live_player_stats(live_stats, main_id)
+                raw_rank = draft_player.get("draft_rank")
                 pos_name = POSITION_MAP.get(draft_player.get("element_type"), "???")
                 draft_team_id = team_id_of(draft_player)
                 draft_team = club_of(main_id, draft_team_id)
@@ -2450,6 +2501,10 @@ async def collect_draft_recap_data(
                     code=draft_to_main_code.get(draft_elem_id),
                     main_id=main_id,
                     points=pts,
+                    minutes=minutes,
+                    draft_rank=raw_rank if isinstance(raw_rank, int) else None,
+                    points_per_game=main_player.points_per_game if main_player else None,
+                    appearances=main_player.appearances if main_player else None,
                     is_captain=False,
                     is_vice_captain=False,
                     contributed=contributed,
@@ -2668,7 +2723,7 @@ async def collect_draft_recap_data(
         fpl_format="draft",
         managers=managers,
         awards=awards,
-        standout_players=find_standout_players(managers),
+        standout_players=find_standout_players(managers, fpl_format="draft", gameweek=gw),
         league_id=draft_league_id,
         standings_cohort=cohort,
         # `league_entries` is the league's own member list, so a standings

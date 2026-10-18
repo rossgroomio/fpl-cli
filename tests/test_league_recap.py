@@ -43,6 +43,7 @@ from fpl_cli.cli._league_recap_data import (
     recap_fine_player_names,
     restate_recap_fine_players,
     shape_prior_seasons,
+    standout_blanks_order,
 )
 from fpl_cli.cli._league_recap_types import (
     PriorSeasonsSummary,
@@ -60,10 +61,12 @@ from fpl_cli.cli._league_recap_types import (
     format_contested_claim,
     format_move_counts,
     format_prior_seasons_line,
+    standout_blanks_heading,
     standout_players_lines,
     summarise_prior_seasons,
 )
 from fpl_cli.models.player import PlayerPosition
+from fpl_cli.season import CHIP_SPLIT_GW
 from fpl_cli.prompts.league_recap import (
     collect_player_clubs,
     format_recap_awards_context,
@@ -7714,15 +7717,34 @@ def _standout_row(
     contributed: bool = True,
     club: str | None = "Arsenal",
     had_fixture: bool = True,
+    minutes: int | None = None,
+    draft_rank: int | None = None,
+    ppg: float | None = None,
+    appearances: int | None = None,
     **kwargs: Any,
 ) -> RecapManagerPlayer:
     """A squad row as a collector records it, its main id 1,000 above its
-    code so a row that emitted one for the other would show it."""
+    code so a row that emitted one for the other would show it. Minutes and
+    the draft-only fields are set only when given, as a hand-built row
+    without them arrives."""
     player = _make_squad_player(name=name, points=points, contributed=contributed, code=code, **kwargs)
     player["team_name"] = club
     player["main_id"] = code + 1000
     player["had_fixture"] = had_fixture
+    for key, value in (
+        ("minutes", minutes), ("draft_rank", draft_rank),
+        ("points_per_game", ppg), ("appearances", appearances),
+    ):
+        if value is not None:
+            player[key] = value  # type: ignore[literal-required]
     return player
+
+
+def _standouts(
+    managers: list[RecapManagerEntry], *, fpl_format: str = "classic", gameweek: int = 7,
+):
+    """The section as a collector builds it, for a classic GW7 unless told otherwise."""
+    return find_standout_players(managers, fpl_format=fpl_format, gameweek=gameweek)
 
 
 def _standout_league(*squads: tuple[str, list[RecapManagerPlayer]]) -> list[RecapManagerEntry]:
@@ -7749,7 +7771,7 @@ def _haaland_league(counted: set[str], benched: frozenset[str] = frozenset()) ->
 
 class TestFindStandoutPlayers:
     def test_top_scorers_rank_on_points_and_say_whom_they_scored_for(self):
-        standouts = find_standout_players(_standout_league(
+        standouts = _standouts(_standout_league(
             ("Alice", [_standout_row("Haaland", 17, 223, club="Manchester City")]),
             ("Bob", [_standout_row("Saka", 12, 118)]),
             ("Cam", [_standout_row("Mbeumo", 15, 450, club="Manchester United")]),
@@ -7760,7 +7782,7 @@ class TestFindStandoutPlayers:
         assert standouts["managers"] == 3
 
     def test_a_tie_on_points_goes_to_the_player_who_counted_for_more_managers(self):
-        standouts = find_standout_players(_standout_league(
+        standouts = _standouts(_standout_league(
             ("Alice", [_standout_row("Aaronson", 10, 1)]),
             ("Bob", [_standout_row("Zirkzee", 10, 2)]),
             ("Cam", [_standout_row("Zirkzee", 10, 2)]),
@@ -7770,7 +7792,7 @@ class TestFindStandoutPlayers:
 
     def test_the_cap_counts_the_players_level_with_the_last_one_listed(self):
         squads = [(f"M{i}", [_standout_row(f"P{i}", 9, 10 + i)]) for i in range(7)]
-        standouts = find_standout_players(_standout_league(*squads, ("Low", [_standout_row("Low", 8, 99)])))
+        standouts = _standouts(_standout_league(*squads, ("Low", [_standout_row("Low", 8, 99)])))
 
         assert len(standouts["top_scorers"]) == 5
         assert standouts["top_scorers_omitted"] == 2
@@ -7779,13 +7801,13 @@ class TestFindStandoutPlayers:
 
     def test_a_player_the_last_one_listed_outscored_was_not_left_out(self):
         squads = [(f"M{i}", [_standout_row(f"P{i}", 10, 10 + i)]) for i in range(5)]
-        standouts = find_standout_players(_standout_league(*squads, ("Low", [_standout_row("Low", 9, 99)])))
+        standouts = _standouts(_standout_league(*squads, ("Low", [_standout_row("Low", 9, 99)])))
 
         assert standouts["top_scorers_omitted"] == 0
         assert len(standout_players_lines(standouts)[0]) == 5
 
     def test_a_haul_left_on_a_bench_is_named_with_whoever_benched_him(self):
-        standouts = find_standout_players(_standout_league(
+        standouts = _standouts(_standout_league(
             ("Alice", [_standout_row("Groß", 17, 1, contributed=False, club="Brighton")]),
             ("Bob", [_standout_row("Haaland", 12, 2, club="Manchester City")]),
             ("Cam", [_standout_row("Haaland", 12, 2, contributed=False, club="Manchester City")]),
@@ -7800,7 +7822,7 @@ class TestFindStandoutPlayers:
         """The starter is recorded as having contributed -- the draft
         collector's shape -- and the sub-out flag still keeps him out: he
         never played, so he was nobody's blank."""
-        standouts = find_standout_players(_standout_league(
+        standouts = _standouts(_standout_league(
             ("Alice", [
                 _standout_row("Raya", 0, 1, auto_sub_out=True),
                 _standout_row("Kelleher", 6, 2, club="Brentford", auto_sub_in=True),
@@ -7811,7 +7833,7 @@ class TestFindStandoutPlayers:
         assert standouts["blanks"] == []
 
     def test_an_unmatched_draft_pick_is_neither_a_scorer_nor_a_blank(self):
-        standouts = find_standout_players(_standout_league(
+        standouts = _standouts(_standout_league(
             ("Alice", [_standout_row("Ghost", 0, 1, unmatched=True), _standout_row("Saka", 7, 2)]),
         ))
 
@@ -7822,7 +7844,7 @@ class TestFindStandoutPlayers:
         def salah() -> RecapManagerPlayer:
             return _standout_row("Salah", 2, 1, club="Liverpool")
 
-        standouts = find_standout_players(_standout_league(
+        standouts = _standouts(_standout_league(
             ("Alice", [salah(), _standout_row("Wirtz", 1, 2, club="Liverpool")]),
             ("Bob", [salah(), _standout_row("Palmer", 0, 3, club="Chelsea")]),
             ("Cam", [salah(), _standout_row("Saka", 3, 4)]),
@@ -7834,14 +7856,14 @@ class TestFindStandoutPlayers:
         assert [p["name"] for p in standouts["top_scorers"]] == ["Saka"]
 
     def test_a_blank_left_on_the_bench_cost_nobody_and_is_not_listed(self):
-        standouts = find_standout_players(_standout_league(
+        standouts = _standouts(_standout_league(
             ("Alice", [_standout_row("Salah", 1, 1, contributed=False)]),
         ))
 
         assert standouts["blanks"] == []
 
     def test_a_player_whose_club_had_no_fixture_is_no_blank(self):
-        standouts = find_standout_players(_standout_league(
+        standouts = _standouts(_standout_league(
             ("Alice", [_standout_row("Saliba", 0, 1, had_fixture=False)]),
         ))
 
@@ -7856,28 +7878,28 @@ class TestFindStandoutPlayers:
             (f"M{i}", [_standout_row(f"P{j}", 1, 10 + j) for j in range(5)])
             for i in range(owners)
         ]
-        standouts = find_standout_players(_standout_league(*squads))
+        standouts = _standouts(_standout_league(*squads))
 
         assert len(standouts["blanks"]) == 3
         assert standouts["blanks_omitted"] == 2
         assert standout_players_lines(standouts)[1][-1] == tail
 
     def test_a_red_card_is_said(self):
-        standouts = find_standout_players(_standout_league(
+        standouts = _standouts(_standout_league(
             ("Hal", [_standout_row("Wirtz", -1, 1, club="Liverpool", red_cards=1)]),
         ))
 
         assert standouts["blanks"][0]["text"] == "Wirtz (Liverpool) was sent off and managed -1 point for Hal."
 
     def test_a_player_with_no_club_is_named_alone(self):
-        standouts = find_standout_players(_standout_league(("Alice", [_standout_row("Saka", 9, 1, club=None)])))
+        standouts = _standouts(_standout_league(("Alice", [_standout_row("Saka", 9, 1, club=None)])))
 
         assert standouts["top_scorers"][0]["text"] == "Saka scored 9 points for Alice."
 
     def test_rows_carry_the_main_game_id_and_each_managers_ledger_key(self):
         """Two managers sharing a display name stay two: each is keyed as
         the ledger keys them."""
-        standouts = find_standout_players(_standout_league(
+        standouts = _standouts(_standout_league(
             ("Alice", [_standout_row("Haaland", 17, 223)]),
             ("Alice", [_standout_row("Haaland", 17, 223)]),
         ))
@@ -7890,10 +7912,11 @@ class TestFindStandoutPlayers:
         ]
 
     def test_a_league_with_nobody_to_name_has_an_empty_section(self):
-        standouts = find_standout_players(_standout_league(("Alice", []), ("Bob", [])))
+        standouts = _standouts(_standout_league(("Alice", []), ("Bob", [])))
 
         assert standouts == {
             "managers": 2, "top_scorers": [], "top_scorers_omitted": 0, "blanks": [], "blanks_omitted": 0,
+            "blanks_order": "managers",
         }
         assert standout_players_lines(standouts) == ([], [])
 
@@ -7915,7 +7938,7 @@ class TestStandoutPlayerSentences:
         ({"Alice"}, frozenset({"Bob", "Cam", "Dan", "Eve"}), "for Alice; 4 managers left him on the bench."),
     ])
     def test_whom_he_counted_for(self, counted: set[str], benched: frozenset[str], expected: str):
-        standouts = find_standout_players(_haaland_league(counted, benched))
+        standouts = _standouts(_haaland_league(counted, benched))
 
         assert standouts["top_scorers"][0]["text"] == f"Haaland (Manchester City) scored 17 points {expected}"
 
@@ -7931,7 +7954,7 @@ class TestStandoutPlayersPromptSection:
         )
         data = _make_recap_data(managers=managers)
         data["fpl_format"] = fpl_format
-        data["standout_players"] = find_standout_players(managers)
+        data["standout_players"] = _standouts(managers, fpl_format=fpl_format)
         return data
 
     def test_the_classic_section_reads_as_sentences(self):
@@ -7944,11 +7967,11 @@ class TestStandoutPlayersPromptSection:
             "- Salah (Liverpool) managed 2 points for Alice and Bob.",
         ]
 
-    def test_a_draft_section_has_no_captaincy_and_lists_blanks_lowest_first(self):
+    def test_a_draft_section_has_no_captaincy_and_orders_blanks_by_draft_rank(self):
         text = format_recap_standout_players_context(self._data("draft"))
 
         assert "captaincy" not in text
-        assert "Blanks that counted, lowest first:" in text
+        assert "Blanks among the best-ranked players, by FPL's pre-season draft rank:" in text
 
     def test_the_section_states_facts_and_gives_no_instructions(self):
         """It owns its facts like every other section, so the model may use
@@ -7961,7 +7984,7 @@ class TestStandoutPlayersPromptSection:
     def test_no_section_without_the_data_or_without_anyone_in_it(self):
         assert format_recap_standout_players_context(_make_recap_data()) == ""
         empty = _make_recap_data(managers=_standout_league(("Alice", [])))
-        empty["standout_players"] = find_standout_players(empty["managers"])
+        empty["standout_players"] = _standouts(empty["managers"])
         assert format_recap_standout_players_context(empty) == ""
 
     def test_the_section_follows_the_standings(self):
@@ -8004,7 +8027,7 @@ class TestStandoutPlayersReport:
         )
         return {
             "gameweek": 7, "league_name": "Test League", "fpl_format": fpl_format,
-            "managers": managers, "awards": {}, "standout_players": find_standout_players(managers),
+            "managers": managers, "awards": {}, "standout_players": _standouts(managers, fpl_format=fpl_format),
         }
 
     async def test_the_section_follows_the_standings_with_both_lists(self, tmp_path: Path):
@@ -8023,11 +8046,11 @@ class TestStandoutPlayersReport:
             "- Salah (Liverpool) managed 2 points for Alice and Bob.\n"
         ) in section
 
-    async def test_a_draft_report_lists_blanks_lowest_first(self, tmp_path: Path):
+    async def test_a_draft_report_orders_blanks_by_draft_rank(self, tmp_path: Path):
         content = await self._render(tmp_path, self._data("draft"))
 
         section = content[content.index("# Standout Players"):]
-        assert "## Blanks that counted, lowest first" in section
+        assert "## Blanks among the best-ranked players, by FPL's pre-season draft rank" in section
         assert "captaincy" not in section
 
     async def test_no_section_without_the_data(self, tmp_path: Path):
@@ -8068,20 +8091,34 @@ class TestCollectorsFindStandoutPlayers:
             live_stats=live_stats, player_map=player_map, teams={}, is_live_gw=False,
         )
 
-        top = data["standout_players"]["top_scorers"][0]
+        standouts = data["standout_players"]
+        top = standouts["top_scorers"][0]
         assert (top["id"], top["code"], top["points"]) == (self._BENCHED_HAUL, 100 + self._BENCHED_HAUL, 17)
         assert top["text"] == f"P{self._BENCHED_HAUL} scored 17 points, but Alice left him on the bench."
+        # The 2-point defender is the one starter who blanked, a full 90 played.
+        assert standouts["blanks_order"] == "managers"
+        assert [(b["name"], b["minutes"], b["draft_rank"]) for b in standouts["blanks"]] == [("P5", 90, None)]
+        assert standouts["blanks"][0]["text"] == "P5 managed 2 points for Alice."
 
     async def test_the_draft_collector_sets_the_section_with_main_game_ids(self):
         draft_players = [
-            make_draft_player(id=900 + i, code=100 + i, web_name=f"P{i}", team=1, element_type=position.value)
+            make_draft_player(
+                id=900 + i, code=100 + i, web_name=f"P{i}", team=1, element_type=position.value,
+                draft_rank=600 - i,
+            )
             for i, (position, _) in enumerate(self._SLOTS, start=1)
         ]
         main_players = [
-            make_player(id=i, code=100 + i, web_name=f"P{i}", team_id=1, position=position)
+            make_player(
+                id=i, code=100 + i, web_name=f"P{i}", team_id=1, position=position,
+                total_points=10 * i, points_per_game=float(i),
+            )
             for i, (position, _) in enumerate(self._SLOTS, start=1)
         ]
-        live_stats = {i: {"total_points": points} for i, (_, points) in enumerate(self._SLOTS, start=1)}
+        live_stats = {
+            i: {"total_points": points, "minutes": 90 if points else 0}
+            for i, (_, points) in enumerate(self._SLOTS, start=1)
+        }
         client = MagicMock()
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=False)
@@ -8107,3 +8144,136 @@ class TestCollectorsFindStandoutPlayers:
         assert (top["id"], top["code"]) == (self._BENCHED_HAUL, 100 + self._BENCHED_HAUL)
         assert top["benched_by"] == [{"manager_key": 10, "manager_name": "A B"}]
         assert all(p["id"] < 900 for p in standouts["top_scorers"] + standouts["blanks"])
+        # The rank is the draft game's; the average and appearances are the
+        # matched main-game player's.
+        blank = standouts["blanks"][0]
+        assert (blank["name"], blank["draft_rank"], blank["points_per_game"], blank["minutes"]) == ("P5", 595, 5.0, 90)
+        assert blank["text"] == "P5 (pre-season draft rank 595) managed 2 points for A B."
+        assert standouts["blanks_order"] == "draft_rank"
+        row = data["managers"][0]["squad"][4]
+        assert (row["draft_rank"], row["points_per_game"], row["appearances"]) == (595, 5.0, 10)
+
+
+class TestDraftStandoutBlanks:
+    """Draft blanks are ordered by what the manager could expect of the
+    player, not by the lowest score: FPL's pre-season draft rank before GW19,
+    the season's points per game from it (#455). On GW6's real data the
+    lowest scores were squad fillers (Bentancur, Struijk, Aina) and the
+    best-ranked blanks were Fernandes, Saka and Gabriel."""
+
+    def _league(self, gameweek: int):
+        managers = _standout_league(
+            ("Alice", [_standout_row(
+                "B.Fernandes", 1, 1, club="Manchester United", minutes=90,
+                draft_rank=2, ppg=5.3, appearances=18,
+            )]),
+            ("Bob", [_standout_row(
+                "Saka", 2, 2, minutes=90, draft_rank=3, ppg=5.7, appearances=18,
+            )]),
+            ("Cam", [_standout_row(
+                "Bentancur", -2, 3, club="Tottenham Hotspur", minutes=11,
+                draft_rank=155, ppg=2.1, appearances=15,
+            )]),
+            ("Dan", [_standout_row(
+                "Gabriel", 2, 4, minutes=90, draft_rank=7, ppg=4.5, appearances=18,
+            )]),
+            # A cameo with a big average and too few games behind it.
+            ("Eve", [_standout_row(
+                "Nwaneri", 1, 5, minutes=20, draft_rank=None, ppg=8.0, appearances=2,
+            )]),
+        )
+        return _standouts(managers, fpl_format="draft", gameweek=gameweek)
+
+    def test_before_gw19_the_best_ranked_blanks_come_first(self):
+        standouts = self._league(CHIP_SPLIT_GW - 1)
+
+        assert standouts["blanks_order"] == "draft_rank"
+        assert [p["name"] for p in standouts["blanks"]] == ["B.Fernandes", "Saka", "Gabriel"]
+        assert standouts["blanks"][0]["text"] == (
+            "B.Fernandes (Manchester United, pre-season draft rank 2) managed 1 point for Alice."
+        )
+        assert standouts["blanks_omitted"] == 0
+
+    def test_an_unranked_blank_comes_after_every_ranked_one(self):
+        standouts = _standouts(_standout_league(
+            ("Alice", [_standout_row("Unranked", 0, 1, minutes=90)]),
+            ("Bob", [_standout_row("Ranked", 2, 2, minutes=90, draft_rank=600)]),
+        ), fpl_format="draft")
+
+        assert [p["name"] for p in standouts["blanks"]] == ["Ranked", "Unranked"]
+        assert standouts["blanks"][1]["text"] == "Unranked (Arsenal) managed 0 points for Alice."
+
+    def test_from_gw19_the_season_average_takes_over(self):
+        standouts = self._league(CHIP_SPLIT_GW)
+
+        assert standouts["blanks_order"] == "points_per_game"
+        assert [p["name"] for p in standouts["blanks"]] == ["Saka", "B.Fernandes", "Gabriel"]
+        assert standouts["blanks"][0]["text"] == (
+            "Saka (Arsenal, averaging 5.7 points a game this season) managed 2 points for Bob."
+        )
+
+    def test_an_average_behind_too_few_appearances_ranks_after_the_rest(self):
+        standouts = self._league(CHIP_SPLIT_GW)
+        ranked = [p["name"] for p in standouts["blanks"]]
+
+        assert "Nwaneri" not in ranked
+
+    @pytest.mark.parametrize(("fpl_format", "gameweek", "order"), [
+        ("classic", 1, "managers"),
+        ("classic", CHIP_SPLIT_GW, "managers"),
+        ("draft", 1, "draft_rank"),
+        ("draft", CHIP_SPLIT_GW - 1, "draft_rank"),
+        ("draft", CHIP_SPLIT_GW, "points_per_game"),
+        ("draft", 38, "points_per_game"),
+    ])
+    def test_the_switch_falls_on_the_halfway_gameweek(self, fpl_format: str, gameweek: int, order: str):
+        assert standout_blanks_order(fpl_format, gameweek) == order
+
+    @pytest.mark.parametrize(("gameweek", "heading"), [
+        (CHIP_SPLIT_GW - 1, "Blanks among the best-ranked players, by FPL's pre-season draft rank"),
+        (CHIP_SPLIT_GW, "Blanks among this season's best performers, by points per game"),
+    ])
+    def test_the_heading_says_what_the_blanks_are_ordered_by(self, gameweek: int, heading: str):
+        assert standout_blanks_heading(self._league(gameweek)) == heading
+
+    def test_a_top_scorer_carries_no_rank_or_average(self):
+        standouts = _standouts(_standout_league(
+            ("Alice", [_standout_row("Semenyo", 15, 1, club="Bournemouth", minutes=90, draft_rank=40, ppg=6.0)]),
+        ), fpl_format="draft")
+
+        assert standouts["top_scorers"][0]["text"] == "Semenyo (Bournemouth) scored 15 points for Alice."
+
+
+class TestStandoutBlankMinutes:
+    """A blank says how long he played when it was under the hour, the line
+    FPL's appearance points step at, and that he did not play at all when he
+    did not -- a starter nobody could cover, which is the manager's story."""
+
+    @pytest.mark.parametrize(("points", "minutes", "expected"), [
+        (0, 0, "Salah (Liverpool) did not play for Alice."),
+        (1, 1, "Salah (Liverpool) managed 1 point in 1 minute for Alice."),
+        (1, 27, "Salah (Liverpool) managed 1 point in 27 minutes for Alice."),
+        (1, 59, "Salah (Liverpool) managed 1 point in 59 minutes for Alice."),
+        (2, 60, "Salah (Liverpool) managed 2 points for Alice."),
+        (2, None, "Salah (Liverpool) managed 2 points for Alice."),
+    ])
+    def test_minutes_on_a_blank(self, points: int, minutes: int | None, expected: str):
+        standouts = _standouts(_standout_league(
+            ("Alice", [_standout_row("Salah", points, 1, club="Liverpool", minutes=minutes)]),
+        ))
+
+        assert standouts["blanks"][0]["text"] == expected
+
+    def test_a_red_card_keeps_its_minutes(self):
+        standouts = _standouts(_standout_league(
+            ("Hal", [_standout_row("Wirtz", -1, 1, club="Liverpool", minutes=56, red_cards=1)]),
+        ))
+
+        assert standouts["blanks"][0]["text"] == "Wirtz (Liverpool) was sent off and managed -1 point in 56 minutes for Hal."
+
+    def test_a_top_scorer_never_carries_minutes(self):
+        standouts = _standouts(_standout_league(
+            ("Alice", [_standout_row("Isak", 6, 1, club="Liverpool", minutes=30)]),
+        ))
+
+        assert standouts["top_scorers"][0]["text"] == "Isak (Liverpool) scored 6 points for Alice."

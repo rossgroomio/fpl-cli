@@ -7250,7 +7250,7 @@ class TestStandoutPlayersSurfaces:
         )
         # What both collectors do beside the awards; the stubbed one here
         # hands back whatever the test built.
-        data["standout_players"] = find_standout_players(managers)
+        data["standout_players"] = find_standout_players(managers, fpl_format=fpl_format, gameweek=5)
         return data
 
     def test_json_metadata_carries_the_section_with_code_beside_every_id(self):
@@ -7266,6 +7266,11 @@ class TestStandoutPlayersSurfaces:
         assert haaland["benched_by"] == [{"manager_key": 2, "manager_name": "Bob [bold]"}]
         assert haaland["text"] == self._HAALAND
         assert section["blanks"][0]["text"] == self._SALAH
+        assert section["blanks_order"] == "managers"
+        # Draft-only fields are present and null in classic, so a consumer
+        # reads one row shape whichever format it asked for.
+        assert {"minutes", "draft_rank", "points_per_game"} <= set(haaland)
+        assert (haaland["draft_rank"], haaland["points_per_game"]) == (None, None)
 
     def test_json_metadata_is_null_when_no_section_was_built(self):
         result = _invoke_recap(_recap_data(), ["--format", "json"])
@@ -7289,7 +7294,7 @@ class TestStandoutPlayersSurfaces:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Blanks that counted, lowest first" in result.stdout
+        assert "Blanks among the best-ranked players, by FPL's pre-season draft rank" in result.stdout.replace("\n", "")
 
     def test_the_saved_report_carries_the_section(self, tmp_path: Path):
         result = _invoke_recap(self._data(), ["--save", "--output", str(tmp_path)])

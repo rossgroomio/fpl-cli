@@ -876,14 +876,14 @@ def _render_console_highlights(
     # user-supplied and can hold square brackets Rich would read as markup.
     standouts = data.get("standout_players")
     scorer_lines, blank_lines = standout_players_lines(standouts) if standouts else ([], [])
-    if scorer_lines or blank_lines:
+    if standouts and (scorer_lines or blank_lines):
         console.print("\n[bold]Standout Players:[/bold]")
         if scorer_lines:
             console.print("  [dim]Top scorers[/dim]")
             for line in scorer_lines:
                 console.print(f"  [green]{rich_escape(line)}[/green]")
         if blank_lines:
-            console.print(f"  [dim]{standout_blanks_heading(fmt)}[/dim]")
+            console.print(f"  [dim]{standout_blanks_heading(standouts)}[/dim]")
             for line in blank_lines:
                 console.print(f"  [red]{rich_escape(line)}[/red]")
 
