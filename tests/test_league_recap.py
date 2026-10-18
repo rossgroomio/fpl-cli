@@ -7766,6 +7766,43 @@ class TestKindNetScopeCheck:
         managers = [m for m in _mixed_waivers() if m["manager_name"] in ("Eve Ray", "Gus Hill")]
         assert self._check("Eve Ray's waiver moves netted +3 overall.", managers) == []
 
+    def _aside_line(self) -> list[RecapManagerEntry]:
+        # A free agent (+6) and a waiver (+1), +7 overall.
+        return [
+            _make_manager_with_txns("Dan Ford", [
+                _txn("Belloumi", 6, "Kluivert", 0, kind="f"),
+                _txn("Dunk", 2, "Van Hecke", 1),
+            ], entry_id=1),
+            _make_manager(name="Gus Hill", entry_id=2),
+        ]
+
+    _ASIDE = (
+        "Dan Ford had a busy week. Belloumi came in on a free agent for Kluivert and scored 6, "
+        "and with Dunk's +1 on waivers he finished +7"
+    )
+
+    @pytest.mark.parametrize("closer", [" overall", " in all", " for the week", " net overall", " all told"])
+    def test_the_week_s_net_said_after_a_kind_aside_passes(self, closer):
+        """Issue #465: the waiver is an aside and "he finished +7 overall" is
+        the manager's whole week, which +7 is."""
+        assert self._check(self._ASIDE + closer + ".", self._aside_line()) == []
+
+    @pytest.mark.parametrize("summary", [
+        # Without the closer "on waivers he finished +7" reads as the waivers'.
+        _ASIDE + ".",
+        # A closer with no new subject is the kind's "overall" (#390).
+        "Dan Ford's waiver moves netted +7 overall.",
+        "Dan Ford's waivers made him +7.",
+        "Dan Ford's waivers made him +7 overall.",
+    ])
+    def test_the_week_s_net_said_of_the_kind_is_still_caught(self, summary):
+        problems = self._check(summary, self._aside_line())
+        assert len(problems) == 1
+        assert "+7 is Dan Ford's net for the whole gameweek (2 moves: 1 waiver, 1 free agent)" in problems[0]
+
+    def test_each_kind_s_own_net_beside_the_aside_line_passes(self):
+        assert self._check("Dan Ford went +6 on the free agent and +1 on waivers.", self._aside_line()) == []
+
     def test_the_registry_runs_it_on_a_draft_editorial(self):
         data = _make_recap_data(managers=_mixed_waivers())
         data["fpl_format"] = "draft"

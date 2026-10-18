@@ -927,6 +927,18 @@ _KIND_LINK_AFTER = frozenset({
     "in", "his", "her", "their", "its", "the", "a", "all", "of", "both", "between",
 })
 _KIND_LINK_MAX_WORDS = 6
+# A figure the manager is the subject of, said to be his whole week, is his
+# net overall however near a kind word sits before it (#465): "with Dunk's
+# +1 on waivers he finished +7 overall" puts the waiver in an aside. The
+# closer alone frees nothing -- "his waiver moves netted +3 overall" is the
+# waivers' "overall" -- and the new subject alone frees nothing either: "on
+# waivers he netted +7" is still a waiver figure.
+_KIND_LINK_NEW_SUBJECTS = frozenset({"he", "she", "they"})
+_NET_CLOSER_RE = re.compile(
+    r"\s*(?:(?:net|pts?|points?)\s+)?(?:overall|in\s+all|in\s+total|all\s+told|altogether"
+    r"|(?:for|on)\s+the\s+(?:game)?week|across\s+(?:all\s+)?(?:his|her|their)\s+moves)(?!\w)",
+    re.IGNORECASE,
+)
 _KIND_LINK_BREAK_RE = re.compile(r",|\d|[–—]|\s-\s")
 _KIND_LINK_COMMA_RE = re.compile(r"^\s*,\s*(?P<relative>(?:which|that)(?!\w))?", re.IGNORECASE)
 _LINK_WORD_RE = re.compile(r"[a-z]+(?:['’][a-z]+)?")
@@ -990,12 +1002,14 @@ def _figure_scope(clause: str, start: int, end: int, scopes: Sequence[_KindScope
     Its subject is the scope nearest before it, when the two are linked, and
     a neutral subject keeps the figure whatever kind follows. Only a figure
     with no subject before it is read against a scope after it ("netted +3
-    overall from his waivers")."""
+    overall from his waivers"); a figure the manager is the subject of, said
+    to be his whole week ("on waivers he finished +7 overall"), has none."""
     before = [scope for scope in scopes if scope.end <= start]
     # A figure's leading verb ("netting +3") is part of the link it makes.
     verb = re.match(r"[a-z]+", clause[start:end], re.IGNORECASE)
-    if before and _kind_link(
-        clause[before[-1].end:start] + (verb.group(0) if verb else ""), _KIND_LINK_BEFORE, comma=True,
+    gap = clause[before[-1].end:start] + (verb.group(0) if verb else "") if before else ""
+    if before and _kind_link(gap, _KIND_LINK_BEFORE, comma=True) and not (
+        _KIND_LINK_NEW_SUBJECTS & set(_LINK_WORD_RE.findall(_plain(gap).lower())) and _NET_CLOSER_RE.match(clause, end)
     ):
         return before[-1], clause[before[-1].start:end]
     after = [scope for scope in scopes if scope.start >= end]
