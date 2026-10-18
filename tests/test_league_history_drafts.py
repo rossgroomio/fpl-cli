@@ -82,7 +82,7 @@ HELD_AT = "2026-08-13T19:47:59.528867Z"
 
 
 def _league_draft(
-    draft_id: int = DRAFT_ID, *, completed: bool | str | None = True, event: int = 1,
+    draft_id: int = DRAFT_ID, *, completed: bool | str | None = HELD_AT, event: int = 1,
 ) -> dict[str, Any]:
     return {
         "id": draft_id,
@@ -149,9 +149,9 @@ class TestDraftRecognition:
     def test_keeps_only_held_drafts_with_an_id(self):
         drafts = [
             _league_draft(DRAFT_ID),
-            _league_draft(REDRAFT_ID, completed=False),
-            {"event": 1, "draft_completed": True},
-            {"id": True, "draft_completed": True},
+            _league_draft(REDRAFT_ID, completed=None),
+            {"event": 1, "draft_completed": HELD_AT},
+            {"id": True, "draft_completed": HELD_AT},
             "not a draft",
         ]
 
@@ -177,12 +177,15 @@ class TestDraftRecognition:
     @pytest.mark.parametrize(
         ("entry", "recognised"),
         [
-            pytest.param(_league_draft(), True, id="held"),
-            pytest.param(_league_draft(completed=False), True, id="scheduled"),
+            pytest.param(_league_draft(completed=True), True, id="held-bool"),
+            pytest.param(_league_draft(completed=False), True, id="scheduled-bool"),
             pytest.param(_league_draft(completed=HELD_AT), True, id="held-timestamp"),
             pytest.param(_league_draft(completed=None), True, id="scheduled-null"),
             pytest.param({"id": DRAFT_ID}, False, id="no-completed-flag"),
             pytest.param({"id": DRAFT_ID, "draft_completed": 1}, False, id="flag-an-int"),
+            pytest.param({"id": DRAFT_ID, "draft_completed": ""}, False, id="flag-an-empty-string"),
+            pytest.param({"id": DRAFT_ID, "draft_completed": "false"}, False, id="flag-not-a-timestamp"),
+            pytest.param({"id": DRAFT_ID, "draft_completed": "0"}, False, id="flag-a-zero-string"),
             pytest.param({"id": DRAFT_ID, "draft_completed": {}}, False, id="flag-an-object"),
             pytest.param({"id": "901", "draft_completed": True}, False, id="id-not-a-number"),
             pytest.param({"draft_id": DRAFT_ID, "draft_completed": True}, False, id="id-renamed"),
@@ -302,13 +305,13 @@ class TestSnapshotWrite:
         assert _snapshot_file().read_text(encoding="utf-8") == manual
 
     def test_a_scheduled_but_unheld_draft_writes_nothing(self):
-        assert _snapshot([_league_draft(completed=False)], _response()) == []
+        assert _snapshot([_league_draft(completed=None)], _response()) == []
 
         assert not _snapshot_file().exists()
 
     def test_a_draft_under_way_is_not_saved_until_it_completes(self):
         """A partial draft saved now would read as a conflict once it finished."""
-        assert _snapshot([_league_draft(completed=False)], _response(*_picks()[:1])) == []
+        assert _snapshot([_league_draft(completed=None)], _response(*_picks()[:1])) == []
 
         assert not _snapshot_file().exists()
 
@@ -338,7 +341,7 @@ class TestDraftsNoLongerServed:
     def test_a_completed_draft_with_no_rows_and_no_snapshot_is_lost(self):
         """The redraft is scheduled: the endpoint serves nothing for the draft
         that was held, and nobody saved it."""
-        drafts = [_league_draft(), _league_draft(REDRAFT_ID, completed=False, event=20)]
+        drafts = [_league_draft(), _league_draft(REDRAFT_ID, completed=None, event=20)]
 
         [outcome] = _snapshot(drafts, _response())
 
@@ -462,7 +465,7 @@ class TestCaptureDraftPicks:
         "data",
         [
             pytest.param(_draft_data([_league_draft()], fpl_format="classic"), id="classic"),
-            pytest.param(_draft_data([_league_draft(completed=False)]), id="no-draft-held-yet"),
+            pytest.param(_draft_data([_league_draft(completed=None)]), id="no-draft-held-yet"),
             pytest.param(_draft_data([]), id="no-drafts-yet"),
             pytest.param(_draft_data(), id="details-never-read"),
             pytest.param(_draft_data([_league_draft()], no_league_id=True), id="no-league-id"),
@@ -520,7 +523,7 @@ class TestCaptureDraftPicks:
         assert _snapshot_file().read_text(encoding="utf-8") == "not json"
 
     async def test_a_lost_draft_is_named_once(self, capsys):
-        data = _draft_data([_league_draft(), _league_draft(REDRAFT_ID, completed=False)])
+        data = _draft_data([_league_draft(), _league_draft(REDRAFT_ID, completed=None)])
 
         first = await _capture(data, AsyncMock(return_value=_response()))
         second = await _capture(data, AsyncMock(return_value=_response()))
