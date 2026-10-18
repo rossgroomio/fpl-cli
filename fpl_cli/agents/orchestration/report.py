@@ -16,6 +16,9 @@ from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
     draft_transaction_kind_label,
     recap_title,
+    standout_blanks_heading,
+    standout_players_lines,
+    standout_players_note,
 )
 from fpl_cli.paths import TEMPLATE_DIR
 from fpl_cli.services.team_ratings import fdr_columns_footer
@@ -680,6 +683,14 @@ class ReportAgent(Agent):
         data["title"] = recap_title(gameweek, data.get("league_name", ""))
         data.setdefault("generated_at", format_generated_at())
         data["standings_block"] = _format_standings_block(data.get("managers", []))
+        # Standout players (#455): the sentences the console and the
+        # editorial's prompt get, worked out here like the standings block so
+        # the template needs no knowledge of the section's shape.
+        if standouts := data.get("standout_players"):
+            fpl_format = data.get("fpl_format", "classic")
+            data["standout_scorer_lines"], data["standout_blank_lines"] = standout_players_lines(standouts)
+            data["standout_note"] = standout_players_note(fpl_format)
+            data["standout_blanks_heading"] = standout_blanks_heading(fpl_format)
         return template.render(**data)
 
 

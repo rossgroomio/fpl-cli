@@ -25,6 +25,12 @@ class RecapManagerPlayer(TypedDict):
     # its players after the API reshuffles seasonal ids. None when the
     # reference could not be resolved (always paired with `unmatched`).
     code: int | None
+    # The main game's element id, which the Standout Players rows emit as
+    # `id` (issue #455) -- a draft pick's too, through the same match that
+    # gives it `code`, never the draft game's own id (#418). None for a
+    # draft pick the main game could not be matched to. Never written to the
+    # ledger, which identifies a player by `code` alone.
+    main_id: NotRequired[int | None]
     points: int
     is_captain: bool
     is_vice_captain: bool
@@ -357,6 +363,184 @@ class RecapAwards(TypedDict, total=False):
     most_contested: RecapAwardEntry
 
 
+class RecapStandoutManager(TypedDict):
+    """One manager a Standout Players line names, with the ledger's key for
+    them, so two managers sharing a display name stay two."""
+
+    manager_key: int
+    manager_name: str
+
+
+class RecapStandoutPlayer(TypedDict):
+    """One player in the Standout Players section (issue #455): one of the
+    week's top scorers or costliest blanks, and whose team he scored for.
+
+    `points` are his own for the gameweek, before any captaincy -- the same
+    live figure the bench haul is computed from. `counted_for` are the
+    managers whose points he counted towards (an auto-sub coming on and a
+    Bench Boost bench included); `benched_by` the ones who had him and left
+    him on a bench that did not count. A manager whose starter never played
+    and was replaced is in neither. `text` is the sentence every surface
+    prints, so the report, the console and the editorial's prompt cannot
+    tell one player two ways.
+    """
+
+    # The main game's element id, a draft recap's included, with the code
+    # both games share beside it (#418, #419).
+    id: int | None
+    code: int | None
+    name: str
+    team: str
+    team_name: str | None
+    position: str
+    points: int
+    red_cards: int
+    counted_for: list[RecapStandoutManager]
+    benched_by: list[RecapStandoutManager]
+    text: str
+
+
+class RecapStandoutPlayers(TypedDict):
+    """The week's standout individual scores in the league's squads (issue
+    #455), built once by `find_standout_players()` (`_league_recap_data.py`)
+    from the same squads and live points the bench haul reads, and read by
+    every surface."""
+
+    # The managers each line's counts are out of: every manager fetched.
+    managers: int
+    # The highest-scoring players in any manager's squad, best first.
+    top_scorers: list[RecapStandoutPlayer]
+    # How many more players scored what the last one listed did, left out
+    # by the cap rather than outscored.
+    top_scorers_omitted: int
+    # Blanks that counted, the one that counted for the most managers first
+    # and then the lowest -- in draft, where a player has one owner, simply
+    # the lowest.
+    blanks: list[RecapStandoutPlayer]
+    # How many more were level with the last one listed on both counts.
+    blanks_omitted: int
+
+
+# A blank is a return of no more than this: the appearance points and nothing
+# on top. The usual reading of the word, and the line the section draws.
+STANDOUT_BLANK_MAX_POINTS = 2
+# Most managers a Standout Players line names before it counts them instead,
+# the cap the awards' ties use: a template player in a fifty-manager classic
+# league would otherwise read as a roll call of the league.
+_STANDOUT_NAME_CAP = 3
+
+
+def _points_words(points: int) -> str:
+    """A player's points as a sentence spells them: "1 point", "-1 point",
+    "17 points"."""
+    return f"{points} point" if abs(points) == 1 else f"{points} points"
+
+
+def _standout_names(managers: Sequence[RecapStandoutManager]) -> str:
+    """"Alice", "Alice and Bob", or "4 managers" once there are more than the
+    line names."""
+    if len(managers) > _STANDOUT_NAME_CAP:
+        return f"{len(managers)} managers"
+    return _join_names([m["manager_name"] for m in managers])
+
+
+def _standout_for(
+    counted: Sequence[RecapStandoutManager],
+    *,
+    managers: int,
+    not_counted: Sequence[RecapStandoutManager],
+) -> str:
+    """Whose points a player counted towards: "for Alice and Bob", "for all
+    12 managers", "for 9 of the 12 managers, everyone but Alice, Bob and
+    Cam", or, where neither side is short enough to name, "for 6 of the 12
+    managers". The side that is short is the story: a differential's owners,
+    or the few who went without a template player."""
+    if len(counted) <= _STANDOUT_NAME_CAP:
+        return f"for {_standout_names(counted)}"
+    if not not_counted:
+        return f"for all {managers} managers"
+    clause = f"for {len(counted)} of the {managers} managers"
+    if len(not_counted) <= _STANDOUT_NAME_CAP:
+        clause += f", everyone but {_standout_names(not_counted)}"
+    return clause
+
+
+def format_standout_player(
+    player: RecapStandoutPlayer,
+    *,
+    managers: int,
+    not_counted: Sequence[RecapStandoutManager],
+    blank: bool,
+) -> str:
+    """One standout player as a sentence a columnist could lift (#455):
+    "Haaland (Manchester City) scored 17 points for 9 of the 12 managers,
+    everyone but Alice, Bob and Cam; Alice left him on the bench." A blank
+    "managed" his points rather than scoring them, and a red card is said
+    ("was sent off and managed -1 point for Bob").
+
+    Written for a reader rather than a ledger, because the editorial lifts
+    what its data sections put in front of it (audit finding 20): every
+    figure is the player's own and every name is one the line can stand
+    behind, so the sentence can be used as it stands. `not_counted` are the
+    managers he did not count for, named when the line says "everyone but".
+    """
+    club = player["team_name"]
+    line = f"{player['name']} ({club})" if club else player["name"]
+    if player["red_cards"]:
+        line += " was sent off and"
+    line += f" {'managed' if blank else 'scored'} {_points_words(player['points'])}"
+    counted = player["counted_for"]
+    if counted:
+        line += " " + _standout_for(counted, managers=managers, not_counted=not_counted)
+    benched = player["benched_by"]
+    if benched:
+        line += ("; " if counted else ", but ") + f"{_standout_names(benched)} left him on the bench"
+    return line + "."
+
+
+def standout_players_note(fpl_format: str) -> str:
+    """What the section's figures are, said once above it on the report and
+    in the prompt: the player's own points (classic's before captaincy, which
+    the Captains section owns) and what a blank is."""
+    captaincy = ", before any captaincy" if fpl_format == "classic" else ""
+    return (
+        f"Each player's own points this gameweek{captaincy}, among the players in this league's "
+        f"squads. A blank is {STANDOUT_BLANK_MAX_POINTS} points or fewer."
+    )
+
+
+def standout_blanks_heading(fpl_format: str) -> str:
+    """The blanks list's heading, which says how it is ordered: by how many
+    managers a blank counted for in classic, where a template player blanks
+    for half the league at once, and lowest first in draft, where every
+    player has one owner."""
+    if fpl_format == "classic":
+        return "Blanks that counted for the most managers"
+    return "Blanks that counted, lowest first"
+
+
+def standout_players_lines(standouts: RecapStandoutPlayers) -> tuple[list[str], list[str]]:
+    """The section's two lists as printed lines, top scorers then blanks,
+    each closed by how many more were level with the last one listed --
+    "2 more players also scored 9 points." -- so the cap never reads as the
+    end of the list."""
+    scorers = [p["text"] for p in standouts["top_scorers"]]
+    if standouts["top_scorers"] and (more := standouts["top_scorers_omitted"]):
+        last = standouts["top_scorers"][-1]
+        scorers.append(
+            f"{more} more player{'s' if more != 1 else ''} also scored {_points_words(last['points'])}.",
+        )
+    blanks = [p["text"] for p in standouts["blanks"]]
+    if standouts["blanks"] and (more := standouts["blanks_omitted"]):
+        last = standouts["blanks"][-1]
+        counted = len(last["counted_for"])
+        blanks.append(
+            f"{more} more player{'s' if more != 1 else ''} also managed {_points_words(last['points'])}"
+            + (f" for {counted} managers each." if counted > 1 else "."),
+        )
+    return scorers, blanks
+
+
 class RecapFinePlayer(TypedDict):
     """One player a fine names, carried alongside the prose that names him."""
 
@@ -409,6 +593,10 @@ class LeagueRecapData(TypedDict):
     fpl_format: str
     managers: list[RecapManagerEntry]
     awards: RecapAwards
+    # The week's top scorers and costliest blanks in the league's squads, with
+    # whose team each one counted for (issue #455). Set by both collectors
+    # beside the awards; absent only on data a caller built by hand.
+    standout_players: NotRequired[RecapStandoutPlayers]
     fines: NotRequired[list[RecapFineResult]]
     # Which fine rule types were ruled on for this gameweek, whether or not
     # any triggered -- stamped onto every captured row so the ledger can tell

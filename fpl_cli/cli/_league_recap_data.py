@@ -54,6 +54,7 @@ if TYPE_CHECKING:
             self, league_id: int, page: int = 1, /,
         ) -> dict[str, Any]: ...
 from fpl_cli.cli._league_recap_types import (
+    STANDOUT_BLANK_MAX_POINTS,
     LeagueRecapData,
     RecapAwardEntry,
     RecapAwards,
@@ -65,12 +66,17 @@ from fpl_cli.cli._league_recap_types import (
     RecapManagerPlayer,
     RecapPriorSeason,
     RecapStandingsEntry,
+    RecapStandoutManager,
+    RecapStandoutPlayer,
+    RecapStandoutPlayers,
     RecapTransfer,
     contested_draft_claims,
     draft_transaction_kind_counts,
     format_contested_claim,
     format_move_counts,
+    format_standout_player,
 )
+from fpl_cli.models.player import usable_code
 from fpl_cli.services.fixture_predictions import had_fixture
 from fpl_cli.services.player_clubs import gameweek_club
 from fpl_cli.services.scoring.constants import VALID_FORMATIONS
@@ -416,6 +422,7 @@ async def collect_classic_recap_data(
         fpl_format="classic",
         managers=managers,
         awards=awards,
+        standout_players=find_standout_players(managers),
         league_id=classic_league_id,
         standings_cohort=cohort,
         # One page of standings is 50 entries; `has_next` says a larger league
@@ -552,6 +559,7 @@ async def _fetch_all_manager_data(
                 team_name=player_team.name if player_team else None,
                 position=player.position_name,
                 code=player.code or None,
+                main_id=player.id,
                 points=pts,
                 is_captain=pick.get("is_captain", False),
                 is_vice_captain=pick.get("is_vice_captain", False),
@@ -2020,6 +2028,130 @@ def _compute_most_contested_award(
 
 
 # ---------------------------------------------------------------------------
+# Standout players (issue #455)
+# ---------------------------------------------------------------------------
+
+# How many top scorers and blanks the section lists: enough that the
+# editorial has a player to name for the managers it writes about, few
+# enough to stay a fact sheet rather than a second roster.
+_STANDOUT_SCORERS = 5
+_STANDOUT_BLANKS = 3
+
+# The player code where the collector resolved one, else the name and club
+# printed, as the contested races key a player.
+_StandoutKey = int | tuple[str, str]
+
+
+def _level_beyond(keys: Sequence[_StandoutKey], shown: int, measure: Callable[[_StandoutKey], object]) -> int:
+    """How many of `keys` past the first `shown` rank level with the last
+    one shown -- the players a cap left out rather than outranked."""
+    if len(keys) <= shown:
+        return 0
+    last = measure(keys[shown - 1])
+    return sum(1 for key in keys[shown:] if measure(key) == last)
+
+
+def find_standout_players(managers: Sequence[RecapManagerEntry]) -> RecapStandoutPlayers:
+    """The week's top scorers and costliest blanks in the league's squads,
+    with whose team each one counted for (issue #455).
+
+    Read off the squads the bench haul is computed from, with the same live
+    points, so nothing is fetched and no figure here can disagree with an
+    award. Before this the editorial had no player points beyond the bench
+    haul and the swing on each move, so whatever it wanted to say about a
+    manager's week it said with the waiver race, the bench and the fine.
+
+    A top scorer is the highest-scoring player in any manager's squad,
+    whether he counted or sat on a bench -- "Alice left Groß's 17 on the
+    bench" is the week's story as much as anyone's haul -- and ties go to
+    the player who counted for more managers. A blank is a player who
+    counted for at least one manager and scored no more than
+    `STANDOUT_BLANK_MAX_POINTS`; the costliest is the one that counted for
+    the most managers, which in draft, where a player has one owner, leaves
+    the lowest score first. A player whose club had no fixture is no blank:
+    there was nothing to play.
+
+    Two players are left out entirely. A draft pick the main game could not
+    be matched to carries a false zero rather than a score (`unmatched`),
+    and a starter who never played and was replaced from the bench counted
+    for nobody, so he is neither a scorer's owner nor a blank. Who a player
+    counted for is held by position in `managers`, never by name: two
+    managers can share one.
+    """
+    cohort = [
+        RecapStandoutManager(manager_key=recap_manager_key(m), manager_name=m["manager_name"])
+        for m in managers
+    ]
+    players: dict[_StandoutKey, RecapManagerPlayer] = {}
+    counted: dict[_StandoutKey, list[int]] = {}
+    benched: dict[_StandoutKey, list[int]] = {}
+    for position, m in enumerate(managers):
+        for p in m.get("squad", []):
+            if p["unmatched"]:
+                continue
+            key: _StandoutKey = p["code"] if p["code"] is not None else (p["name"], p["team"])
+            players.setdefault(key, p)
+            if p["auto_sub_out"]:
+                continue
+            (counted if p["contributed"] else benched).setdefault(key, []).append(position)
+
+    def by_name(positions: Sequence[int]) -> list[RecapStandoutManager]:
+        return sorted((cohort[i] for i in positions), key=lambda m: m["manager_name"])
+
+    def row(key: _StandoutKey, *, blank: bool) -> RecapStandoutPlayer:
+        p = players[key]
+        counted_at = counted.get(key, [])
+        standout = RecapStandoutPlayer(
+            id=p.get("main_id"),
+            code=usable_code(p["code"]),
+            name=p["name"],
+            team=p["team"],
+            team_name=p.get("team_name"),
+            position=p["position"],
+            points=p["points"],
+            red_cards=p["red_cards"],
+            counted_for=by_name(counted_at),
+            benched_by=by_name(benched.get(key, [])),
+            text="",
+        )
+        standout["text"] = format_standout_player(
+            standout,
+            managers=len(managers),
+            not_counted=by_name([i for i in range(len(managers)) if i not in counted_at]),
+            blank=blank,
+        )
+        return standout
+
+    def points(key: _StandoutKey) -> int:
+        return players[key]["points"]
+
+    def counted_for(key: _StandoutKey) -> int:
+        return len(counted.get(key, []))
+
+    def tie_break(key: _StandoutKey) -> tuple[str, str]:
+        return players[key]["name"], players[key]["team"]
+
+    scorers = sorted(
+        (key for key in players if (key in counted or key in benched) and points(key) > STANDOUT_BLANK_MAX_POINTS),
+        key=lambda key: (-points(key), -counted_for(key), *tie_break(key)),
+    )
+    blanks = sorted(
+        (
+            key for key in counted
+            if points(key) <= STANDOUT_BLANK_MAX_POINTS and players[key].get("had_fixture", True)
+        ),
+        key=lambda key: (-counted_for(key), points(key), *tie_break(key)),
+    )
+    return RecapStandoutPlayers(
+        managers=len(managers),
+        top_scorers=[row(key, blank=False) for key in scorers[:_STANDOUT_SCORERS]],
+        top_scorers_omitted=_level_beyond(scorers, _STANDOUT_SCORERS, points),
+        blanks=[row(key, blank=True) for key in blanks[:_STANDOUT_BLANKS]],
+        blanks_omitted=_level_beyond(blanks, _STANDOUT_BLANKS, lambda key: (counted_for(key), points(key))),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Draft data collection
 # ---------------------------------------------------------------------------
 
@@ -2316,6 +2448,7 @@ async def collect_draft_recap_data(
                     team_name=draft_team.name if draft_team else None,
                     position=pos_name,
                     code=draft_to_main_code.get(draft_elem_id),
+                    main_id=main_id,
                     points=pts,
                     is_captain=False,
                     is_vice_captain=False,
@@ -2535,6 +2668,7 @@ async def collect_draft_recap_data(
         fpl_format="draft",
         managers=managers,
         awards=awards,
+        standout_players=find_standout_players(managers),
         league_id=draft_league_id,
         standings_cohort=cohort,
         # `league_entries` is the league's own member list, so a standings

@@ -15,7 +15,7 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from fpl_cli.cli._league_recap_data import RecapReconciliationError
+from fpl_cli.cli._league_recap_data import RecapReconciliationError, find_standout_players
 from fpl_cli.cli._league_recap_history import (
     DETAIL_FLAG,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
@@ -78,7 +78,13 @@ from fpl_cli.services.league_history_notes import (
     SeasonPhase,
     build_notes_pack,
 )
-from tests.conftest import make_fixture, make_gameweek_status, make_history_row, make_player
+from tests.conftest import (
+    assert_player_rows_carry_code,
+    make_fixture,
+    make_gameweek_status,
+    make_history_row,
+    make_player,
+)
 
 SEASON = "2026-27"
 CAPTURED_AT = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
@@ -7203,3 +7209,104 @@ class TestRecapTitleThroughTheCommand:
         assert envelope["metadata"]["synthesis_summary"] == (
             "## Chaos and chips\n\nAlice ran away with it."
         )
+
+
+# ---------------------------------------------------------------------------
+# Standout players on every surface (issue #455)
+# ---------------------------------------------------------------------------
+
+
+def _scorer(name: str, code: int, points: int, club: str, **kwargs: Any) -> RecapManagerPlayer:
+    """A squad row with the main id a collector records beside its code."""
+    row = _player(name=name, code=code, points=points, **kwargs)
+    row["team_name"] = club
+    row["main_id"] = kwargs.get("main_id", 300 + code % 100)
+    return row
+
+
+class TestStandoutPlayersSurfaces:
+    """The section the collectors build reaches the console, the saved
+    report, the editorial's prompt and `--format json`, every one of them
+    from the same rows."""
+
+    _HAALAND = "Haaland (Manchester City) scored 17 points for Alice; Bob [bold] left him on the bench."
+    _SALAH = "Salah (Liverpool) managed 2 points for Alice and Bob [bold]."
+
+    def _data(self, *, fpl_format: str = "classic") -> LeagueRecapData:
+        managers = [
+            _manager(name="Alice", entry_id=1, squad=[
+                _scorer("Haaland", 223_094, 17, "Manchester City"),
+                _scorer("Salah", 118_748, 2, "Liverpool"),
+            ]),
+            # Square brackets in a name are what Rich would read as markup.
+            _manager(name="Bob [bold]", entry_id=2, gw_rank=2, squad=[
+                _scorer("Haaland", 223_094, 17, "Manchester City", contributed=False),
+                _scorer("Salah", 118_748, 2, "Liverpool"),
+            ]),
+        ]
+        data = _recap_data(
+            managers=managers, fpl_format=fpl_format,
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob [bold]", 2, 40, 280)),
+        )
+        # What both collectors do beside the awards; the stubbed one here
+        # hands back whatever the test built.
+        data["standout_players"] = find_standout_players(managers)
+        return data
+
+    def test_json_metadata_carries_the_section_with_code_beside_every_id(self):
+        result = _invoke_recap(self._data(), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        section = json.loads(result.stdout)["metadata"]["standout_players"]
+        rows = assert_player_rows_carry_code(section, command="league-recap")
+        assert {row["name"] for row in rows} == {"Haaland", "Salah"}
+        haaland = section["top_scorers"][0]
+        assert (haaland["id"], haaland["code"]) == (394, 223_094)
+        assert haaland["counted_for"] == [{"manager_key": 1, "manager_name": "Alice"}]
+        assert haaland["benched_by"] == [{"manager_key": 2, "manager_name": "Bob [bold]"}]
+        assert haaland["text"] == self._HAALAND
+        assert section["blanks"][0]["text"] == self._SALAH
+
+    def test_json_metadata_is_null_when_no_section_was_built(self):
+        result = _invoke_recap(_recap_data(), ["--format", "json"])
+
+        assert json.loads(result.stdout)["metadata"]["standout_players"] is None
+
+    def test_the_console_prints_both_lists_with_names_escaped(self):
+        result = _invoke_recap(self._data())
+
+        assert result.exit_code == 0, result.output
+        out = result.stdout.replace("\n", "")
+        assert "Standout Players:" in out
+        assert "Top scorers" in out
+        assert self._HAALAND in out
+        assert "Blanks that counted for the most managers" in out
+        assert self._SALAH in out
+
+    def test_a_draft_console_lists_blanks_lowest_first(self):
+        result = _invoke_recap(
+            self._data(fpl_format="draft"), ["--draft"], settings={"fpl": {"draft_league_id": 42}},
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Blanks that counted, lowest first" in result.stdout
+
+    def test_the_saved_report_carries_the_section(self, tmp_path: Path):
+        result = _invoke_recap(self._data(), ["--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        content = _recap_report(tmp_path, 5)
+        assert "# Standout Players" in content
+        assert f"- {self._HAALAND}" in content
+        assert f"- {self._SALAH}" in content
+
+    def test_the_editorial_prompt_carries_the_section(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+
+        result = _invoke_recap(self._data(), ["--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "## Standout Players" in user_prompt
+        assert f"- {self._HAALAND}" in user_prompt
+        assert f"- {self._SALAH}" in user_prompt

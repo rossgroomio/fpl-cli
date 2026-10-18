@@ -34,6 +34,8 @@ from fpl_cli.cli._json import (
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     PriorSeasonsSummary,
+    standout_blanks_heading,
+    standout_players_lines,
     summarise_prior_seasons,
 )
 from fpl_cli.cli._synthesis_retry import synthesise_with_retry
@@ -630,6 +632,11 @@ def league_recap_command(
                             _serialize_fines_tally(capture_result.fines_tally)
                             if capture_result.fines_tally is not None else None
                         ),
+                        # The week's top scorers and costliest blanks, every
+                        # player row with the main game's `id` and the shared
+                        # `code` beside it, and each line's sentence as `text`
+                        # (#455). Not in `data`, whose rows are the ledger's.
+                        "standout_players": collected_data.get("standout_players"),
                         "synthesis_summary": collected_data.get("synthesis_summary"),
                         # Drafts judged (1, or 2 after a retry), which of them
                         # shipped -- a retry only ships when it ranks better --
@@ -864,6 +871,22 @@ def _render_console_highlights(
     if fmt == "draft" and awards.get("most_contested"):
         console.print(f"[yellow]Most Contested:[/yellow] {awards['most_contested']['detail']}")
 
+    # Standout players (#455), the same sentences the report and the
+    # editorial get. Escaped: they carry manager names, which are
+    # user-supplied and can hold square brackets Rich would read as markup.
+    standouts = data.get("standout_players")
+    scorer_lines, blank_lines = standout_players_lines(standouts) if standouts else ([], [])
+    if scorer_lines or blank_lines:
+        console.print("\n[bold]Standout Players:[/bold]")
+        if scorer_lines:
+            console.print("  [dim]Top scorers[/dim]")
+            for line in scorer_lines:
+                console.print(f"  [green]{rich_escape(line)}[/green]")
+        if blank_lines:
+            console.print(f"  [dim]{standout_blanks_heading(fmt)}[/dim]")
+            for line in blank_lines:
+                console.print(f"  [red]{rich_escape(line)}[/red]")
+
     # Fines
     fines = data.get("fines", [])
     if fines:
@@ -1035,6 +1058,7 @@ async def _recap_llm_summarise(
         format_recap_prior_seasons_context,
         format_recap_season_fines_context,
         format_recap_standings_context,
+        format_recap_standout_players_context,
         format_recap_transfers_context,
         format_recap_waivers_context,
         get_recap_synthesis_prompt,
@@ -1048,6 +1072,7 @@ async def _recap_llm_summarise(
 
     awards_text = format_recap_awards_context(collected_data)
     standings_text = format_recap_standings_context(collected_data)
+    standout_players_text = format_recap_standout_players_context(collected_data)
     # One walk of the squads/transfers, shared by both sections that need it.
     player_clubs = collect_player_clubs(collected_data)
     captains_text = format_recap_captains_context(collected_data, player_clubs)
@@ -1075,6 +1100,7 @@ async def _recap_llm_summarise(
         player_clubs_text=player_clubs_text,
         league_history_text=league_history_text,
         prior_seasons_text=prior_seasons_text,
+        standout_players_text=standout_players_text,
         is_bgw=is_bgw,
         is_dgw=is_dgw,
         season_length=season_length,

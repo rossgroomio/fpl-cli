@@ -207,6 +207,7 @@ Which namespace each payload's `id` is in, and whether the row carries `code`:
 | `price-history` | `data[]` | main, named `element` | yes, from the trend data's own player list for the same season; null for a player missing from it |
 | `history` | `data[]` | no id | yes |
 | `league-recap` | `squad[]`, `captain`, `vice_captain`, `transfers[]`, `transactions[]`, `lost_claims[]`, `fines[].players[]` | no id | yes (`code`, `player_in_code`, `player_out_code`) |
+| `league-recap` | `metadata.standout_players.top_scorers[]`, `.blanks[]` | main, under `--draft` too | yes |
 | `intel`, `intel show`, `intel resolve` | player notes, `intel resolve` rows | no id | yes, null where unresolved |
 | `squad grid` (classic and `--draft`) | `data[]` | no id (name, position, club) | no |
 | `squad` | `position_analysis.*.players[]`, `injury_risks[]`, `form_analysis.*[]` | no id | no |
@@ -1108,6 +1109,27 @@ cover the same managers only Best is reported: the same fact under two headings 
 
 **Standings movement:** position changes derived from point differentials, per-manager highlights. Both tables — this gameweek's and the one before it — are ranked the same way, so managers level on points share a place on each and no arrow is reported for a tie nobody left.
 
+**Standout players:** the week's top scorers and costliest blanks among the players in the
+league's squads, each with the managers he counted for
+([#455](https://github.com/rossgroomio/fpl-cli/issues/455)). Nothing extra is fetched: the section
+reads the same squads and live points the Biggest Bench award does, so a figure here cannot
+disagree with an award. Points are the player's own, before any captaincy. The top scorers are the
+five highest-scoring players in any manager's squad, a player left on a bench included ("Groß
+(Brighton) scored 17 points, but Alice left him on the bench."), ties going to the one who counted
+for more managers; the blanks are up to three players who counted for someone and scored 2 points
+or fewer, the one that counted for the most managers first and then the lowest, so in draft, where
+a player has one owner, simply the lowest. A player whose club had no fixture is no blank, a starter
+who never played and was replaced from the bench counted for nobody, and a draft pick the main game
+could not be matched to is left out, since its zero is not a score. Each line names the managers
+where the list is short enough to be the story and counts them where it is not: "for Dan and Eve",
+"for 9 of the 12 managers, everyone but Alice, Bob and Cam", "for 6 of the 12 managers", so a
+template player in a big league is never a roll call. Where the cap cuts through players level on
+the last one's score, a closing line counts them ("2 more players also scored 9 points."). The
+same sentences print on the console under `Standout Players:`, in a `# Standout Players` section
+of the saved report after the standings, and, with `--summarise`, in a `## Standout Players`
+section of the editorial's prompt, which carries one line saying what the figures are and no rule
+of its own. Nothing of it reaches the ledger.
+
 **Fines:** evaluates fines for every manager (not just you) when configured and records the
 ruling against the gameweek. A backfilled gameweek is ruled too — the detailed replay rules every configured rule, the coarse tier rules the ones
 derivable from cohort points (`last-place`, `below-threshold`) and records that it could not
@@ -1197,7 +1219,13 @@ gameweek with a file on disk appears there with a status, a damaged one as
 `readable: false`, so an empty list means only that nothing has been captured yet), `season_phase`, `notes_pack`
 (every entry, including those below their reporting minimum and every nonzero season
 count whether or not it grew this gameweek), `season_fines` (the whole
-season tally, emitted every week regardless of the milestone gate the printed surfaces use), `synthesis_summary` (with
+season tally, emitted every week regardless of the milestone gate the printed surfaces use), `standout_players`
+(`managers`, the `top_scorers` and `blanks` lists, and `top_scorers_omitted` / `blanks_omitted`
+counting the players the cap left out level with the last one listed; each player row carries
+the main game's `id` (a draft recap's too) with `code` beside it, `name`, `team`, `team_name`,
+`position`, `points`, `red_cards`, `counted_for` and `benched_by` as `{manager_key, manager_name}`
+lists, and `text`, the sentence the other surfaces print; `null` only on data built without it),
+`synthesis_summary` (with
 `--summarise`, as it reaches the saved report — the model's heading already demoted beneath the
 report's title or dropped, see [Report title](#league-recap)), `synthesis_attempts` (how many answers were
 judged: 1, or 2 after a retry), `synthesis_shipped_attempt` (which of them shipped — a retry only
