@@ -2127,6 +2127,52 @@ class TestDraftPointInTimeReconstruction:
         assert m["gw_points"] == 52
         assert m["gross_points"] == 52
 
+    @pytest.mark.parametrize(
+        ("league", "expected"),
+        [
+            pytest.param(
+                {"name": "Draft League", "drafts": [
+                    {"id": 901, "event": 1, "draft_completed": True},
+                    {"id": 902, "event": 20, "draft_completed": False},
+                ]},
+                [
+                    {"id": 901, "event": 1, "draft_completed": True},
+                    {"id": 902, "event": 20, "draft_completed": False},
+                ],
+                id="verbatim",
+            ),
+            pytest.param(
+                {"name": "Draft League", "drafts": [{"id": 901}, "unreadable"]},
+                [{"id": 901}, "unreadable"],
+                id="unrecognised-entries-kept-for-the-snapshot-to-report",
+            ),
+            pytest.param({"name": "Draft League"}, None, id="absent"),
+            pytest.param({"name": "Draft League", "drafts": None}, None, id="null"),
+        ],
+    )
+    async def test_league_drafts_are_handed_on_for_the_picks_snapshot(self, league, expected):
+        """#461: the snapshot reads `league.drafts` off the same league
+        details the recap came from, rather than fetching them again, and
+        verbatim: a missing list or an entry it cannot read is the snapshot's
+        to report, not this collector's to drop quietly."""
+        league_details = {
+            **self._league_details(
+                standings=[{"league_entry": 10, "event_total": 0, "total": 0}],
+                entries=[{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
+            ),
+            "league": league,
+        }
+        picks = {1: {"picks": [], "subs": []}}
+        client = self._make_draft_client(league_details, [], [], picks)
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=15, live_stats={},
+                players=[], teams={}, is_live_gw=False,
+            )
+
+        assert data["league_drafts"] == expected
+
     async def test_ae8_replay_leaves_total_and_position_unavailable(self):
         """Covers AE8: no ledger exists yet in Phase A, so a replay can never
         reconstruct a cumulative total or a league position for draft."""

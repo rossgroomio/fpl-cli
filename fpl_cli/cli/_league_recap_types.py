@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 from fpl_cli.api.fpl_draft import draft_claim_priority_rank
 from fpl_cli.season import TOTAL_GAMEWEEKS
@@ -732,6 +732,12 @@ class LeagueRecapData(TypedDict):
     # means it started at GW1, so there is nothing to offset or skip).
     league_id: NotRequired[int]
     league_start_event: NotRequired[int]
+    # Draft only: `league.drafts` from the league details, verbatim -- one
+    # entry per draft the league has scheduled or held. Read by the snapshot
+    # that keeps each held draft's picks before a redraft erases them from
+    # the API (#461). None when the details carry no such list; absent on
+    # classic.
+    league_drafts: NotRequired[list[Any] | None]
     # Every member of the league table, in standings order.
     standings_cohort: NotRequired[list[RecapStandingsEntry]]
     # The standings response reported members beyond the ones fetched (classic
