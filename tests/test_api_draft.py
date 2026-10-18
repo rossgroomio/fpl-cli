@@ -10,6 +10,7 @@ from fpl_cli.api.fpl_draft import (
     draft_player_team_id,
     is_accepted_transaction,
     is_denied_on_the_incoming_player,
+    is_processed_trade,
     match_draft_teams_to_main,
     match_draft_to_main,
     resolve_lost_claims,
@@ -239,6 +240,31 @@ class TestFPLDraftClientLeague:
 
             mock_get.assert_called_once_with("draft/12345/choices")
             assert result == response
+
+    @pytest.mark.asyncio
+    async def test_get_league_trades(self):
+        client = FPLDraftClient()
+        payload = {"trades": [{"id": 1, "state": "p", "tradeitem_set": []}]}
+
+        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = payload
+
+            result = await client.get_league_trades(12345)
+
+            mock_get.assert_called_once_with("draft/league/12345/trades")
+            assert result == payload
+
+
+class TestIsProcessedTrade:
+    """Only a processed trade moved players: `p` did, `v` (vetoed) did not, and
+    a code nobody has seen move players is not read as a move (#458)."""
+
+    @pytest.mark.parametrize(("state", "moved"), [("p", True), ("v", False), ("o", False), ("", False), (None, False)])
+    def test_only_a_processed_trade_moved_players(self, state, moved):
+        assert is_processed_trade({"state": state}) is moved
+
+    def test_a_row_without_a_state_is_not_processed(self):
+        assert is_processed_trade({}) is False
 
 
 class TestFPLDraftClientEntry:

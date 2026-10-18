@@ -6,6 +6,7 @@ import asyncio
 import functools
 import logging
 import re
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -24,8 +25,10 @@ from fpl_cli.cli._fines_config import parse_fines_config
 from fpl_cli.cli._helpers import _live_player_stats
 
 if TYPE_CHECKING:
+    from fpl_cli.api.fpl_draft import FPLDraftClient
     from fpl_cli.models.player import Player
     from fpl_cli.models.team import Team
+    from fpl_cli.services.draft_provenance import DraftInForce, DraftPlayerHistory
 
     class ManagerPicksClient(Protocol):
         """The subset of FPLClient that _fetch_all_manager_data calls.
@@ -59,6 +62,7 @@ from fpl_cli.cli._league_recap_types import (
     STANDOUT_PPG_FROM_GW,
     STANDOUT_PPG_MIN_APPEARANCES,
     LeagueRecapData,
+    RecapAcquisition,
     RecapAwardEntry,
     RecapAwards,
     RecapDraftLostClaim,
@@ -82,6 +86,7 @@ from fpl_cli.cli._league_recap_types import (
 )
 from fpl_cli.models.player import usable_code
 from fpl_cli.services.fixture_predictions import had_fixture
+from fpl_cli.services.league_history_drafts import draft_snapshot_path
 from fpl_cli.services.player_clubs import gameweek_club
 from fpl_cli.services.scoring.constants import VALID_FORMATIONS
 
@@ -2080,6 +2085,7 @@ def find_standout_players(
     gameweek: int,
     live: bool,
     whole_league: bool,
+    league_names: Sequence[str] | None = None,
 ) -> RecapStandoutPlayers:
     """The week's top scorers and costliest blanks in the league's squads,
     with whose team each one counted for (issue #455).
@@ -2110,13 +2116,20 @@ def find_standout_players(
     and a starter who never played and was replaced from the bench counted
     for nobody, so he is neither a scorer's owner nor a blank. Who a player
     counted for is held by position in `managers`, never by name: two
-    managers can share one.
+    managers can share one. `league_names` are every member's display name,
+    fetched or not, which decides what a line may say about a trade
+    counterparty; without it only `managers` are counted.
     """
     order = standout_blanks_order(fpl_format, gameweek, live=live)
     cohort = [
         RecapStandoutManager(manager_key=recap_manager_key(m), manager_name=m["manager_name"])
         for m in managers
     ]
+    # Display names more than one manager has, which a line cannot use to say
+    # who a player came from (#458). Over the whole league when it is given:
+    # a trade counterparty can be a manager whose picks were not fetched.
+    name_counts = Counter(league_names if league_names is not None else (m["manager_name"] for m in managers))
+    shared_names = frozenset(name for name, n in name_counts.items() if n > 1)
     players: dict[_StandoutKey, RecapManagerPlayer] = {}
     counted: dict[_StandoutKey, list[int]] = {}
     benched: dict[_StandoutKey, list[int]] = {}
@@ -2157,12 +2170,17 @@ def find_standout_players(
             benched_by=by_name(benched.get(key, [])),
             text="",
         )
+        if fpl_format == "draft":
+            # Present on every draft row, null where the collector could not
+            # establish it, so a consumer reads one shape (#458).
+            standout["acquisition"] = p.get("acquisition")
         standout["text"] = format_standout_player(
             standout,
             managers=len(managers),
             not_counted=by_name([i for i in range(len(managers)) if i not in counted_at]),
             whole_league=whole_league,
             blank=blank,
+            shared_names=shared_names,
         )
         return standout
 
@@ -2221,7 +2239,7 @@ def find_standout_players(
 # ---------------------------------------------------------------------------
 
 
-def _draft_manager_name(entry_info: dict[str, Any]) -> str:
+def _draft_manager_name(entry_info: Mapping[str, Any]) -> str:
     """Display name for one draft league entry, falling back to the team name.
 
     An unclaimed team has no player name at all, so the entry name is the only
@@ -2335,6 +2353,120 @@ def _resolve_draft_txn_sides(
     )
 
 
+def _recap_acquisition(
+    history: DraftPlayerHistory,
+    draft: DraftInForce | None,
+    people: Mapping[int, RecapStandoutManager],
+) -> RecapAcquisition | None:
+    """A player's latest link as the recap carries it, managers named by the
+    league's own entries (#458). None for a chain that does not end on a
+    link that brought him to his owner, which a replay never produces."""
+    step = history.latest
+    if step.kind == "release":
+        return None
+    pick = step.pick
+    drafted = step.kind == "draft"
+    return RecapAcquisition(
+        kind=step.kind,
+        gameweek=step.gameweek,
+        # The draft's own, for a pick whose round is lost as much as for one
+        # that is known: it is still that draft's.
+        draft_id=draft.id if drafted and draft else None,
+        draft_gameweek=draft.gameweek if drafted and draft else None,
+        redraft=bool(drafted and draft and draft.redraft),
+        round_unknown=drafted and pick is None,
+        round=pick.round if pick else None,
+        pick=pick.pick if pick else None,
+        overall_pick=pick.overall if pick else None,
+        auto_pick=pick.auto if pick else None,
+        drafter=people.get(step.entry) if drafted else None,
+        from_manager=people.get(step.from_entry) if step.from_entry is not None else None,
+    )
+
+
+async def _attach_draft_acquisitions(
+    draft_client: FPLDraftClient,
+    *,
+    league_id: int,
+    league_drafts: Sequence[Any] | None,
+    transactions: Sequence[Mapping[str, Any]],
+    managers: Sequence[RecapManagerEntry],
+    league_entries: Sequence[Mapping[str, Any]],
+    main_players: Mapping[int, Player],
+    gameweek: int,
+    season: str,
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    """Set each draft squad row's `acquisition`: how that player came to the
+    manager whose squad he is in, as of `gameweek` (#458).
+
+    The replay of the league's draft, transactions and trades
+    (`services/draft_provenance.py`) is held to the squads these managers
+    actually fielded, so a row is only ever labelled from a history that ends
+    where the gameweek did. The draft's picks come from the API's choices
+    feed, or, once it serves another draft, from the snapshot kept under
+    `season` (#461); where neither has them, who drafted whom is rebuilt from
+    the squads at the draft's gameweek and the lines name no round.
+
+    Returns `(problem, notice, choices)`. A problem says why the history could
+    not be shown complete: every row's `acquisition` stays None, the lines read
+    without it, and the caller says so; a history that cannot be shown
+    complete is never partly used. A notice says the rounds are unknown, and
+    the rows are labelled all the same. `choices` is the draft API's choices
+    response the replay read, if it came back, for the picks snapshot (#461)
+    to save instead of asking for it again; `league_drafts` None means the
+    league details carried no list, which the replay reports as such.
+    """
+    from fpl_cli.services.draft_provenance import read_draft_logs, replay_draft_history
+
+    observed: dict[int, int] = {}
+    for m in managers:
+        for row in m["squad"]:
+            element = row.get("draft_element")
+            if element is not None and m["entry_id"]:
+                observed[element] = m["entry_id"]
+    choices: dict[str, Any] | None = None
+    try:
+        logs = await read_draft_logs(
+            draft_client, league_id,
+            drafts=league_drafts, transactions=transactions, season=season,
+            entry_ids=[e["entry_id"] for e in league_entries if isinstance(e.get("entry_id"), int)],
+            gameweek=gameweek,
+        )
+        choices = logs.choices_payload
+        provenance = replay_draft_history(logs, gameweek, main_players=main_players, observed=observed)
+    except (KeyError, TypeError, ValueError, AttributeError) as e:
+        logger.debug("Draft provenance could not be replayed", exc_info=True)
+        return f"the league's history could not be replayed ({type(e).__name__})", None, choices
+    if provenance.problem:
+        # Shown by the caller; a warning here would print it a second time.
+        logger.debug("Draft provenance unavailable: %s", provenance.problem)
+        return provenance.problem, None, choices
+
+    people = {
+        entry["entry_id"]: RecapStandoutManager(manager_key=entry["id"], manager_name=_draft_manager_name(entry))
+        for entry in league_entries
+        if isinstance(entry.get("entry_id"), int) and isinstance(entry.get("id"), int)
+    }
+    for m in managers:
+        for row in m["squad"]:
+            element = row.get("draft_element")
+            history = provenance.players.get(element) if element is not None else None
+            row["acquisition"] = _recap_acquisition(history, provenance.draft, people) if history else None
+    draft = provenance.draft
+    if draft is not None and not draft.rounds_known:
+        path = draft_snapshot_path(season, league_id, draft.id)
+        notice = (
+            f"The picks of the GW{draft.gameweek} draft are held by neither the draft API nor a saved "
+            f"snapshot, so the Standout Players lines say who drafted each player but not in which round: "
+            f"each manager's drafted set was rebuilt from their GW{draft.gameweek} squad and the moves made "
+            f"before it. If you have a copy of the choices response for draft {draft.id}, saving it at {path} "
+            "gives the rounds."
+        )
+        logger.debug("Draft rounds unknown: %s", notice)
+        return None, notice, choices
+    return None, None, choices
+
+
 async def collect_draft_recap_data(
     settings: dict[str, Any],
     gw: int,
@@ -2346,6 +2478,7 @@ async def collect_draft_recap_data(
     bgw_team_ids: frozenset[int] = frozenset(),
     players_with_fixture: frozenset[int] | None = None,
     gameweek_clubs: Mapping[int, int] | None = None,
+    provenance_season: str | None = None,
 ) -> LeagueRecapData:
     """Fetch all managers' draft picks and compute league-wide recap data.
 
@@ -2367,6 +2500,14 @@ async def collect_draft_recap_data(
     translated to the main game's by club code (#423), so either is read
     against `teams` in the right numbering. A club the main game does not
     list is recorded as no club, and logged.
+
+    `provenance_season` is given for the gameweek being recapped only, never
+    a backfill's replays (#458): it reads the draft's choices and the league's
+    trades, replays them with the transaction log already fetched (falling
+    back on the picks snapshot kept under that season where the API no longer
+    serves the draft), and sets each squad row's `acquisition` to how that
+    player came to the manager. Where the replay cannot be shown to be
+    complete, no row carries one and `draft_provenance_problem` says why.
     """
     from fpl_cli.api.fpl_draft import (
         FPLDraftClient,
@@ -2544,6 +2685,8 @@ async def collect_draft_recap_data(
                         bgw_team_ids=bgw_team_ids,
                     ),
                 ))
+                if provenance_season is not None:
+                    squad[-1]["draft_element"] = draft_elem_id
 
             best_xi = best_xi_selection(squad, captain_played=False)
 
@@ -2707,6 +2850,14 @@ async def collect_draft_recap_data(
         for i, m in enumerate(managers):
             m["gw_rank"] = i + 1
 
+        provenance_problem, provenance_notice, draft_choices = (
+            await _attach_draft_acquisitions(
+                draft_client, league_id=draft_league_id, league_drafts=league_drafts,
+                transactions=all_txns, managers=managers, league_entries=league_entries,
+                main_players=matched_main_players, gameweek=gw, season=provenance_season,
+            ) if provenance_season is not None else (None, None, None)
+        )
+
         # A live capture already carries the league's own rank (set above).
         # A replay has no cumulative total to rank on at all -- draft has no
         # ledger in Phase A -- so position stays unavailable rather than
@@ -2742,7 +2893,7 @@ async def collect_draft_recap_data(
         _compute_standings_movement(managers, league_rows, allow_standings_fallback=is_live_gw)
     awards = _compute_shared_awards(managers, format_name="draft", total_managers=len(standings))
 
-    return LeagueRecapData(
+    data = LeagueRecapData(
         gameweek=gw,
         league_name=league_name,
         fpl_format="draft",
@@ -2759,3 +2910,10 @@ async def collect_draft_recap_data(
         # again there: the same read the rest of this recap came from.
         league_drafts=league_drafts,
     )
+    if draft_choices is not None:
+        data["draft_choices"] = draft_choices
+    if provenance_problem:
+        data["draft_provenance_problem"] = provenance_problem
+    if provenance_notice:
+        data["draft_provenance_notice"] = provenance_notice
+    return data

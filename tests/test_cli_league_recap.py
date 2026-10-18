@@ -7559,7 +7559,7 @@ class TestDraftPicksSnapshot:
     @staticmethod
     def _invoke(
         league_drafts: list[dict[str, Any]], choices: dict[str, Any], args: list[str],
-        *, gw: int = 5,
+        *, gw: int = 5, held: dict[str, Any] | None = None,
     ) -> tuple[Any, MagicMock]:
         data = _recap_data(
             managers=[_manager(league_entry_id=10)],
@@ -7568,6 +7568,8 @@ class TestDraftPicksSnapshot:
             fpl_format="draft",
         )
         data["league_drafts"] = league_drafts
+        if held is not None:
+            data["draft_choices"] = held
         draft_client = _draft_feed_client()
         draft_client.get_draft_choices = AsyncMock(return_value=choices)
         result = _invoke_recap(
@@ -7592,6 +7594,16 @@ class TestDraftPicksSnapshot:
         # finds its partition new and says where it is recording.
         assert "Recording league history to" in stderr
         assert _store("draft").captured_gameweeks() == [5]
+
+    def test_choices_the_recap_already_read_are_saved_without_asking_again(self):
+        """The provenance replay reads the same endpoint, so the snapshot takes
+        its response rather than making the request a second time."""
+        result, draft_client = self._invoke([self._DRAFT], self._CHOICES, [], held=self._CHOICES)
+
+        assert result.exit_code == 0, result.output
+        draft_client.get_draft_choices.assert_not_awaited()
+        stored = json.loads(self._snapshot_path().read_text(encoding="utf-8"))
+        assert stored == {**self._CHOICES, "league_draft": self._DRAFT}
 
     def test_a_replay_of_an_earlier_gameweek_saves_them_too(self):
         result, _ = self._invoke([self._DRAFT], self._CHOICES, ["-g", "3"], gw=3)
@@ -7650,3 +7662,162 @@ class TestDraftPicksSnapshot:
         assert result.exit_code == 0, result.output
         draft_client.get_draft_choices.assert_not_awaited()
         assert json.loads(result.stdout)["metadata"]["draft_picks_saved"] == []
+
+
+# ---------------------------------------------------------------------------
+# How a standout draft player came to his manager (issue #458)
+# ---------------------------------------------------------------------------
+
+
+class TestStandoutAcquisitionSurfaces:
+    """The command carries how each standout draft player came to his manager
+    to every surface from the same rows -- console, saved report, editorial
+    prompt and `--format json` -- and says once, on both channels, when the
+    league's history could not be shown to be complete."""
+
+    _SETTINGS = {"fpl": {"draft_league_id": 42}}
+    _PICK = {
+        "kind": "draft", "gameweek": 1, "draft_id": 7, "draft_gameweek": 1, "redraft": False,
+        "round_unknown": False, "round": 1, "pick": 3, "overall_pick": 3, "auto_pick": False,
+        "drafter": {"manager_key": 10, "manager_name": "Alice"}, "from_manager": None,
+    }
+    _PICKUP = {
+        "kind": "waiver", "gameweek": 4, "draft_id": None, "draft_gameweek": None, "redraft": False,
+        "round_unknown": False, "round": None, "pick": None, "overall_pick": None, "auto_pick": None,
+        "drafter": None, "from_manager": None,
+    }
+    _HAALAND = "Haaland (Manchester City) scored 17 points for Alice, who drafted him in the first round."
+    _SALAH = "Salah (Liverpool) managed 2 points for Bob, who picked him up on waivers in GW4."
+
+    def _data(self, *, acquired: bool = True, **kwargs: Any) -> LeagueRecapData:
+        def row(name: str, code: int, points: int, club: str, how: Any, **extra: Any) -> RecapManagerPlayer:
+            player = _scorer(name, code, points, club, **extra)
+            if acquired:
+                player["acquisition"] = how  # type: ignore[typeddict-item]
+            return player
+
+        managers = [
+            _manager(name="Alice", entry_id=1, league_entry_id=10, squad=[
+                row("Haaland", 223_094, 17, "Manchester City", self._PICK),
+            ]),
+            _manager(name="Bob", entry_id=2, league_entry_id=11, gw_rank=2, squad=[
+                row("Salah", 118_748, 2, "Liverpool", self._PICKUP, draft_rank=40, points_per_game=5.0, appearances=18),
+            ]),
+        ]
+        data = _recap_data(
+            managers=managers, fpl_format="draft",
+            cohort=_cohort((10, "Alice", 1, 60, 300), (11, "Bob", 2, 40, 280)), **kwargs,
+        )
+        return data
+
+    def _run(self, data: LeagueRecapData, args: list[str] | None = None, **kwargs: Any):
+        return _invoke_recap(data, ["--draft", *(args or [])], settings=self._SETTINGS, **kwargs)
+
+    def test_the_json_rows_carry_the_acquisition_beside_id_and_code(self):
+        result = self._run(self._data(), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        section = json.loads(result.stdout)["metadata"]["standout_players"]
+        assert_player_rows_carry_code(section, command="league-recap")
+        haaland, salah = section["top_scorers"][0], section["blanks"][0]
+        assert (haaland["id"], haaland["code"]) == (394, 223_094)
+        assert haaland["text"] == self._HAALAND
+        assert haaland["acquisition"] == self._PICK
+        assert salah["text"] == self._SALAH
+        assert salah["acquisition"] == self._PICKUP
+        assert json.loads(result.stdout)["metadata"]["warnings"] == []
+
+    def test_the_console_the_report_and_the_prompt_say_it_in_the_same_words(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.chdir(tmp_path)
+
+        result = self._run(self._data(), ["--save", "--output", str(tmp_path), "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        out = result.stdout.replace("\n", "")
+        assert self._HAALAND in out and self._SALAH in out
+        report = (tmp_path / season_label() / "gw5-league-recap-draft.md").read_text(encoding="utf-8")
+        assert f"- {self._HAALAND}" in report and f"- {self._SALAH}" in report
+        assert "the latest way he joined that manager's squad as of this gameweek" in report
+        prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert f"- {self._HAALAND}" in prompt and "the latest way he joined that manager's squad" in prompt
+
+    def test_a_history_that_could_not_be_shown_complete_is_said_on_both_channels_and_the_lines_read_as_before(self):
+        data = self._data(acquired=False)
+        data["draft_provenance_problem"] = "the history ends with 2 players owned differently from FPL's own ownership list"
+
+        result = self._run(data, ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        stderr = " ".join(result.stderr.split())
+        assert "cannot say how each player came to his manager" in stderr
+        assert "owned differently from FPL's own ownership list" in stderr
+        payload = json.loads(result.stdout)
+        (warning,) = [w for w in payload["metadata"]["warnings"] if w["code"] == "draft_provenance_unavailable"]
+        assert "owned differently from FPL's own ownership list" in warning["message"]
+        haaland = payload["metadata"]["standout_players"]["top_scorers"][0]
+        assert haaland["acquisition"] is None
+        assert haaland["text"] == "Haaland (Manchester City) scored 17 points for Alice."
+
+    def test_rounds_unknown_is_a_notice_on_both_channels_not_the_unavailable_warning(self):
+        """The configured league's case: the picks were lost, the drafters rebuilt."""
+        lost = {**self._PICK, "round_unknown": True, "round": None, "pick": None, "overall_pick": None, "auto_pick": None}
+        data = self._data()
+        data["managers"][0]["squad"][0]["acquisition"] = lost  # type: ignore[typeddict-item]
+        data["draft_provenance_notice"] = (
+            "The picks of the GW1 draft are held by neither the draft API nor a saved snapshot, so the "
+            "Standout Players lines say who drafted each player but not in which round."
+        )
+
+        result = self._run(data, ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert "but not in which round" in " ".join(result.stderr.split())
+        assert "cannot say how each player came to his manager" not in result.stderr
+        payload = json.loads(result.stdout)
+        codes = [w["code"] for w in payload["metadata"]["warnings"]]
+        assert "draft_rounds_unknown" in codes and "draft_provenance_unavailable" not in codes
+        haaland = payload["metadata"]["standout_players"]["top_scorers"][0]
+        assert haaland["text"] == "Haaland (Manchester City) scored 17 points for Alice, who drafted him."
+        assert haaland["acquisition"] == lost
+        assert haaland["acquisition"]["round_unknown"] is True
+
+    def test_the_editorial_prompt_then_differs_from_the_lines_without_provenance(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """What the vault A/B checks first: with the lines labelled, the draft prompt is
+        not the control's."""
+        monkeypatch.chdir(tmp_path)
+        lost = {**self._PICK, "round_unknown": True, "round": None, "pick": None, "overall_pick": None, "auto_pick": None}
+        labelled = self._data()
+        labelled["managers"][0]["squad"][0]["acquisition"] = lost  # type: ignore[typeddict-item]
+        self._run(labelled, ["--dry-run"])
+        variant = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        self._run(self._data(acquired=False), ["--dry-run"])
+        control = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+
+        assert variant != control
+        assert "- Haaland (Manchester City) scored 17 points for Alice, who drafted him." in variant
+
+    def test_only_the_recapped_gameweek_asks_for_it_never_a_backfills_replays(self):
+        client = _fpl_client()
+        client.get_gameweeks = AsyncMock(return_value=[
+            {"id": 4, "finished": True},
+            {"id": 5, "finished": True, "is_current": True},
+        ])
+        client.get_manager_history = AsyncMock(return_value={"current": []})
+        collector = AsyncMock(side_effect=[self._data(), _recap_data(fpl_format="draft", gameweek=4)])
+
+        result = self._run(self._data(), ["--backfill-detail"], client=client, collector=collector)
+
+        assert result.exit_code == 0, result.output
+        assert collector.await_count == 2
+        assert collector.call_args_list[0].kwargs["provenance_season"] == SEASON
+        assert "provenance_season" not in collector.call_args_list[1].kwargs
+
+    def test_a_classic_recap_asks_for_nothing_and_carries_no_acquisition(self):
+        collector = AsyncMock(return_value=_recap_data())
+
+        result = _invoke_recap(_recap_data(), ["--format", "json"], collector=collector)
+
+        assert result.exit_code == 0, result.output
+        assert "provenance_season" not in collector.call_args_list[0].kwargs
+        assert "draft_provenance_unavailable" not in result.stdout
+        assert all("acquisition" not in row for row in json.loads(result.stdout)["metadata"]["standout_players"]["top_scorers"])

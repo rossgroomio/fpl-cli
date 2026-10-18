@@ -67,9 +67,19 @@ RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
 # Also a collection warning: FPL has not finished processing the recapped
 # gameweek, so the league table it read may not have caught up (issue #424).
 RECAP_WARNING_LEAGUE_TABLES_UPDATING = "league_tables_updating"
+# A draft recap asked how each player came to his manager and could not say:
+# the league's draft, waiver and trade history was unreadable or did not agree
+# with FPL's own record of who owns whom (#458). The Standout Players lines
+# read without it.
+RECAP_WARNING_DRAFT_PROVENANCE_UNAVAILABLE = "draft_provenance_unavailable"
+# A draft recap could say who drafted each player but not in which round,
+# because the draft's picks are held by neither the API nor a snapshot and were
+# rebuilt from the squads (#458). A notice: the lines are labelled all the same.
+RECAP_WARNING_DRAFT_ROUNDS_UNKNOWN = "draft_rounds_unknown"
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse, TokenUsage
+    from fpl_cli.cli._league_recap_history import FetchDraftChoices
     from fpl_cli.cli._synthesis_retry import SynthesisAttempt
 
 logger = logging.getLogger(__name__)
@@ -317,6 +327,10 @@ def league_recap_command(
                         players=players, teams=teams, is_live_gw=is_live_gw,
                         bgw_team_ids=bgw_team_ids, players_with_fixture=with_fixture,
                         gameweek_clubs=gameweek_clubs,
+                        # For the gameweek being recapped only: the Standout
+                        # Players section it feeds is never built for a
+                        # backfill's replays, so they skip the reads (#458).
+                        provenance_season=season,
                     )
                 else:
                     collected_data = await collect_classic_recap_data(
@@ -358,6 +372,12 @@ def league_recap_command(
                 collected_data["league_tables_updating"] = still_processing
             collected_data["is_bgw"] = is_bgw
             collected_data["is_dgw"] = is_dgw
+            if provenance_problem := collected_data.get("draft_provenance_problem"):
+                error_console.print(
+                    f"[yellow]{_provenance_unavailable_message(provenance_problem)}[/yellow]"
+                )
+            if rounds_notice := collected_data.get("draft_provenance_notice"):
+                error_console.print(f"[yellow]{rich_escape(rounds_notice)}[/yellow]")
             # Standout players (#455), built here for the recapped gameweek
             # rather than in the collectors, so a backfill's replays -- which
             # only reach the ledger -- never pay for a section nobody reads.
@@ -491,7 +511,8 @@ def league_recap_command(
                 # Each held draft's picks, kept beside the ledger while the
                 # API still serves them (#461). A no-op off draft.
                 draft_picks = await capture_draft_picks(
-                    collected_data, season=season, fetch_choices=_fetch_draft_choices,
+                    collected_data, season=season,
+                    fetch_choices=_draft_choices_source(collected_data.get("draft_choices")),
                 )
             notes_pack = capture_result.notes_pack
 
@@ -719,6 +740,16 @@ def league_recap_command(
                                 "code": RECAP_WARNING_LEAGUE_TABLES_UPDATING,
                                 "message": _still_processing_message(gw, still_processing),
                             }] if still_processing else []
+                        ) + (
+                            [{
+                                "code": RECAP_WARNING_DRAFT_PROVENANCE_UNAVAILABLE,
+                                "message": _provenance_unavailable_message(provenance_problem),
+                            }] if provenance_problem else []
+                        ) + (
+                            [{
+                                "code": RECAP_WARNING_DRAFT_ROUNDS_UNKNOWN,
+                                "message": rounds_notice,
+                            }] if rounds_notice else []
                         ),
                         # Only set on this partition's very first capture --
                         # the one moment a container-local data directory is
@@ -764,6 +795,7 @@ def _standout_players_or_none(
         return find_standout_players(
             managers, fpl_format=data["fpl_format"], gameweek=gw,
             live=is_live_gw, whole_league=whole_league,
+            league_names=[c["manager_name"] for c in cohort] if cohort else None,
         )
     except (KeyError, TypeError, ValueError) as e:
         logger.debug("Standout players could not be built", exc_info=True)
@@ -779,6 +811,24 @@ async def _fetch_draft_choices(league_id: int) -> dict[str, Any]:
 
     async with FPLDraftClient() as draft_client:
         return await draft_client.get_draft_choices(league_id)
+
+
+def _draft_choices_source(held: dict[str, Any] | None) -> FetchDraftChoices:
+    """Where the picks snapshot gets the choices response: the one the recap's
+    provenance replay already read, so both see the same payload and the
+    request is made once; a fresh read when the replay had none."""
+    async def fetch(league_id: int) -> dict[str, Any]:
+        return held if held is not None else await _fetch_draft_choices(league_id)
+
+    return fetch
+
+
+def _provenance_unavailable_message(reason: str) -> str:
+    """The stderr line and the JSON warning's message, worded once for both."""
+    return (
+        "Standout Players cannot say how each player came to his manager, so its lines read"
+        f" without it: {reason}."
+    )
 
 
 def _still_processing_message(gw: int, reason: str) -> str:
