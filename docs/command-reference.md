@@ -115,6 +115,10 @@ the players shown, and only beside a `quality_score` it computed. `fpl waivers` 
 `draft_squads_unread` when a rival's squad could not be fetched, since that rival's
 players then read as available and a claim on one would fail; the draft columns of
 `fpl player` and `fpl stats`, which read the same ownership map, carry the same entry.
+`fpl player` adds `draft_provenance_unavailable` when the league's history could not be
+shown complete, so its draft line says only who owns the player and `info.draft` is null
+(see [Draft ownership and provenance](#draft-ownership-and-provenance)); `fpl stats` prints the
+same message on stderr in table mode, the one mode that reads the history.
 
 The `error` string is the reason itself, not a category for it. `fpl history` and
 `fpl price-history` used to answer an unreachable provider with a fixed `Failed to fetch
@@ -195,7 +199,7 @@ Which namespace each payload's `id` is in, and whether the row carries `code`:
 | `returnees` | `data.entries[]` | main | yes |
 | `returnees` | `data.departures[]` | main | yes; null only for a player who has left the player pool and was stored before the radar recorded `code` |
 | `stats` | `data[]` | main, under a draft config too | yes |
-| `player` | `data[].info` | main, under a draft config too | yes |
+| `player` | `data[].info` | main, under a draft config too | yes; `info.draft` (#460) names managers by draft `entry_id` and carries no player id |
 | `captain` | `top_picks[]`, `differential_picks[]`, `all_candidates[]`, `recommendation` | main | yes |
 | `differentials` | `differentials.*[]`, `differential_captains[]` | main | yes |
 | `targets` | `targets.*[]`, `players[]` | main | yes |
@@ -593,6 +597,67 @@ Filter by position (`-p`), team (`-t`), minimum minutes (`--min-minutes`). Sort 
 **Early-season notice:** before GW10 `quality_score` is a prior-informed estimate — the observed score blended with last season's pts/90 pedigree (price for players without PL history), weighted by how far the season has run and the player's track record, so a quiet-starting elite keeps most of their standing and one good game does not saturate the scale. Table mode prints a stderr notice quoting the observation's weight band for that gameweek (25-50% going into GW2); JSON mode adds an `early_season_prior_informed` entry to `metadata.warnings` (alongside the existing `cross_position_ranking_not_meaningful` code when sorting `--value` without a position, and `understat_team_unmatched` for any club Understat carried no players for). When last season's history cannot be loaded the scores are pure observation and the notice says so instead (`early_season_small_sample`, before GW6 only): hot starters saturate the scale while elite players with a quiet start read low. `--sort ep_next` gives FPL's own projection for the coming gameweek in either case, but not an independent one this early: it tracks `form` almost exactly until FPL's fixture factor moves off 1.0 (see [FPL Predicted Points](#fpl-predicted-points)). See [Early-Season Confidence](custom-analysis.md#early-season-confidence-gw1-10) and [the early-season caveat](custom-analysis.md#quality--value-scores).
 
 **Rolling window** (`--window` / `-w`): Sets the lookback window for `rolling_pts_per_m` (range 3-10, default from config). Only applies when `--value` is active. `rolling_pts_per_m` measures points per million over the last N qualifying fixtures (minutes > 0), capturing recent form-adjusted value.
+
+**Draft column:** with a draft league configured and the format not classic, the table adds who owns each player, tagged with how they came by him where the league's history says (`Alice R3`, `Bob GW4 W`; see below). JSON carries no draft column and reads no history.
+
+### Draft ownership and provenance
+
+With a draft league configured and the format not classic, `fpl player` prints a `Draft:` line
+and `fpl stats` a Draft column. Both say who owns each player, read from every manager's squad,
+and both say how he came to stand there (#460), from the same replay of the league's draft,
+accepted waiver and free-agent moves and processed trades that the draft recap's Standout
+Players lines use ([How a draft player came to his manager](#league-recap)), run to the gameweek
+the squads were read at and held to them.
+
+`fpl player` puts it in brackets after the owner, and beneath, when the player's history is more
+than one step, the whole chain on one line:
+
+```text
+Draft: Owned by Alice (round-3 pick)
+Draft: Owned by Bob (GW4 waiver pickup; drafted by Cam, round 5)
+Draft: Owned by Dan (GW9 free-agent signing; undrafted)
+Draft: Owned by Dan (acquired from Alice in a GW7 trade; drafted by Alice, round 2)
+Draft: Available (released by Dan in GW5; drafted by Dan, round 9)
+Draft: Available (undrafted)
+Draft history: round-9 pick by Alice; released GW2; waiver to Bob GW5; released GW6; waiver to Cam GW7
+```
+
+The label is the latest link that brought him to his owner, so a manager who dropped their own
+pick and signed him again reads as the signing, with the pick behind it. A player nobody holds
+reads as his last exit and whether he was drafted. The draft named is the one in force (the
+latest completed), so after a redraft a pick says "of the GW20 redraft", a player it passed over
+is "undrafted in the GW20 redraft" whatever the first draft did, and the chain starts at the
+redraft. An auto-pick says so (`round-3 auto-pick`). Where the draft's picks are lost (neither the
+API nor a saved snapshot has them) the drafter is rebuilt from the squads at the draft's
+gameweek and the round is not guessed: `drafted, round unknown`, `drafted by Dan, round unknown`.
+Managers are named by the league's entries, never with a pronoun.
+
+JSON keeps `info.draft_ownership` (`Owned by Alice` or `Available`) and adds `info.draft` beside
+it, null where the history cannot say:
+
+| Field | Meaning |
+|-------|---------|
+| `owner` | `{entry_id, name}` of the manager holding him, null for a free agent |
+| `acquisition` | `draft`, `waiver`, `free_agent` or `trade` for an owned player; `released` or `undrafted` for a free agent |
+| `gameweek` | The gameweek of that latest link: the draft's own for a pick, the release's for a free agent, null for `undrafted` |
+| `draft_id`, `draft_gameweek`, `redraft` | The draft in force, and whether the league has drafted more than once |
+| `drafter`, `round`, `pick`, `overall_pick`, `auto_pick` | His pick in the draft in force, whatever has happened since (a waiver pickup still names who drafted him); all null when nobody drafted him |
+| `round_unknown` | True where he was drafted but the draft's picks are lost: `drafter` is set, the four pick fields are null |
+| `counterparty` | The manager he came from in a trade, or who released him for a free agent; null otherwise |
+| `history` | The whole chain, oldest first: `{kind, gameweek, manager, from_manager, round, pick, overall_pick, auto_pick}` per step, `kind` one of `draft`, `waiver`, `free_agent`, `trade`, `release` |
+
+`fpl stats` keeps to one short tag beside the owner, with a key under the table: `R3` for a
+round-3 pick (`R?` with the round unknown), `GW4 W` for a waiver pickup, `GW9 FA` for a
+free-agent signing, `GW7 T` for a trade. Free agents stay `Available`.
+
+A player is described only where the history agrees with the owner shown, so a line never pairs
+one manager with another's pick: a player the squads put with another manager, or show available
+because their squad could not be read, gets the plain line. Where the history cannot be shown
+complete (a log could not be read, the replay did not end where FPL's ownership list says everyone
+is, or it did not match the squads read), nobody is described, the lines read as they did before,
+and a `draft_provenance_unavailable` warning says why. It costs the draft's choices, the trades
+and the transaction log on top of the ownership read, plus one squad per manager at the draft's
+gameweek when its picks are lost.
 
 ### Historical Data
 

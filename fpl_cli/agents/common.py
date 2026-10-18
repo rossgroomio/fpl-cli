@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import httpx
@@ -12,6 +14,7 @@ if TYPE_CHECKING:
     from fpl_cli.api.fpl_draft import FPLDraftClient
     from fpl_cli.models.player import Player
     from fpl_cli.models.team import Team
+    from fpl_cli.services.draft_provenance import DraftProvenance
 
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.api.fpl_draft import match_draft_teams_to_main, match_draft_to_main
@@ -23,6 +26,8 @@ from fpl_cli.models.types import EnrichedPlayer
 from fpl_cli.services.scoring import build_understat_by_player_id as build_understat_by_player_id
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 def rekey_for_draft(
@@ -205,27 +210,50 @@ async def get_draft_squad_players(
     return squad
 
 
+@dataclass(frozen=True)
+class DraftOwnership:
+    """Who owns whom in a draft league, as `get_draft_ownership_mapping` read it.
+
+    - owned: draft_player_id -> owner_entry_id
+    - entries: entry_id -> manager display name
+    - main_to_draft_id: main_player_id -> draft_player_id
+    - unread_squads: entry_id -> entry name, for every squad the ownership
+      read could not fetch; its players are absent from `owned` and read as
+      available, so a caller names them with `unread_squads_warning` (#438)
+    - provenance: how each player came to his owner (#460), replayed from
+      the league's draft, waivers and trades to the gameweek the squads were
+      read at and held to `owned`; None unless asked for, and carrying a
+      `problem` rather than raising when the history cannot be shown complete
+    """
+
+    owned: dict[int, int]
+    entries: dict[int, str]
+    main_to_draft_id: dict[int, int]
+    unread_squads: dict[int, str]
+    provenance: DraftProvenance | None = None
+
+
 async def get_draft_ownership_mapping(
     draft_client: FPLDraftClient,
     main_players: list[Player],
     draft_league_id: int,
     *,
     main_teams: Sequence[Team],
-) -> tuple[dict[int, int], dict[int, str], dict[int, int], dict[int, str]]:
+    provenance_season: str | None = None,
+) -> DraftOwnership:
     """Fetch draft ownership and build ID mapping to main FPL players.
 
     *main_teams* translates a draft club for the name fallback a code-less
     player needs.
 
-    Returns:
-        (draft_owned, draft_entries, main_to_draft_id, unread_squads) where:
-        - draft_owned: draft_player_id -> owner_entry_id
-        - draft_entries: entry_id -> manager display name
-        - main_to_draft_id: main_player_id -> draft_player_id
-        - unread_squads: entry_id -> entry name, for every squad the
-          ownership read could not fetch; its players are absent from
-          draft_owned and read as available, so a caller names them with
-          `unread_squads_warning` (#438)
+    Given *provenance_season*, also replays the league's history
+    (`services/draft_provenance.py`) to the gameweek the squads were read at,
+    held to the ownership just read, so its chains end with the owners the
+    squads show (#460). The
+    season names where a held draft's saved picks are kept, for a draft the
+    API no longer serves. It costs the draft's choices, the trades and the
+    transaction log, plus one squad per manager at the draft's gameweek when
+    neither the API nor a snapshot holds its picks.
     """
     league_details = await draft_client.get_league_details(draft_league_id)
     draft_bootstrap = await draft_client.get_bootstrap_static()
@@ -245,15 +273,68 @@ async def get_draft_ownership_mapping(
         draft_league_id, draft_bootstrap, league_details,
     )
 
-    main_to_draft_id = {
-        main_player.id: draft_id
-        for draft_id, main_player in match_draft_to_main(
-            draft_bootstrap.get("elements", []), main_players,
-            team_id_map=match_draft_teams_to_main(draft_bootstrap.get("teams", []), main_teams),
-        ).items()
-    }
+    matched = match_draft_to_main(
+        draft_bootstrap.get("elements", []), main_players,
+        team_id_map=match_draft_teams_to_main(draft_bootstrap.get("teams", []), main_teams),
+    )
+    main_to_draft_id = {main_player.id: draft_id for draft_id, main_player in matched.items()}
 
-    return draft_owned, draft_entries, main_to_draft_id, dict(draft_client.unread_squads)
+    provenance = None
+    if provenance_season is not None:
+        provenance = await _read_ownership_provenance(
+            draft_client, draft_league_id, league_details,
+            owned=draft_owned, main_players=matched, season=provenance_season,
+        )
+
+    return DraftOwnership(
+        owned=draft_owned,
+        entries=draft_entries,
+        main_to_draft_id=main_to_draft_id,
+        unread_squads=dict(draft_client.unread_squads),
+        provenance=provenance,
+    )
+
+
+async def _read_ownership_provenance(
+    draft_client: FPLDraftClient,
+    league_id: int,
+    league_details: Mapping[str, Any],
+    *,
+    owned: Mapping[int, int],
+    main_players: Mapping[int, Player],
+    season: str,
+) -> DraftProvenance:
+    """The league's history replayed to the gameweek `get_league_ownership` read the squads at.
+
+    The game state is memoised, so this is the gameweek the ownership just
+    used, and the replay is held to that ownership as the recap holds it to
+    its squads (`observed`). Never raises: a failed read, and a payload this
+    client does not know, come back as a `problem`.
+    """
+    from fpl_cli.services.draft_provenance import DraftProvenance, get_draft_provenance
+
+    try:
+        game = await draft_client.get_game_state()
+        gameweek = game.get("current_event", 1)
+        if not isinstance(gameweek, int) or isinstance(gameweek, bool):
+            return DraftProvenance(0, problem="the draft game names no current gameweek to replay the history to")
+        league = league_details.get("league")
+        drafts = league.get("drafts") if isinstance(league, Mapping) else None
+        return await get_draft_provenance(
+            draft_client, league_id, gameweek,
+            main_players=main_players,
+            observed=owned,
+            # None makes the read fetch the details itself and report a list that is missing.
+            drafts=drafts if isinstance(drafts, list) else None,
+            season=season,
+            entry_ids=[
+                e["entry_id"] for e in league_details.get("league_entries", [])
+                if isinstance(e.get("entry_id"), int)
+            ],
+        )
+    except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError) as e:
+        logger.debug("Draft provenance could not be replayed", exc_info=True)
+        return DraftProvenance(0, problem=f"the league's history could not be replayed ({type(e).__name__})")
 
 
 async def get_actual_squad_picks(

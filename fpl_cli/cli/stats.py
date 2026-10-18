@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from fpl_cli.cli._draft_provenance import DraftStanding
+    from fpl_cli.services.draft_provenance import DraftProvenance
     from fpl_cli.services.player_prior import PlayerPrior
     from fpl_cli.services.scoring import ConsistencySignals
 
@@ -23,6 +25,13 @@ from fpl_cli.cli._context import (
     get_format,
     get_settings,
     is_custom_analysis_enabled,
+)
+from fpl_cli.cli._draft_provenance import (
+    STATS_TAG_KEY,
+    player_standing,
+    provenance_warning,
+    standings_tagged,
+    stats_tag,
 )
 from fpl_cli.cli._helpers import _format_sort_value, _validate_team_filter
 from fpl_cli.cli._json import (
@@ -164,6 +173,7 @@ def stats_command(
             draft_owned: dict[int, int] = {}
             draft_entries: dict[int, str] = {}
             main_to_draft_id: dict[int, int] = {}
+            draft_provenance: DraftProvenance | None = None
             draft_warnings: list[dict[str, str]] = []
 
             if show_draft:
@@ -174,22 +184,35 @@ def stats_command(
                     try:
                         from fpl_cli.agents.common import get_draft_ownership_mapping
                         from fpl_cli.api.fpl_draft import FPLDraftClient, unread_squads_warning
+                        from fpl_cli.season import season_label
+
+                        # The table alone shows the draft column, so only it
+                        # pays for the league's history behind each owner (#460).
+                        provenance_season = (
+                            season_label(await client.get_season_year()) if output_format != "json" else None
+                        )
                         async with FPLDraftClient() as draft_client:
-                            draft_owned, draft_entries, main_to_draft_id, unread_squads = (
-                                await get_draft_ownership_mapping(
-                                    draft_client, all_players, draft_league_id,
-                                    main_teams=all_teams,
-                                )
+                            ownership = await get_draft_ownership_mapping(
+                                draft_client, all_players, draft_league_id,
+                                main_teams=all_teams, provenance_season=provenance_season,
                             )
+                        draft_owned = ownership.owned
+                        draft_entries = ownership.entries
+                        main_to_draft_id = ownership.main_to_draft_id
+                        draft_provenance = ownership.provenance
                         # A rival squad the read missed leaves its players
                         # labelled Available below (#438): both channels.
-                        unread_warning = unread_squads_warning(unread_squads)
+                        unread_warning = unread_squads_warning(ownership.unread_squads)
                         if unread_warning is not None:
                             draft_warnings.append(unread_warning)
                             if output_format != "json":
                                 error_console.print(
                                     f"[yellow]{rich_escape(unread_warning['message'])}[/yellow]"
                                 )
+                        # Read for the table only, so said on its channel only.
+                        history_warning = provenance_warning(draft_provenance)
+                        if history_warning is not None:
+                            error_console.print(f"[yellow]{rich_escape(history_warning['message'])}[/yellow]")
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment
                         error_console.print(f"[yellow]Draft ownership lookup failed: {e}[/yellow]")
 
@@ -542,10 +565,18 @@ def stats_command(
                 table.add_column(r_header, justify="right")
                 table.add_column(c_header, justify="right")
 
-            # Draft ownership column
+            # Draft ownership column, each owner tagged with how he came to
+            # them where the league's history says (#460)
             has_draft_col = show_draft and main_to_draft_id
+            draft_standings: dict[int, DraftStanding | None] = {}
             if has_draft_col:
                 table.add_column("Draft", justify="left")
+                for p in filtered:
+                    draft_pid = main_to_draft_id.get(p.id)
+                    owner = draft_owned.get(draft_pid) if draft_pid is not None else None
+                    draft_standings[p.id] = player_standing(draft_provenance, draft_pid, owner)
+                if standings_tagged(list(draft_standings.values())):
+                    table.caption = STATS_TAG_KEY
 
             for p in filtered:
                 row = [
@@ -587,7 +618,9 @@ def stats_command(
                     if draft_pid is not None and draft_pid in draft_owned:
                         owner_id = draft_owned[draft_pid]
                         owner_name = draft_entries.get(owner_id, f"Team #{owner_id}")
-                        row.append(f"[red]{owner_name}[/red]")
+                        standing = draft_standings.get(p.id)
+                        tag = stats_tag(standing) if standing else None
+                        row.append(f"[red]{rich_escape(owner_name)}[/red]" + (f" [dim]{tag}[/dim]" if tag else ""))
                     else:
                         row.append("[green]Available[/green]")
                 table.add_row(*row)

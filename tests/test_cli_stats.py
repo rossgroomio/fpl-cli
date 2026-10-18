@@ -4,9 +4,11 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
+from fpl_cli.agents.common import DraftOwnership
 from fpl_cli.cli import main
 from fpl_cli.cli._context import CLIContext, Format
 from fpl_cli.models.player import PlayerPosition, PlayerStatus
@@ -25,6 +27,7 @@ def _make_client(players=None, teams=None):
     client = MagicMock()
     client.get_players = AsyncMock(return_value=players or [])
     client.get_teams = AsyncMock(return_value=teams or [])
+    client.get_season_year = AsyncMock(return_value=2026)
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     return client
@@ -419,7 +422,7 @@ class TestStatsDraftOwnership:
                 patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
                 patch(
                     "fpl_cli.agents.common.get_draft_ownership_mapping",
-                    new=AsyncMock(return_value=({}, {}, {}, {8: "Team B"})),
+                    new=AsyncMock(return_value=DraftOwnership({}, {}, {}, {8: "Team B"})),
                 ),
             ):
                 args = ["stats"] + (["--format", "json"] if json_mode else [])
@@ -433,6 +436,96 @@ class TestStatsDraftOwnership:
             else:
                 assert "Team B" in result.stderr
                 assert "could not be read" in result.stderr
+
+    @staticmethod
+    def _draft_client(*, trades=None):
+        """A placeholder league of two (#460): Ann drafted Salah (99) first and Bea took 55;
+        Bea claimed Haaland (88) on waivers in GW4, releasing 55."""
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"drafts": [{"id": 10, "event": 1, "draft_completed": "2026-08-10T12:00:00Z"}]},
+            "league_entries": [
+                {"entry_id": 7, "player_first_name": "Ann", "player_last_name": "Lee"},
+                {"entry_id": 8, "player_first_name": "Bea", "player_last_name": "Kay"},
+            ],
+        })
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [
+            {"id": 99, "code": 118748, "web_name": "Salah", "team": 1},
+            {"id": 88, "code": 223094, "web_name": "Haaland", "team": 2},
+        ], "teams": []})
+        client.get_league_ownership = AsyncMock(return_value={99: 7, 88: 8})
+        client.unread_squads = {}
+        client.get_game_state = AsyncMock(return_value={"current_event": 5})
+        client.get_draft_choices = AsyncMock(return_value={
+            "choices": [
+                {"element": 99, "entry": 7, "round": 1, "pick": 1, "index": 1, "draft": 10},
+                {"element": 55, "entry": 8, "round": 1, "pick": 2, "index": 2, "draft": 10},
+            ],
+            "element_status": [{"element": 99, "owner": 7}, {"element": 88, "owner": 8}, {"element": 55, "owner": None}],
+        })
+        client.get_league_transactions = AsyncMock(return_value={"transactions": [
+            {"id": 1, "entry": 8, "element_in": 88, "element_out": 55, "event": 4, "kind": "w",
+             "result": "a", "added": "2026-09-03T10:00:00Z", "index": 1},
+        ]})
+        client.get_league_trades = AsyncMock(return_value={"trades": []} if trades is None else trades)
+        return client
+
+    def _invoke(self, draft_client, *args):
+        players = [
+            make_player(id=1, code=118748, web_name="Salah", team_id=1,
+                        position=PlayerPosition.MIDFIELDER, minutes=2000, total_points=200),
+            make_player(id=2, code=223094, web_name="Haaland", team_id=2,
+                        position=PlayerPosition.FORWARD, minutes=1800, total_points=180),
+            make_player(id=3, code=169187, web_name="Alexander-Arnold", team_id=1,
+                        position=PlayerPosition.DEFENDER, minutes=1600, total_points=150),
+        ]
+        settings = {"fpl": {"draft_league_id": 12345}}
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=_make_client(players, _sample_teams())),
+            patch("fpl_cli.cli._context.load_settings", return_value=settings),
+            patch("fpl_cli.cli.load_settings", return_value=settings),
+            patch("fpl_cli.cli._context.resolve_format", return_value=Format.DRAFT),
+            patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
+            patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+        ):
+            result = CliRunner().invoke(main, ["stats", *args])
+        assert result.exit_code == 0, result.output
+        return result
+
+    def test_each_owner_is_tagged_with_how_they_came_by_him(self):
+        """#460: the round of a pick, or the gameweek and kind of a move, with a key under the table."""
+        result = self._invoke(self._draft_client())
+
+        rows = {line.split()[1]: line for line in result.stdout.splitlines() if line.startswith("│")}
+        assert "Ann Lee R1" in rows["Salah"]
+        assert "Bea Kay GW4 W" in rows["Haaland"]
+        # Unmatched in the draft game, so neither owned nor described.
+        assert "Available" in next(line for name, line in rows.items() if name.startswith("Alexander"))
+        assert "R3 = round-3 pick" in " ".join(result.stdout.split())
+        assert result.stderr == ""
+
+    def test_a_history_that_cannot_be_read_leaves_the_owners_untagged_and_says_why(self):
+        draft_client = self._draft_client()
+        draft_client.get_league_trades = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+        result = self._invoke(draft_client)
+
+        rows = {line.split()[1]: line for line in result.stdout.splitlines() if line.startswith("│")}
+        assert "Ann Lee" in rows["Salah"] and "R1" not in rows["Salah"]
+        assert "round-3 pick" not in result.stdout
+        assert "trades could not be read" in " ".join(result.stderr.split())
+
+    def test_json_carries_no_draft_column_so_reads_no_history(self):
+        draft_client = self._draft_client()
+
+        result = self._invoke(draft_client, "--format", "json")
+
+        assert json.loads(result.stdout)["metadata"]["warnings"] == []
+        draft_client.get_league_ownership.assert_awaited_once()
+        draft_client.get_draft_choices.assert_not_awaited()
+        draft_client.get_league_trades.assert_not_awaited()
 
     def test_classic_mode_no_draft_column(self):
         """CLASSIC format never shows Draft column."""

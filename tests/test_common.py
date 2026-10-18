@@ -368,15 +368,18 @@ class TestGetDraftOwnershipMapping:
     async def test_returns_ownership_entries_and_id_mapping(self):
         client = self._make_client()
 
-        owned, entries, main_to_draft, unread = await get_draft_ownership_mapping(
+        ownership = await get_draft_ownership_mapping(
             client, [make_player(id=1, web_name="Salah", team_id=1)], 12345,
             main_teams=[make_team(id=1)],
         )
 
-        assert owned == {99: 7}
-        assert entries == {7: "Alice Smith"}
-        assert main_to_draft == {1: 99}
-        assert unread == {}
+        assert ownership.owned == {99: 7}
+        assert ownership.entries == {7: "Alice Smith"}
+        assert ownership.main_to_draft_id == {1: 99}
+        assert ownership.unread_squads == {}
+        # Not asked for, so not read.
+        assert ownership.provenance is None
+        client.get_draft_choices.assert_not_awaited()
 
     async def test_hands_back_the_squads_the_ownership_read_could_not_fetch(self):
         # Every consumer of the map gets the record, not only the one that
@@ -384,13 +387,90 @@ class TestGetDraftOwnershipMapping:
         client = self._make_client()
         client.unread_squads = {8: "Team B"}
 
-        *_, unread = await get_draft_ownership_mapping(
+        ownership = await get_draft_ownership_mapping(
             client, [make_player(id=1, web_name="Salah", team_id=1)], 12345,
             main_teams=[make_team(id=1)],
         )
 
-        assert unread == {8: "Team B"}
-        assert unread is not client.unread_squads
+        assert ownership.unread_squads == {8: "Team B"}
+        assert ownership.unread_squads is not client.unread_squads
+
+    def _with_history(self, *, current_event=5):
+        """The client above, with a league that drafted once on GW1: Alice took Salah first."""
+        client = self._make_client()
+        client.get_league_details = AsyncMock(return_value={
+            "league": {"drafts": [{"id": 10, "event": 1, "draft_completed": "2026-08-10T12:00:00Z"}]},
+            "league_entries": [
+                {"entry_id": 7, "player_first_name": "Alice", "player_last_name": "Smith"},
+            ],
+        })
+        client.get_game_state = AsyncMock(return_value={"current_event": current_event})
+        client.get_draft_choices = AsyncMock(return_value={
+            "choices": [{"element": 99, "entry": 7, "round": 1, "pick": 1, "index": 1, "draft": 10}],
+            "element_status": [{"element": 99, "owner": 7}],
+        })
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_league_trades = AsyncMock(return_value={"trades": []})
+        return client
+
+    async def _read(self, client):
+        return await get_draft_ownership_mapping(
+            client, [make_player(id=1, code=118748, web_name="Salah", team_id=1)], 12345,
+            main_teams=[make_team(id=1)], provenance_season="2026-27",
+        )
+
+    async def test_asked_for_the_history_it_replays_it_to_the_gameweek_the_squads_were_read_at(self):
+        """#460: held to the ownership just read, with no second league-details fetch."""
+        client = self._with_history()
+
+        ownership = await self._read(client)
+
+        provenance = ownership.provenance
+        assert provenance is not None and provenance.available, provenance and provenance.problem
+        assert provenance.gameweek == 5
+        history = provenance.players[99]
+        assert (history.owner, history.latest.kind, history.id, history.code) == (7, "draft", 1, 118748)
+        client.get_league_details.assert_awaited_once()
+
+    async def test_a_history_that_disagrees_with_the_squads_read_is_a_problem_not_chains(self):
+        # The history (and FPL's list) put 99 with entry 7; the squads read put him with 8.
+        client = self._with_history()
+        client.get_league_ownership = AsyncMock(return_value={99: 8})
+
+        ownership = await self._read(client)
+
+        assert ownership.owned == {99: 8}
+        assert ownership.provenance is not None
+        assert ownership.provenance.problem is not None and "different squad" in ownership.provenance.problem
+        assert ownership.provenance.players == {}
+
+    async def test_a_failed_read_is_a_problem_and_the_ownership_survives(self):
+        client = self._with_history()
+        client.get_league_trades = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+        ownership = await self._read(client)
+
+        assert ownership.owned == {99: 7}
+        assert ownership.provenance is not None
+        assert ownership.provenance.problem == "the league's trades could not be read"
+
+    async def test_a_payload_nobody_expected_is_a_problem_not_a_crash(self):
+        client = self._with_history()
+        client.get_game_state = AsyncMock(return_value=None)
+
+        ownership = await self._read(client)
+
+        assert ownership.owned == {99: 7}
+        assert ownership.provenance is not None
+        assert ownership.provenance.problem == "the league's history could not be replayed (AttributeError)"
+
+    async def test_no_current_gameweek_is_a_problem(self):
+        client = self._with_history(current_event=None)
+
+        ownership = await self._read(client)
+
+        assert ownership.provenance is not None
+        assert ownership.provenance.problem == "the draft game names no current gameweek to replay the history to"
 
 
 class TestRekeyForDraft:

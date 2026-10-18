@@ -21,6 +21,13 @@ from fpl_cli.cli._context import (
     get_settings,
     is_custom_analysis_enabled,
 )
+from fpl_cli.cli._draft_provenance import (
+    history_text,
+    ownership_note,
+    player_standing,
+    provenance_warning,
+    standing_json,
+)
 from fpl_cli.cli._helpers import _fdr_style
 from fpl_cli.cli._json import (
     emit_failure,
@@ -53,6 +60,7 @@ if TYPE_CHECKING:
     from fpl_cli.api.vaastav import PlayerProfile
     from fpl_cli.models.player import Player
     from fpl_cli.models.team import Team
+    from fpl_cli.services.draft_provenance import DraftProvenance
     from fpl_cli.services.player_prior import PlayerPrior
 
 logger = logging.getLogger(__name__)
@@ -86,6 +94,7 @@ def player_command(
     from fpl_cli.agents.common import get_draft_ownership_mapping
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.api.fpl_draft import FPLDraftClient, unread_squads_warning
+    from fpl_cli.season import season_label
 
     fmt = get_format(ctx)
     show_draft = fmt != Format.CLASSIC
@@ -122,23 +131,37 @@ def player_command(
                 # name resolves: this costs a league-details fetch, a draft
                 # bootstrap, game state, and one squad fetch per league entry, and
                 # only the resolved players are ever shown as owned or available.
+                # The league's history, read with it, says how each came to
+                # stand where he does (#460): the choices, trades and
+                # transactions, and a squad per manager when a draft's picks
+                # are lost.
                 draft_owned: dict[int, int] = {}
                 draft_entries: dict[int, str] = {}
                 main_to_draft_id: dict[int, int] = {}  # main FPL player id -> draft player id
+                draft_provenance: DraftProvenance | None = None
                 draft_warnings: list[dict[str, str]] = []
                 if show_draft and draft_league_id:
                     try:
+                        season = season_label(await client.get_season_year())
                         async with FPLDraftClient() as draft_client:
-                            draft_owned, draft_entries, main_to_draft_id, unread_squads = (
-                                await get_draft_ownership_mapping(
-                                    draft_client, players, draft_league_id, main_teams=team_list,
-                                )
+                            ownership = await get_draft_ownership_mapping(
+                                draft_client, players, draft_league_id, main_teams=team_list,
+                                provenance_season=season,
                             )
+                        draft_owned = ownership.owned
+                        draft_entries = ownership.entries
+                        main_to_draft_id = ownership.main_to_draft_id
+                        draft_provenance = ownership.provenance
                         # A rival squad the read missed leaves its players
                         # labelled Available below (#438): both channels.
-                        unread_warning = unread_squads_warning(unread_squads)
+                        unread_warning = unread_squads_warning(ownership.unread_squads)
                         if unread_warning is not None:
                             draft_warnings.append(unread_warning)
+                        # A history that could not be shown complete leaves
+                        # the draft lines as they were, and says why.
+                        history_warning = provenance_warning(draft_provenance)
+                        if history_warning is not None:
+                            draft_warnings.append(history_warning)
                     except Exception as e:  # noqa: BLE001 — best-effort enrichment
                         logger.warning("Draft ID mapping failed: %s", e)
 
@@ -368,12 +391,18 @@ def player_command(
 
                             if show_draft and draft_league_id:
                                 draft_player_id = main_to_draft_id.get(p.id)
-                                if draft_player_id is not None and draft_player_id in draft_owned:
-                                    owner_id = draft_owned[draft_player_id]
+                                owner_id = draft_owned.get(draft_player_id) if draft_player_id is not None else None
+                                if owner_id is not None:
                                     owner_name = draft_entries.get(owner_id, f"Team #{owner_id}")
                                     player_dict["info"]["draft_ownership"] = f"Owned by {owner_name}"
                                 else:
                                     player_dict["info"]["draft_ownership"] = "Available"
+                                # Beside the string, never in place of it: the
+                                # gw-prep sub-agents read `draft_ownership` (#460).
+                                standing = player_standing(draft_provenance, draft_player_id, owner_id)
+                                player_dict["info"]["draft"] = (
+                                    standing_json(standing, draft_entries) if standing else None
+                                )
 
                             if (p.penalties_order is not None
                                     or p.corners_and_indirect_freekicks_order is not None
@@ -479,16 +508,23 @@ def player_command(
                     team = teams.get(p.team_id)
                     team_name = team.name if team else "Unknown"
 
-                    # Build draft status line
+                    # Build draft status line, and beneath it the player's
+                    # whole draft history where it is more than one step (#460)
                     draft_line = ""
+                    draft_history_line = ""
                     if show_draft and draft_league_id:
                         draft_player_id = main_to_draft_id.get(p.id)
-                        if draft_player_id is not None and draft_player_id in draft_owned:
-                            owner_id = draft_owned[draft_player_id]
+                        owner_id = draft_owned.get(draft_player_id) if draft_player_id is not None else None
+                        standing = player_standing(draft_provenance, draft_player_id, owner_id)
+                        note = f" ({rich_escape(ownership_note(standing, draft_entries))})" if standing else ""
+                        if owner_id is not None:
                             owner_name = draft_entries.get(owner_id, f"Team #{owner_id}")
-                            draft_line = f"Draft: [red]Owned by {owner_name}[/red]\n"
+                            draft_line = f"Draft: [red]Owned by {rich_escape(owner_name)}[/red]{note}"
                         else:
-                            draft_line = "Draft: [green]Available[/green]\n"
+                            draft_line = f"Draft: [green]Available[/green]{note}"
+                        chain = history_text(standing, draft_entries) if standing else None
+                        if chain:
+                            draft_history_line = f"Draft history: {rich_escape(chain)}"
 
                     # Understat enrichment for base panel
                     understat_line = ""
@@ -573,7 +609,9 @@ def player_command(
                         if con_parts:
                             lines.append(" | ".join(con_parts))
                     if draft_line:
-                        lines.append(draft_line.rstrip("\n"))
+                        lines.append(draft_line)
+                    if draft_history_line:
+                        lines.append(draft_history_line)
                     lines.append(f"Status: {_status_display(p)}")
 
                     console.print(Panel.fit(
