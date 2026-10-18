@@ -45,6 +45,21 @@ DRAFT_TXN_ACCEPTED = "a"
 DRAFT_TXN_DENIED_PLAYER_GONE = "di"
 DRAFT_TXN_DROP_ALREADY_USED = "do"
 
+# The Draft API's trade `state` codes, read off the public trades feed (#458).
+#
+# `p` -- processed: the players changed squads. Every one of 115 trades across
+#        32 public leagues was `p`, and each matched the squads before and
+#        after it. Within an item, `element_out` leaves `offered_entry` for
+#        `received_entry` and `element_in` goes the other way.
+# `v` -- vetoed: nothing moved.
+#
+# Any other code is not a move this client has seen happen, so
+# `is_processed_trade()` is false for it: a trade that did complete under some
+# other code shows up as a replay that disagrees with the league's ownership
+# list, which degrades the provenance it feeds rather than mislabelling.
+DRAFT_TRADE_PROCESSED = "p"
+DRAFT_TRADE_VETOED = "v"
+
 
 def is_accepted_transaction(txn: Mapping[str, Any]) -> bool:
     """Whether the league turned this transaction row into a completed move.
@@ -53,6 +68,15 @@ def is_accepted_transaction(txn: Mapping[str, Any]) -> bool:
     points swing or a "who dropped whom" question may be built from.
     """
     return txn.get("result") == DRAFT_TXN_ACCEPTED
+
+
+def is_processed_trade(trade: Mapping[str, Any]) -> bool:
+    """Whether this trade went through and moved its players between squads.
+
+    The trade counterpart of `is_accepted_transaction()`: a vetoed trade, or
+    one still awaiting its response, changed nothing.
+    """
+    return trade.get("state") == DRAFT_TRADE_PROCESSED
 
 
 def is_denied_on_the_incoming_player(txn: Mapping[str, Any]) -> bool:
@@ -292,6 +316,24 @@ class FPLDraftClient:
             The choices response, as served.
         """
         return await self._get(f"draft/{league_id}/choices")
+
+    async def get_league_trades(self, league_id: int) -> dict[str, Any]:
+        """Get the trades managers in a league have made, whatever became of them.
+
+        Each trade carries ``event``, ``offered_entry``, ``received_entry``,
+        ``state`` (see ``is_processed_trade()``), ``offer_time``,
+        ``response_time`` and a ``tradeitem_set`` of ``element_in`` /
+        ``element_out`` pairs read from the offering entry's side: its
+        ``element_out`` goes to the receiving entry and its ``element_in``
+        comes the other way.
+
+        Args:
+            league_id: The draft league ID.
+
+        Returns:
+            ``{"trades": [...]}``.
+        """
+        return await self._get(f"draft/league/{league_id}/trades")
 
     async def get_entry_profile(self, entry_id: int) -> dict[str, Any]:
         """Get a draft entry's public profile.

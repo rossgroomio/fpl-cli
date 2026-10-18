@@ -696,7 +696,7 @@ class ReportAgent(Agent):
         if standouts := data.get("standout_players"):
             fpl_format = data.get("fpl_format", "classic")
             data["standout_scorer_lines"], data["standout_blank_lines"] = standout_players_lines(standouts)
-            data["standout_note"] = standout_players_note(fpl_format)
+            data["standout_note"] = standout_players_note(fpl_format, standouts)
             data["standout_blanks_heading"] = standout_blanks_heading(standouts)
         return template.render(**data)
 

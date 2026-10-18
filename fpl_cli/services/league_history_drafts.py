@@ -192,6 +192,24 @@ def _stored_picks(path: Path, draft_id: int) -> tuple[Counter[str] | None, str |
     return _picks(_choice_rows(stored), draft_id), None
 
 
+def read_saved_choices(season: str, league_id: int, draft_id: int) -> list[dict[str, Any]]:
+    """The pick rows a readable snapshot holds for one draft, as the API served
+    them; empty when there is no file, it cannot be read, or it holds none of
+    this draft's picks.
+
+    What a reader falls back on once the API stops serving a held draft (#458).
+    A file that is wrong says nothing here: `snapshot_draft_choices()` is what
+    reports it, so a reader treats it as no copy rather than a second voice.
+    """
+    try:
+        stored = json.loads(draft_snapshot_path(season, league_id, draft_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(stored, dict):
+        return []
+    return [row for row in _choice_rows(stored) if row.get("draft") == draft_id]
+
+
 def has_saved_picks(season: str, league_id: int, draft_id: int) -> bool:
     """Whether a readable snapshot holds at least one of this draft's picks."""
     picks, _ = _stored_picks(draft_snapshot_path(season, league_id, draft_id), draft_id)

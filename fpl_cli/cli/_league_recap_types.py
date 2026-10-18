@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, NotRequired, TypedDict
 
@@ -54,6 +54,13 @@ class RecapManagerPlayer(TypedDict):
     draft_rank: NotRequired[int | None]
     points_per_game: NotRequired[float | None]
     appearances: NotRequired[int | None]
+    # Draft only, in memory only (#458): the draft game's own element id, the
+    # key a pick is looked up by, and how he came to the manager whose squad
+    # this is -- None where the league's history could not be shown to be
+    # complete (see `RecapAcquisition`). Absent unless the collector was asked
+    # for it, which only the gameweek being recapped is.
+    draft_element: NotRequired[int]
+    acquisition: NotRequired[RecapAcquisition | None]
     is_captain: bool
     is_vice_captain: bool
     contributed: bool
@@ -402,6 +409,40 @@ class RecapStandoutManager(TypedDict):
     manager_name: str
 
 
+# How a draft player came to his owner, by the kind of the latest link in his
+# chain (#458).
+RecapAcquisitionKind = Literal["draft", "waiver", "free_agent", "trade"]
+
+
+class RecapAcquisition(TypedDict):
+    """How a draft player came to the manager whose squad he was in, as of the
+    recapped gameweek (#458): the latest accepted event that brought him there,
+    out of the league's own draft, transaction log and trades.
+
+    `gameweek` is the one the move first applied to (the draft's own for a
+    pick). The draft fields are set for a pick only: `draft_id` and
+    `draft_gameweek` name the draft it was made in, `redraft` is whether the
+    league had drafted more than once by then (so a line must say which),
+    `round` and `pick` are where it fell in the draft (`overall_pick` counts
+    round after round), `auto_pick` whether the draft's auto-pick made it, and
+    `drafter` is the manager who did, the owner himself. `from_manager` is a
+    trade's counterparty, the manager he came from; None when the league's
+    managers do not name that entry.
+    """
+
+    kind: RecapAcquisitionKind
+    gameweek: int
+    draft_id: int | None
+    draft_gameweek: int | None
+    redraft: bool
+    round: int | None
+    pick: int | None
+    overall_pick: int | None
+    auto_pick: bool | None
+    drafter: RecapStandoutManager | None
+    from_manager: RecapStandoutManager | None
+
+
 class RecapStandoutPlayer(TypedDict):
     """One player in the Standout Players section (issue #455): one of the
     week's top scorers or costliest blanks, and whose team he scored for.
@@ -436,6 +477,10 @@ class RecapStandoutPlayer(TypedDict):
     counted_for: list[RecapStandoutManager]
     benched_by: list[RecapStandoutManager]
     text: str
+    # Draft only (#458): how he came to his manager, which the sentence says.
+    # Present on every draft row and null where it could not be established;
+    # absent in classic, where a player has many owners and no such history.
+    acquisition: NotRequired[RecapAcquisition | None]
 
 
 class RecapStandoutPlayers(TypedDict):
@@ -529,6 +574,44 @@ def _standout_for(
     return clause
 
 
+def standout_acquisition_clause(
+    acquisition: RecapAcquisition, *, shared_names: Collection[str] = (),
+) -> str:
+    """How a draft player came to his manager, as a clause that follows the
+    manager's name (#458): "who drafted him in the first round", "who picked
+    him up on waivers in GW4", "who signed him as a free agent in GW9", "who
+    acquired him from Cam in a GW7 trade".
+
+    The latest link only, as the league's own history gives it, so a pick
+    dropped and signed again reads as the signing. A redraft names itself
+    ("in the first round of the GW20 redraft") because the league has drafted
+    twice and "the draft" alone no longer says which; the first draft of a
+    league that has held one never does. A pick the draft's auto-pick made
+    says so rather than claim the manager chose him. A trade names the
+    manager he came from unless another manager shares that display name,
+    since "from Alex" then tells a reader nothing; `shared_names` are the
+    names the league has more than one manager of.
+
+    A relative clause on the manager's name, not a possessive pronoun: the
+    data holds no one's gender, and the player is the only "him" it can
+    stand behind.
+    """
+    kind, gameweek = acquisition["kind"], acquisition["gameweek"]
+    if kind == "waiver":
+        return f"who picked him up on waivers in GW{gameweek}"
+    if kind == "free_agent":
+        return f"who signed him as a free agent in GW{gameweek}"
+    if kind == "trade":
+        source = acquisition["from_manager"]
+        came_from = f" from {source['manager_name']}" if source and source["manager_name"] not in shared_names else ""
+        return f"who acquired him{came_from} in a GW{gameweek} trade"
+    clause = "who had him as an auto-pick" if acquisition["auto_pick"] else "who drafted him"
+    clause += f" in the {ordinal_word(acquisition['round'])} round" if acquisition["round"] else ""
+    if acquisition["redraft"] and acquisition["draft_gameweek"] is not None:
+        clause += f" of the GW{acquisition['draft_gameweek']} redraft"
+    return clause
+
+
 def format_standout_player(
     player: RecapStandoutPlayer,
     *,
@@ -536,10 +619,17 @@ def format_standout_player(
     not_counted: Sequence[RecapStandoutManager],
     whole_league: bool,
     blank: bool,
+    shared_names: Collection[str] = (),
 ) -> str:
     """One standout player as a sentence a columnist could lift (#455):
     "Haaland (Manchester City) scored 17 points for 9 of the 12 managers,
     everyone but Alice, Bob and Cam; Alice left him on the bench."
+
+    A draft player has one owner, and where the league's history says how he
+    came to them the sentence carries it after their name (#458): "Haaland
+    (Manchester City) scored 17 points for Alice, who drafted him in the
+    first round." See `standout_acquisition_clause()`. Where it cannot, the
+    line reads as it always has.
 
     A blank "managed" his points rather than scoring them and says how long
     he played where it was under the hour: "did not play for Cam", or
@@ -568,25 +658,45 @@ def format_standout_player(
         if blank and minutes is not None and minutes < 60:
             line += f" in {minutes} minute{'s' if minutes != 1 else ''}"
     counted = player["counted_for"]
+    benched = player["benched_by"]
+    acquisition = player.get("acquisition")
+    # Said of the one manager who has him, never of several.
+    how = (
+        standout_acquisition_clause(acquisition, shared_names=shared_names)
+        if acquisition and len(counted) + len(benched) == 1 else ""
+    )
     if counted:
         line += " " + _standout_for(
             counted, managers=managers, not_counted=not_counted, whole_league=whole_league,
         )
-    benched = player["benched_by"]
+        line += f", {how}" if how else ""
     if benched:
-        line += ("; " if counted else ", but ") + f"{_standout_names(benched)} left him on the bench"
+        owner = _standout_names(benched) + (f", {how}," if how else "")
+        line += ("; " if counted else ", but ") + f"{owner} left him on the bench"
     return line + "."
 
 
-def standout_players_note(fpl_format: str) -> str:
+def standout_players_note(fpl_format: str, standouts: RecapStandoutPlayers | None = None) -> str:
     """What the section's figures are, said once above it on the report and
     in the prompt: the player's own points (classic's before captaincy, which
-    the Captains section owns) and what a blank is."""
+    the Captains section owns), what a blank is, and, where a draft line says
+    how a player came to his manager (#458), what that is -- the latest way he
+    joined that squad as of the gameweek, so a pick the manager dropped and
+    signed again is the signing."""
     captaincy = ", before any captaincy" if fpl_format == "classic" else ""
-    return (
+    note = (
         f"Each player's own points this gameweek{captaincy}, among the players in this league's "
         f"squads. A blank is {STANDOUT_BLANK_MAX_POINTS} points or fewer."
     )
+    if standouts and any(
+        p.get("acquisition") for p in standouts["top_scorers"] + standouts["blanks"]
+    ):
+        note += (
+            " Where a line says how a player came to the manager it names, that is the latest way he "
+            "joined that manager's squad as of this gameweek: a draft pick, a waiver or free-agent "
+            "claim, or a trade."
+        )
+    return note
 
 
 def standout_blanks_heading(standouts: RecapStandoutPlayers) -> str:
@@ -683,6 +793,12 @@ class LeagueRecapData(TypedDict):
     # replays -- which only reach the ledger -- do not build it; absent when
     # it could not be built.
     standout_players: NotRequired[RecapStandoutPlayers]
+    # Draft only (#458): why a recap that asked for how each player came to his
+    # manager could not say so -- the history of the league's draft, waivers
+    # and trades could not be read, or did not agree with FPL's own record of
+    # who owns whom. Set by the draft collector; absent when it worked or was
+    # not asked, and the Standout Players lines then read without it.
+    draft_provenance_problem: NotRequired[str]
     fines: NotRequired[list[RecapFineResult]]
     # Which fine rule types were ruled on for this gameweek, whether or not
     # any triggered -- stamped onto every captured row so the ledger can tell

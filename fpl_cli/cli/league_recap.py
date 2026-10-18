@@ -67,6 +67,11 @@ RECAP_WARNING_STANDINGS_MOVED_ON = "league_standings_moved_on"
 # Also a collection warning: FPL has not finished processing the recapped
 # gameweek, so the league table it read may not have caught up (issue #424).
 RECAP_WARNING_LEAGUE_TABLES_UPDATING = "league_tables_updating"
+# A draft recap asked how each player came to his manager and could not say:
+# the league's draft, waiver and trade history was unreadable or did not agree
+# with FPL's own record of who owns whom (#458). The Standout Players lines
+# read without it.
+RECAP_WARNING_DRAFT_PROVENANCE_UNAVAILABLE = "draft_provenance_unavailable"
 
 if TYPE_CHECKING:
     from fpl_cli.api.providers import LLMResponse, TokenUsage
@@ -317,6 +322,10 @@ def league_recap_command(
                         players=players, teams=teams, is_live_gw=is_live_gw,
                         bgw_team_ids=bgw_team_ids, players_with_fixture=with_fixture,
                         gameweek_clubs=gameweek_clubs,
+                        # For the gameweek being recapped only: the Standout
+                        # Players section it feeds is never built for a
+                        # backfill's replays, so they skip the reads (#458).
+                        provenance_season=season,
                     )
                 else:
                     collected_data = await collect_classic_recap_data(
@@ -358,6 +367,10 @@ def league_recap_command(
                 collected_data["league_tables_updating"] = still_processing
             collected_data["is_bgw"] = is_bgw
             collected_data["is_dgw"] = is_dgw
+            if provenance_problem := collected_data.get("draft_provenance_problem"):
+                error_console.print(
+                    f"[yellow]{_provenance_unavailable_message(provenance_problem)}[/yellow]"
+                )
             # Standout players (#455), built here for the recapped gameweek
             # rather than in the collectors, so a backfill's replays -- which
             # only reach the ledger -- never pay for a section nobody reads.
@@ -719,6 +732,11 @@ def league_recap_command(
                                 "code": RECAP_WARNING_LEAGUE_TABLES_UPDATING,
                                 "message": _still_processing_message(gw, still_processing),
                             }] if still_processing else []
+                        ) + (
+                            [{
+                                "code": RECAP_WARNING_DRAFT_PROVENANCE_UNAVAILABLE,
+                                "message": _provenance_unavailable_message(provenance_problem),
+                            }] if provenance_problem else []
                         ),
                         # Only set on this partition's very first capture --
                         # the one moment a container-local data directory is
@@ -779,6 +797,14 @@ async def _fetch_draft_choices(league_id: int) -> dict[str, Any]:
 
     async with FPLDraftClient() as draft_client:
         return await draft_client.get_draft_choices(league_id)
+
+
+def _provenance_unavailable_message(reason: str) -> str:
+    """The stderr line and the JSON warning's message, worded once for both."""
+    return (
+        "Standout Players cannot say how each player came to his manager, so its lines read"
+        f" without it: {reason}."
+    )
 
 
 def _still_processing_message(gw: int, reason: str) -> str:
