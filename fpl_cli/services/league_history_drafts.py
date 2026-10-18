@@ -115,21 +115,38 @@ def _is_id(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _is_timestamp(value: str) -> bool:
+    """Whether a string is an ISO 8601 time, as the API sends `draft_completed`."""
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
 def is_recognised_draft(entry: Any) -> bool:
     """Whether a `league.drafts` entry has the shape this module reads.
 
-    A numeric `id` and a true-or-false `draft_completed`. An entry missing
-    either cannot be told apart from a draft still to be held, so a caller
-    that skipped it quietly would lose a held draft's picks with no sign.
+    A numeric `id` and a `draft_completed` key. The live API sends the time the
+    draft was held as an ISO timestamp and `null` for one still to be held; a
+    bool is accepted too. An entry missing the key, or carrying anything else
+    (an empty or non-timestamp string, a number), cannot be told apart from a
+    draft still to be held, so a caller that skipped it quietly would lose a
+    held draft's picks with no sign.
     """
-    return (
-        isinstance(entry, dict) and _is_id(entry.get("id"))
-        and isinstance(entry.get("draft_completed"), bool)
-    )
+    if not (isinstance(entry, dict) and _is_id(entry.get("id")) and "draft_completed" in entry):
+        return False
+    completed = entry["draft_completed"]
+    if isinstance(completed, str):
+        return _is_timestamp(completed)
+    return completed is None or isinstance(completed, bool)
 
 
 def completed_drafts(league_drafts: Iterable[Any]) -> list[dict[str, Any]]:
     """The entries of `league.drafts` the league says have been held.
+
+    Held means a truthy `draft_completed`: the completion timestamp the API
+    sends, or `True`. `null` is a draft still to be held.
 
     A draft still to be held, or under way, has no settled picks to keep: a
     partial draft saved now would read as a conflict once it finished.

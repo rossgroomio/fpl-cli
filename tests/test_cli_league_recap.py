@@ -7545,7 +7545,7 @@ class TestDraftPicksSnapshot:
 
     _DRAFT = {
         "id": 901, "event": 1, "draft_dt": "2026-08-10T18:00:00Z",
-        "draft_completed": True, "order_method": "random",
+        "draft_completed": "2026-08-13T19:47:59.528867Z", "order_method": "random",
     }
     _CHOICES = {
         "choices": [
@@ -7600,7 +7600,7 @@ class TestDraftPicksSnapshot:
         assert self._snapshot_path().is_file()
 
     def test_a_lost_draft_reaches_metadata_warnings_under_json(self):
-        scheduled = {**self._DRAFT, "id": 902, "event": 20, "draft_completed": False}
+        scheduled = {**self._DRAFT, "id": 902, "event": 20, "draft_completed": None}
         empty = {"choices": [], "element_status": [], "idle": []}
 
         result, _ = self._invoke([self._DRAFT, scheduled], empty, ["--format", "json"])

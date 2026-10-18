@@ -2709,9 +2709,9 @@ async def capture_draft_picks(
         _warn(
             result.warnings, HISTORY_WARNING_DRAFT_PICKS_UNCHECKED,
             f"{unrecognised} of the {len(league_drafts)} drafts in the league details could not be "
-            "read (no numeric `id`, or no true-or-false `draft_completed`), so their picks were not "
-            "checked or saved. The draft API may have changed shape; the picks stop being served "
-            "once a redraft is scheduled.",
+            "read (no numeric `id`, or a `draft_completed` that is not a timestamp, `null` or "
+            "true-or-false), so their picks were not checked or saved. The draft API may have changed "
+            "shape; the picks stop being served once a redraft is scheduled.",
         )
     completed = completed_drafts(league_drafts)
     if not completed:
