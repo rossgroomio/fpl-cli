@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Self
 import httpx
 
 from fpl_cli.models.gameweek_status import GameweekStatus
-from fpl_cli.models.player import POSITION_MAP, Player, usable_code
+from fpl_cli.models.player import POSITION_MAP, Player, derive_appearances, usable_code
 from fpl_cli.utils.text import strip_diacritics
 
 if TYPE_CHECKING:
@@ -638,6 +638,8 @@ class FPLDraftClient:
             Cleaned player data. `team_id` is the **main-game** team id, or
             None for a club the main game's team list does not carry.
         """
+        total_points = player_data.get("total_points", 0)
+        ppg = float(player_data.get("points_per_game", 0))
         return {
             "id": player_data.get("id"),
             # The draft game's own element id above, and the cross-game key
@@ -653,8 +655,13 @@ class FPLDraftClient:
             # form, FDR, matchup) is keyed by the main game's team id (#423).
             "team_id": draft_player_team_id(player_data, team_id_map),
             "position": POSITION_MAP.get(player_data.get("element_type", 0), "???"),
-            "total_points": player_data.get("total_points", 0),
-            "ppg": float(player_data.get("points_per_game", 0)),
+            "total_points": total_points,
+            "ppg": ppg,
+            # The bootstrap publishes no appearance count, and the waiver
+            # score's minutes factor reads a missing one as "never played",
+            # zeroing every per-90 term and the matchup bonus from GW6 (#471).
+            # Derived the way the main game's `Player.appearances` is.
+            "appearances": derive_appearances(total_points, ppg),
             "form": float(player_data.get("form", 0)),
             "status": player_data.get("status", "a"),
             "news": player_data.get("news", ""),

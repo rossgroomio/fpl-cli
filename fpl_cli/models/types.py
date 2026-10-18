@@ -154,6 +154,7 @@ class EnrichedPlayer(TypedDict):
     assists: int
     clean_sheets: int
     minutes: int
+    appearances: int  # derived as Player.appearances is; the minutes factor reads it (#471)
     expected_goals: float
     expected_assists: float
     team_name: str
@@ -168,7 +169,6 @@ class EnrichedPlayer(TypedDict):
     injury_news: NotRequired[str]
     matchup_avg_3gw: NotRequired[float]
     positional_fdr: NotRequired[float]
-    appearances: NotRequired[int]
     form_trajectory: NotRequired[float]
     xgi_sustainability: NotRequired[float]
     xgi_divergence: NotRequired[float]

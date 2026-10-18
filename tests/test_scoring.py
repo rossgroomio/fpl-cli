@@ -616,6 +616,32 @@ class TestBuildPlayerEvaluation:
         evaluation, _ = build_player_evaluation(player)
         assert evaluation.appearances == 0
 
+    @pytest.mark.parametrize("ppg_key", ["ppg", "points_per_game"])
+    def test_a_mapping_without_appearances_derives_them(self, ppg_key):
+        """#471: a missing count is not "never played".
+
+        From GW6 an appearance count of 0 zeroes every per-90 term and the
+        matchup bonus, so a row that simply lacks the field must not read as
+        one. It is derived as `Player.appearances` is, under either spelling
+        of points per game.
+        """
+        row = {"id": 1, "position": "FWD", "minutes": 900, "total_points": 50, ppg_key: 5.0}
+
+        evaluation, _ = build_player_evaluation(row)
+
+        assert evaluation.appearances == 10
+
+    def test_a_mapping_that_says_zero_appearances_keeps_them(self):
+        """Only an absent count is derived; a stated 0 is the caller's word."""
+        row = {
+            "id": 1, "position": "FWD", "minutes": 0, "total_points": 50, "ppg": 5.0,
+            "appearances": 0,
+        }
+
+        evaluation, _ = build_player_evaluation(row)
+
+        assert evaluation.appearances == 0
+
     def test_zero_chance_of_playing_survives_from_a_dict(self):
         """0 is "ruled out", not "unknown" — it must not fall through to None.
 

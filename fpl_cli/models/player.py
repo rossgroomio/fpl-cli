@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
+from fpl_cli.season import TOTAL_GAMEWEEKS
 from fpl_cli.utils.text import strip_diacritics
 
 
@@ -146,14 +147,23 @@ class Player(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def appearances(self) -> int:
-        """GWs where the player featured (starts + sub appearances).
+        """GWs where the player featured (starts + sub appearances)."""
+        return derive_appearances(self.total_points, self.points_per_game)
 
-        Derived from total_points / ppg (FPL's own inverse). Capped at 38
-        to guard against near-zero ppg inflating the count.
-        """
-        if self.points_per_game > 0:
-            return min(round(self.total_points / self.points_per_game), 38)
-        return 0
+
+def derive_appearances(total_points: float, points_per_game: float) -> int:
+    """Gameweeks a player featured in (starts + sub appearances).
+
+    Derived from total_points / ppg (FPL's own inverse), since neither game's
+    bootstrap publishes the count. Capped at a season's gameweeks to guard
+    against near-zero ppg inflating it. The one derivation behind
+    ``Player.appearances`` and the draft parser's row, so the two games
+    cannot drift apart: a draft row without the field read as "never
+    played" and zeroed the waiver score's per-90 terms from GW6 (#471).
+    """
+    if points_per_game > 0:
+        return min(round(total_points / points_per_game), TOTAL_GAMEWEEKS)
+    return 0
 
 
 def usable_code(value: object) -> int | None:
