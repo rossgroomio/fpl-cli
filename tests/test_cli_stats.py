@@ -517,6 +517,24 @@ class TestStatsDraftOwnership:
         assert "round-3 pick" not in result.stdout
         assert "trades could not be read" in " ".join(result.stderr.split())
 
+    def test_an_unknown_team_is_refused_before_any_draft_read(self):
+        draft_client = self._draft_client()
+        settings = {"fpl": {"draft_league_id": 12345}}
+        with (
+            patch("fpl_cli.api.fpl.FPLClient", return_value=_make_client(_sample_players(), _sample_teams())),
+            patch("fpl_cli.cli._context.load_settings", return_value=settings),
+            patch("fpl_cli.cli.load_settings", return_value=settings),
+            patch("fpl_cli.cli._context.resolve_format", return_value=Format.DRAFT),
+            patch("fpl_cli.cli.resolve_format", return_value=Format.DRAFT),
+            patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=draft_client),
+        ):
+            result = CliRunner().invoke(main, ["stats", "--team", "ZZZ"])
+
+        assert result.exit_code == 1
+        assert "Unknown team 'ZZZ'" in result.stderr
+        draft_client.get_league_details.assert_not_awaited()
+        draft_client.get_draft_choices.assert_not_awaited()
+
     def test_json_carries_no_draft_column_so_reads_no_history(self):
         draft_client = self._draft_client()
 

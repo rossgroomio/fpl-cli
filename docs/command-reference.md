@@ -606,30 +606,33 @@ With a draft league configured and the format not classic, `fpl player` prints a
 and `fpl stats` a Draft column. Both say who owns each player, read from every manager's squad,
 and both say how he came to stand there (#460), from the same replay of the league's draft,
 accepted waiver and free-agent moves and processed trades that the draft recap's Standout
-Players lines use ([How a draft player came to his manager](#league-recap)), run to the gameweek
-the squads were read at and held to them.
+Players lines use ([How a draft player came to his manager](#league-recap)). The history is read
+alongside the squads and run to the coming gameweek, the one FPL's own ownership list describes,
+so a waiver run or free-agent move already processed for it is in the history even while the
+squads of the current gameweek do not show it yet.
 
-`fpl player` puts it in brackets after the owner, and beneath, when the player's history is more
-than one step, the whole chain on one line:
+`fpl player` puts it in brackets after the owner, and beneath, when the player's history has a
+step the draft line does not name (anything beyond his latest step and his draft pick), the whole
+chain on one line:
 
 ```text
 Draft: Owned by Alice (round-3 pick)
-Draft: Owned by Bob (GW4 waiver pickup; drafted by Cam, round 5)
+Draft: Owned by Bob (GW4 waiver pickup; Cam's round-5 pick)
 Draft: Owned by Dan (GW9 free-agent signing; undrafted)
-Draft: Owned by Dan (acquired from Alice in a GW7 trade; drafted by Alice, round 2)
-Draft: Available (released by Dan in GW5; drafted by Dan, round 9)
+Draft: Owned by Dan (acquired from Alice in a GW7 trade; Alice's round-2 pick)
+Draft: Available (released by Dan in GW5; Dan's round-9 pick)
 Draft: Available (undrafted)
-Draft history: round-9 pick by Alice; released GW2; waiver to Bob GW5; released GW6; waiver to Cam GW7
+Draft history: Alice's round-9 pick; released GW2; waiver to Bob GW5; released GW6; waiver to Cam GW7
 ```
 
 The label is the latest link that brought him to his owner, so a manager who dropped their own
 pick and signed him again reads as the signing, with the pick behind it. A player nobody holds
 reads as his last exit and whether he was drafted. The draft named is the one in force (the
-latest completed), so after a redraft a pick says "of the GW20 redraft", a player it passed over
+latest completed), so after a redraft a pick says "in the GW20 redraft", a player it passed over
 is "undrafted in the GW20 redraft" whatever the first draft did, and the chain starts at the
 redraft. An auto-pick says so (`round-3 auto-pick`). Where the draft's picks are lost (neither the
 API nor a saved snapshot has them) the drafter is rebuilt from the squads at the draft's
-gameweek and the round is not guessed: `drafted, round unknown`, `drafted by Dan, round unknown`.
+gameweek and the round is not guessed: `drafted, round unknown`, `Dan's pick, round unknown`.
 Managers are named by the league's entries, never with a pronoun.
 
 JSON keeps `info.draft_ownership` (`Owned by Alice` or `Available`) and adds `info.draft` beside
@@ -650,14 +653,15 @@ it, null where the history cannot say:
 round-3 pick (`R?` with the round unknown), `GW4 W` for a waiver pickup, `GW9 FA` for a
 free-agent signing, `GW7 T` for a trade. Free agents stay `Available`.
 
-A player is described only where the history agrees with the owner shown, so a line never pairs
-one manager with another's pick: a player the squads put with another manager, or show available
+A player is described only where the owner shown is the history's, and so FPL's own, so a line
+never pairs one manager with another's pick: a player the squads put with another manager (a move
+processed for the coming gameweek that the current squads do not show yet), or show available
 because their squad could not be read, gets the plain line. Where the history cannot be shown
-complete (a log could not be read, the replay did not end where FPL's ownership list says everyone
-is, or it did not match the squads read), nobody is described, the lines read as they did before,
-and a `draft_provenance_unavailable` warning says why. It costs the draft's choices, the trades
-and the transaction log on top of the ownership read, plus one squad per manager at the draft's
-gameweek when its picks are lost.
+complete (a log could not be read, or the replay did not end where FPL's ownership list says
+everyone is), nobody is described, the lines read as they did before, and a
+`draft_provenance_unavailable` warning says why. It costs the draft's choices, the trades and the
+transaction log, read alongside the squads, plus one squad per manager at the draft's gameweek
+when its picks are lost. `fpl stats` refuses an unknown `--team` before reading any of it.
 
 ### Historical Data
 

@@ -18,9 +18,9 @@ from dataclasses import replace
 
 from fpl_cli.cli._draft_provenance import (
     DRAFT_PROVENANCE_UNAVAILABLE,
+    STATS_TAG_KEY,
     history_text,
     ownership_note,
-    ownership_text,
     player_standing,
     provenance_warning,
     standing_json,
@@ -75,48 +75,54 @@ class TestTheLineSaysHowHeCameToHisOwner:
     def test_a_player_still_with_the_manager_who_drafted_him_reads_as_the_pick(self):
         standing = _owned(1)
 
-        assert ownership_text(standing, NAMES) == "Owned by Alice (round-1 pick)"
+        assert ownership_note(standing, NAMES) == "round-1 pick"
         assert history_text(standing, NAMES) is None
 
     def test_an_auto_pick_says_so_rather_than_claim_the_manager_chose_him(self):
         assert ownership_note(_owned(6), NAMES) == "round-2 auto-pick"
 
     def test_a_waiver_pickup_nobody_drafted_says_so(self):
-        assert ownership_text(_owned(10), NAMES) == "Owned by Bob (GW2 waiver pickup; undrafted)"
+        assert ownership_note(_owned(10), NAMES) == "GW2 waiver pickup; undrafted"
 
     def test_a_free_agent_signing_reads_as_the_signing(self):
         assert ownership_note(_owned(11), NAMES) == "GW3 free-agent signing; undrafted"
 
-    def test_a_trade_names_the_manager_he_came_from_and_who_drafted_him(self):
-        assert ownership_text(_owned(4), NAMES) == (
-            "Owned by Bob (acquired from Alice in a GW4 trade; drafted by Alice, round 2)"
-        )
-        assert ownership_note(_owned(8), NAMES) == "acquired from Bob in a GW4 trade; drafted by Bob, round 3"
+    def test_a_trade_names_the_manager_he_came_from_and_whose_pick_he_was(self):
+        assert ownership_note(_owned(4), NAMES) == "acquired from Alice in a GW4 trade; Alice's round-2 pick"
+        assert ownership_note(_owned(8), NAMES) == "acquired from Bob in a GW4 trade; Bob's round-3 pick"
+
+    def test_a_pick_traded_on_has_no_history_line_since_the_draft_line_names_both_steps(self):
+        assert history_text(_owned(4), NAMES) is None
 
     def test_a_pick_dropped_and_signed_again_reads_as_the_signing_with_the_pick_behind_it(self):
         standing = _owned(3)
 
-        assert ownership_text(standing, NAMES) == "Owned by Cam (GW5 waiver pickup; drafted by Cam, round 1)"
-        assert history_text(standing, NAMES) == "round-1 pick by Cam; released GW3; waiver to Cam GW5"
+        assert ownership_note(standing, NAMES) == "GW5 waiver pickup; Cam's round-1 pick"
+        # The release is a step the draft line does not name.
+        assert history_text(standing, NAMES) == "Cam's round-1 pick; released GW3; waiver to Cam GW5"
 
     def test_a_manager_the_league_does_not_name_is_still_named_by_entry(self):
-        assert ownership_text(_owned(1), {}) == f"Owned by Team #{ALICE} (round-1 pick)"
+        assert ownership_note(_owned(4), {}) == f"acquired from Team #{ALICE} in a GW4 trade; Team #{ALICE}'s round-2 pick"
 
 
 class TestAFreeAgentSaysHisLastExit:
-    def test_a_dropped_pick_says_who_released_him_and_who_drafted_him(self):
+    def test_a_dropped_pick_says_who_released_him_and_whose_pick_he_was(self):
         standing = _free(5)
 
-        assert ownership_text(standing, NAMES) == "Available (released by Bob in GW2; drafted by Bob, round 2)"
-        assert history_text(standing, NAMES) == "round-2 pick by Bob; released GW2"
+        assert ownership_note(standing, NAMES) == "released by Bob in GW2; Bob's round-2 pick"
+        # Pick and release are both on the draft line already.
+        assert history_text(standing, NAMES) is None
 
-    def test_a_signing_let_go_again_says_he_was_never_drafted(self):
-        assert ownership_text(_free(12), NAMES) == "Available (released by Cam in GW5; undrafted)"
+    def test_a_signing_let_go_again_says_he_was_never_drafted_and_the_history_has_the_signing(self):
+        standing = _free(12)
+
+        assert ownership_note(standing, NAMES) == "released by Cam in GW5; undrafted"
+        assert history_text(standing, NAMES) == "free agent to Cam GW3; released GW5"
 
     def test_a_player_nobody_has_held_is_undrafted(self):
         standing = _free(NEVER_HELD)
 
-        assert ownership_text(standing, NAMES) == "Available (undrafted)"
+        assert ownership_note(standing, NAMES) == "undrafted"
         assert history_text(standing, NAMES) is None
 
 
@@ -136,9 +142,9 @@ class TestALongChain:
     def test_every_step_is_on_the_history_line_and_the_latest_on_the_draft_line(self):
         standing = _owned(1, self._provenance())
 
-        assert ownership_note(standing, NAMES) == "GW7 waiver pickup; drafted by Alice, round 1"
+        assert ownership_note(standing, NAMES) == "GW7 waiver pickup; Alice's round-1 pick"
         assert history_text(standing, NAMES) == (
-            "round-1 pick by Alice; released GW2; waiver to Bob GW5; released GW6; waiver to Cam GW7"
+            "Alice's round-1 pick; released GW2; waiver to Bob GW5; released GW6; waiver to Cam GW7"
         )
 
 
@@ -164,11 +170,11 @@ class TestARedraft:
         return _provenance(logs, 7)
 
     def test_a_pick_names_the_redraft_it_was_made_in(self):
-        assert ownership_note(_owned(1, self._provenance()), NAMES) == "round-1 pick of the GW6 redraft"
+        assert ownership_note(_owned(1, self._provenance()), NAMES) == "round-1 pick in the GW6 redraft"
 
     def test_a_dropped_redraft_pick_names_the_redraft(self):
         assert ownership_note(_free(5, self._provenance()), NAMES) == (
-            "released by Alice in GW7; drafted by Alice, round 2 of the GW6 redraft"
+            "released by Alice in GW7; Alice's round-2 pick in the GW6 redraft"
         )
 
     def test_a_player_the_redraft_passed_over_is_undrafted_in_it_whatever_the_first_draft_did(self):
@@ -197,10 +203,12 @@ class TestLostRounds:
 
         assert ownership_note(_owned(1, provenance), NAMES) == "drafted, round unknown"
         assert ownership_note(_owned(4, provenance), NAMES) == (
-            "acquired from Alice in a GW4 trade; drafted by Alice, round unknown"
+            "acquired from Alice in a GW4 trade; Alice's pick, round unknown"
         )
-        assert ownership_note(_free(5, provenance), NAMES) == "released by Bob in GW2; drafted by Bob, round unknown"
-        assert history_text(_owned(3, provenance), NAMES) == "drafted by Cam; released GW3; waiver to Cam GW5"
+        assert ownership_note(_free(5, provenance), NAMES) == "released by Bob in GW2; Bob's pick, round unknown"
+        assert history_text(_owned(3, provenance), NAMES) == (
+            "Cam's pick, round unknown; released GW3; waiver to Cam GW5"
+        )
 
     def test_the_json_flags_the_round_as_unknown(self):
         draft = standing_json(_owned(1, self._provenance()), NAMES)
@@ -302,6 +310,9 @@ class TestTheStatsTag:
         assert stats_tag(_owned(11)) == "GW3 FA"
         assert stats_tag(_owned(4)) == "GW4 T"
 
+    def test_the_key_names_every_tag(self):
+        assert STATS_TAG_KEY == "Draft: R3 = round-3 pick (R? round unknown), W = waiver, FA = free agent, T = trade"
+
     def test_a_free_agent_has_no_tag_and_a_table_of_them_needs_no_key(self):
         assert stats_tag(_free(5)) is None
         assert stats_tag(_free(NEVER_HELD)) is None
@@ -315,5 +326,5 @@ def test_a_trade_with_more_than_one_item_moves_each_player_with_his_own_chain():
     owners = {2: ALICE, 4: ALICE, 5: ALICE, 1: BOB, 7: BOB, 8: BOB, 3: CAM, 6: CAM, 9: CAM}
     provenance = _provenance(replace(_logs(), transactions=[], trades=[trade], element_status=_status(owners)))
 
-    assert ownership_note(_owned(7, provenance), NAMES) == "acquired from Alice in a GW4 trade; drafted by Alice, round 3"
-    assert ownership_note(_owned(5, provenance), NAMES) == "acquired from Bob in a GW4 trade; drafted by Bob, round 2"
+    assert ownership_note(_owned(7, provenance), NAMES) == "acquired from Alice in a GW4 trade; Alice's round-3 pick"
+    assert ownership_note(_owned(5, provenance), NAMES) == "acquired from Bob in a GW4 trade; Bob's round-2 pick"

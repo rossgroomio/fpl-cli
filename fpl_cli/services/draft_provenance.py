@@ -143,11 +143,6 @@ class DraftPlayerHistory:
         """The most recent link: how he came to his owner."""
         return self.chain[-1]
 
-    @property
-    def drafted(self) -> DraftStep | None:
-        """His pick in the draft in force, or None if nobody drafted him in it."""
-        return _drafted(self.chain)
-
 
 @dataclass(frozen=True)
 class DraftFreeAgentHistory:
@@ -166,19 +161,13 @@ class DraftFreeAgentHistory:
     code: int | None
     chain: tuple[DraftStep, ...]
 
-    @property
-    def last_exit(self) -> DraftStep:
-        """The release that put him back in the pool."""
-        return self.chain[-1]
 
-    @property
-    def drafted(self) -> DraftStep | None:
-        """His pick in the draft in force, or None if nobody drafted him in it."""
-        return _drafted(self.chain)
+def drafted_step(chain: Sequence[DraftStep]) -> DraftStep | None:
+    """A player's pick in the draft in force, or None if nobody drafted him in it.
 
-
-def _drafted(chain: Sequence[DraftStep]) -> DraftStep | None:
-    """The draft step a chain starts with, if it starts with one: only its first link can be."""
+    Only a chain's first link can be a draft step: every chain starts at the
+    draft in force or at the first move that put him in a squad after it.
+    """
     return chain[0] if chain and chain[0].kind == "draft" else None
 
 

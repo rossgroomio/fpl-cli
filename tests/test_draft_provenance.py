@@ -29,6 +29,7 @@ from fpl_cli.services.draft_provenance import (
     DraftLogs,
     DraftProvenance,
     draft_in_force,
+    drafted_step,
     get_draft_provenance,
     read_draft_logs,
     replay_draft_history,
@@ -207,21 +208,21 @@ class TestTheDraftAndTheLogsAfterIt:
         released = provenance.released
         assert set(released) == {5, 7, 12}
         assert [(s.kind, s.entry, s.gameweek) for s in released[5].chain] == [("draft", BOB, 1), ("release", BOB, 2)]
-        assert (released[5].last_exit.kind, released[5].last_exit.gameweek) == ("release", 2)
-        assert released[5].drafted is not None and released[5].drafted.pick is not None
-        assert released[5].drafted.pick.round == 2
+        drafted = drafted_step(released[5].chain)
+        assert drafted is not None and drafted.pick is not None and drafted.pick.round == 2
         assert (released[5].id, released[5].code) == (505, 7005)
         # Signed, never drafted, let go again.
         assert [s.kind for s in released[12].chain] == ["free_agent", "release"]
-        assert released[12].drafted is None
+        assert drafted_step(released[12].chain) is None
         # Nobody in either set was untouched: 13 is in neither.
         assert 13 not in released and 13 not in provenance.players
 
     def test_an_owned_players_draft_pick_is_found_whatever_came_after_it(self):
         histories = _histories(replay_draft_history(_logs(), 5))
 
-        assert histories[3].drafted is not None and histories[3].drafted.entry == CAM
-        assert histories[10].drafted is None
+        drafted = drafted_step(histories[3].chain)
+        assert drafted is not None and drafted.entry == CAM
+        assert drafted_step(histories[10].chain) is None
 
     def test_a_replay_it_cannot_trust_lets_nobody_go_either(self):
         provenance = replay_draft_history(_logs(trades=None), 5)

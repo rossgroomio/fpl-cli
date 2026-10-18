@@ -2,15 +2,15 @@
 
 `fpl player` and `fpl stats` show a draft owner, or "Available", for every
 player they list. The league's own history (`services/draft_provenance.py`,
-read by `get_draft_ownership_mapping(provenance_season=...)`) also says how
-he got there: his draft pick, the waiver or free-agent move, or the trade, and
+read by `get_draft_ownership_mapping(with_provenance=True)`) also says how he
+got there: his draft pick, the waiver or free-agent move, or the trade, and
 for a player nobody holds, his last exit and whether he was ever drafted.
 This module turns that into the commands' words and JSON.
 
 A player is described only where the history agrees with the owner the
 command shows, so a line never pairs one manager's name with another's
 pick. Where the history could not be shown complete, nobody is described and
-the commands read exactly as they did before, with `provenance_warning()`
+the commands read exactly as they did before, with `ownership_warnings()`
 saying why.
 
 Managers are named by the league's entries, never with a pronoun: the data
@@ -23,11 +23,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from fpl_cli.season import season_label
+from fpl_cli.services.draft_provenance import drafted_step
+
 if TYPE_CHECKING:
+    from fpl_cli.agents.common import DraftOwnership
+    from fpl_cli.api.fpl import FPLClient
     from fpl_cli.services.draft_provenance import DraftInForce, DraftProvenance, DraftStep
 
 # The `metadata.warnings` code for a history that could not be shown
-# complete; the league recap reports the same failure under the same code.
+# complete, here and in the league recap.
 DRAFT_PROVENANCE_UNAVAILABLE = "draft_provenance_unavailable"
 
 # How a player came to stand where he does: the kind of the latest link that
@@ -35,8 +40,15 @@ DRAFT_PROVENANCE_UNAVAILABLE = "draft_provenance_unavailable"
 # ever held him.
 DraftStandingKind = Literal["draft", "waiver", "free_agent", "trade", "released", "undrafted"]
 
-# The `fpl stats` Draft column's key to its tags, shown under the table.
-STATS_TAG_KEY = "Draft: R3 = round-3 pick (R? round unknown), W = waiver, FA = free agent, T = trade"
+# The `fpl stats` Draft column's tag for each move, and the words its key gives it.
+_MOVE_TAGS: dict[str, tuple[str, str]] = {
+    "waiver": ("W", "waiver"), "free_agent": ("FA", "free agent"), "trade": ("T", "trade"),
+}
+
+# The key under the `fpl stats` table to its tags.
+STATS_TAG_KEY = "Draft: R3 = round-3 pick (R? round unknown), " + ", ".join(
+    f"{tag} = {words}" for tag, words in _MOVE_TAGS.values()
+)
 
 
 @dataclass(frozen=True)
@@ -62,7 +74,7 @@ class DraftStanding:
     @property
     def drafted(self) -> DraftStep | None:
         """His pick in the draft in force, None if nobody drafted him in it."""
-        return self.chain[0] if self.chain and self.chain[0].kind == "draft" else None
+        return drafted_step(self.chain)
 
 
 def player_standing(
@@ -73,8 +85,10 @@ def player_standing(
     *owner* is the entry the command shows holding him, None where it shows
     him available. None comes back for a history that is missing or could
     not be shown complete, a player with no draft id, and a player the
-    history holds somewhere other than the command shows (a squad the
-    ownership read missed shows its players available).
+    history holds somewhere other than the command shows: a squad the
+    ownership read missed shows its players available (#438), and a move
+    applied to the coming gameweek is in the history before the squads show
+    it.
     """
     if provenance is None or not provenance.available or element is None:
         return None
@@ -95,6 +109,11 @@ def player_standing(
     return DraftStanding(owner=None, kind="undrafted", chain=(), draft=provenance.draft)
 
 
+def standing_for(ownership: DraftOwnership, main_id: int) -> DraftStanding | None:
+    """How the main-game player *main_id* stands, against the owner *ownership* shows for him."""
+    return player_standing(ownership.provenance, ownership.main_to_draft_id.get(main_id), ownership.owner_of(main_id))
+
+
 def provenance_warning(provenance: DraftProvenance | None) -> dict[str, str] | None:
     """The `metadata.warnings` entry for a history that could not be shown complete, else None."""
     if provenance is None or provenance.problem is None:
@@ -108,88 +127,99 @@ def provenance_warning(provenance: DraftProvenance | None) -> dict[str, str] | N
     }
 
 
-def _name(entry: int, names: Mapping[int, str]) -> str:
+def ownership_warnings(ownership: DraftOwnership) -> list[dict[str, str]]:
+    """Every `metadata.warnings` entry the draft lines owe: squads the ownership
+    read missed (#438), and a history that could not be shown complete."""
+    from fpl_cli.api.fpl_draft import unread_squads_warning
+
+    found = (unread_squads_warning(ownership.unread_squads), provenance_warning(ownership.provenance))
+    return [w for w in found if w is not None]
+
+
+async def draft_history_season(client: FPLClient) -> str | None:
+    """The season whose saved draft picks the history may read, or None for the clock's."""
+    try:
+        return season_label(await client.get_season_year())
+    except Exception:  # noqa: BLE001 — optional enrichment: None falls back to the clock's season
+        return None
+
+
+def manager_name(entry: int, names: Mapping[int, str]) -> str:
+    """An entry's manager as the draft lines name them, by entry where the league does not."""
     return names.get(entry, f"Team #{entry}")
 
 
-def _redraft(draft: DraftInForce | None) -> int | None:
-    """The redraft's gameweek where the league has drafted more than once, so a line must say which."""
-    return draft.gameweek if draft is not None and draft.redraft else None
+def _draft_words(step: DraftStep, draft: DraftInForce | None, who: str | None = None) -> str:
+    """One draft pick in the lines' words, the one place they are written.
+
+    "round-3 pick", "Cam's round-3 auto-pick", "Cam's pick, round unknown",
+    "drafted, round unknown", with "in the GW20 redraft" where the league has
+    drafted more than once and the draft must be named.
+    """
+    redraft = f" in the GW{draft.gameweek} redraft" if draft is not None and draft.redraft else ""
+    whose = f"{who}'s " if who else ""
+    pick = step.pick
+    if pick is None:
+        return f"{whose}pick{redraft}, round unknown" if who else f"drafted{redraft}, round unknown"
+    return f"{whose}round-{pick.round} {'auto-pick' if pick.auto else 'pick'}{redraft}"
 
 
 def _origin(standing: DraftStanding, names: Mapping[int, str]) -> str:
-    """Whether and how he was drafted: "drafted by Cam, round 5", "undrafted"."""
-    redraft = _redraft(standing.draft)
+    """Whose pick he was in the draft in force: "Cam's round-5 pick", or "undrafted"."""
     drafted = standing.drafted
-    if drafted is None:
-        return f"undrafted in the GW{redraft} redraft" if redraft else "undrafted"
-    who = _name(drafted.entry, names)
-    pick = drafted.pick
-    if pick is None:
-        return f"drafted by {who}{f' in the GW{redraft} redraft' if redraft else ''}, round unknown"
-    verb = "auto-picked" if pick.auto else "drafted"
-    return f"{verb} by {who}, round {pick.round}{f' of the GW{redraft} redraft' if redraft else ''}"
+    if drafted is not None:
+        return _draft_words(drafted, standing.draft, manager_name(drafted.entry, names))
+    draft = standing.draft
+    return f"undrafted in the GW{draft.gameweek} redraft" if draft is not None and draft.redraft else "undrafted"
 
 
 def ownership_note(standing: DraftStanding, names: Mapping[int, str]) -> str:
     """How he came to stand where he does, for the brackets after "Owned by Alice" or "Available".
 
-    "round-3 pick", "GW4 waiver pickup; drafted by Cam, round 5", "from
-    Alice in a GW7 trade; undrafted", "released by Dan in GW5; drafted by
-    Dan, round 9", "undrafted". The draft named is the one in force, and a
-    redraft names itself.
+    "round-3 pick", "GW4 waiver pickup; Cam's round-5 pick", "acquired from
+    Alice in a GW7 trade; undrafted", "released by Dan in GW5; Dan's round-9
+    pick", "undrafted". The draft named is the one in force.
     """
     step = standing.latest
-    origin = _origin(standing, names)
     if step is None:
-        return origin
+        return _origin(standing, names)
     if standing.kind == "draft":
-        redraft = _redraft(standing.draft)
-        if step.pick is None:
-            return f"drafted{f' in the GW{redraft} redraft' if redraft else ''}, round unknown"
-        noun = "auto-pick" if step.pick.auto else "pick"
-        return f"round-{step.pick.round} {noun}{f' of the GW{redraft} redraft' if redraft else ''}"
+        return _draft_words(step, standing.draft)
+    origin = _origin(standing, names)
     if standing.kind == "waiver":
         return f"GW{step.gameweek} waiver pickup; {origin}"
     if standing.kind == "free_agent":
         return f"GW{step.gameweek} free-agent signing; {origin}"
     if standing.kind == "trade":
-        source = f" from {_name(step.from_entry, names)}" if step.from_entry is not None else ""
+        source = f" from {manager_name(step.from_entry, names)}" if step.from_entry is not None else ""
         return f"acquired{source} in a GW{step.gameweek} trade; {origin}"
-    return f"released by {_name(step.entry, names)} in GW{step.gameweek}; {origin}"
-
-
-def ownership_text(standing: DraftStanding, names: Mapping[int, str]) -> str:
-    """The whole draft line's text: "Owned by Alice (round-3 pick)", "Available (undrafted)"."""
-    head = f"Owned by {_name(standing.owner, names)}" if standing.owner is not None else "Available"
-    return f"{head} ({ownership_note(standing, names)})"
+    return f"released by {manager_name(step.entry, names)} in GW{step.gameweek}; {origin}"
 
 
 def _step_text(step: DraftStep, draft: DraftInForce | None, names: Mapping[int, str]) -> str:
-    who = _name(step.entry, names)
+    who = manager_name(step.entry, names)
     if step.kind == "draft":
-        redraft = _redraft(draft)
-        where = f" in the GW{redraft} redraft" if redraft else ""
-        if step.pick is None:
-            return f"drafted by {who}{where}"
-        return f"round-{step.pick.round} {'auto-pick' if step.pick.auto else 'pick'} by {who}{where}"
+        return _draft_words(step, draft, who)
     if step.kind == "waiver":
         return f"waiver to {who} GW{step.gameweek}"
     if step.kind == "free_agent":
         return f"free agent to {who} GW{step.gameweek}"
     if step.kind == "trade":
-        source = f" from {_name(step.from_entry, names)}" if step.from_entry is not None else ""
+        source = f" from {manager_name(step.from_entry, names)}" if step.from_entry is not None else ""
         return f"trade{source} to {who} GW{step.gameweek}"
     return f"released GW{step.gameweek}"
 
 
 def history_text(standing: DraftStanding, names: Mapping[int, str]) -> str | None:
-    """His whole chain on one line, or None where it is a single step the draft line already says.
+    """His whole chain on one line, or None where the draft line already names every step.
 
-    "round-9 pick by Alice; released GW2; waiver to Bob GW5; released GW6;
+    The line names his latest step and his draft pick, so a chain of those
+    two alone (a pick traded on, a pick let go) adds nothing:
+    "Alice's round-9 pick; released GW2; waiver to Bob GW5; released GW6;
     waiver to Cam GW7".
     """
-    if len(standing.chain) < 2:
+    named = 2 if standing.drafted is not None and len(standing.chain) > 1 else 1
+    if len(standing.chain) <= named:
         return None
     return "; ".join(_step_text(step, standing.draft, names) for step in standing.chain)
 
@@ -205,12 +235,12 @@ def stats_tag(standing: DraftStanding) -> str | None:
         return None
     if standing.kind == "draft":
         return f"R{step.pick.round}" if step.pick is not None else "R?"
-    suffix = {"waiver": "W", "free_agent": "FA", "trade": "T"}.get(standing.kind)
-    return f"GW{step.gameweek} {suffix}" if suffix else None
+    tag = _MOVE_TAGS.get(standing.kind)
+    return f"GW{step.gameweek} {tag[0]}" if tag else None
 
 
 def _manager(entry: int | None, names: Mapping[int, str]) -> dict[str, Any] | None:
-    return {"entry_id": entry, "name": _name(entry, names)} if entry is not None else None
+    return {"entry_id": entry, "name": manager_name(entry, names)} if entry is not None else None
 
 
 def _step_json(step: DraftStep, names: Mapping[int, str]) -> dict[str, Any]:
