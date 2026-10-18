@@ -2137,13 +2137,20 @@ class TestDraftPointInTimeReconstruction:
                 ],
                 id="verbatim",
             ),
-            pytest.param({"name": "Draft League"}, [], id="absent"),
-            pytest.param({"name": "Draft League", "drafts": None}, [], id="null"),
+            pytest.param(
+                {"name": "Draft League", "drafts": [{"id": 901}, "unreadable"]},
+                [{"id": 901}, "unreadable"],
+                id="unrecognised-entries-kept-for-the-snapshot-to-report",
+            ),
+            pytest.param({"name": "Draft League"}, None, id="absent"),
+            pytest.param({"name": "Draft League", "drafts": None}, None, id="null"),
         ],
     )
     async def test_league_drafts_are_handed_on_for_the_picks_snapshot(self, league, expected):
         """#461: the snapshot reads `league.drafts` off the same league
-        details the recap came from, rather than fetching them again."""
+        details the recap came from, rather than fetching them again, and
+        verbatim: a missing list or an entry it cannot read is the snapshot's
+        to report, not this collector's to drop quietly."""
         league_details = {
             **self._league_details(
                 standings=[{"league_entry": 10, "event_total": 0, "total": 0}],

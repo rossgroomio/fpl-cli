@@ -489,14 +489,10 @@ def league_recap_command(
                     use_net_points=bool(settings.get("use_net_points", False)),
                 )
                 # Each held draft's picks, kept beside the ledger while the
-                # API still serves them (#461). After the ledger write, so a
-                # season's first capture still finds its partition new and
-                # says where it is recording.
-                draft_picks_warnings: list[dict[str, str]] = []
-                if is_draft:
-                    draft_picks_warnings = await capture_draft_picks(
-                        collected_data, season=season, fetch_choices=_fetch_draft_choices,
-                    )
+                # API still serves them (#461). A no-op off draft.
+                draft_picks = await capture_draft_picks(
+                    collected_data, season=season, fetch_choices=_fetch_draft_choices,
+                )
             notes_pack = capture_result.notes_pack
 
             # Report-surfaced history text, stashed as plain strings so the
@@ -665,7 +661,7 @@ def league_recap_command(
                         # The skipped editorial rides the same channel as the
                         # capture's own warnings: `synthesis_summary` being
                         # null does not say whether it was asked for.
-                        "warnings": capture_result.warnings + draft_picks_warnings + (
+                        "warnings": capture_result.warnings + draft_picks.warnings + (
                             [{
                                 "code": "synthesis_provider_unavailable",
                                 "message": (
@@ -733,6 +729,10 @@ def league_recap_command(
                             str(capture_result.first_capture_store_path)
                             if capture_result.first_capture_store_path else None
                         ),
+                        # The draft-picks snapshots this run wrote (#461), so
+                        # a run that commits the ledger sees a new file; the
+                        # stderr notice naming them is suppressed here.
+                        "draft_picks_saved": [str(path) for path in draft_picks.saved],
                     },
                     file=stdout,
                 )

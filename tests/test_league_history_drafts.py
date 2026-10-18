@@ -9,6 +9,7 @@ API or when a draft's picks are already gone.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -18,19 +19,26 @@ import pytest
 from fpl_cli.cli._league_recap_history import (
     HISTORY_WARNING_DRAFT_PICKS_CONFLICT,
     HISTORY_WARNING_DRAFT_PICKS_LOST,
+    HISTORY_WARNING_DRAFT_PICKS_UNCHECKED,
     HISTORY_WARNING_DRAFT_PICKS_UNSAVED,
+    DraftPicksCapture,
     capture_draft_picks,
 )
 from fpl_cli.cli._league_recap_types import LeagueRecapData, RecapAwards
 from fpl_cli.paths import user_data_dir
-from fpl_cli.services.league_history import partition_dir
+from fpl_cli.services.league_history import LeagueHistoryStore, partition_dir
 from fpl_cli.services.league_history_drafts import (
     LEAGUE_DRAFT_KEY,
+    DraftSnapshotOutcome,
     DraftSnapshotStatus,
     completed_drafts,
     draft_snapshot_path,
+    has_saved_picks,
+    is_recognised_draft,
+    lost_draft_path,
     snapshot_draft_choices,
 )
+from tests.conftest import make_history_row
 
 SEASON = "2026-27"
 LEAGUE_ID = 42
@@ -80,40 +88,59 @@ def _league_draft(draft_id: int = DRAFT_ID, *, completed: bool = True, event: in
     }
 
 
-def _snapshot(
-    league_drafts: list[dict[str, Any]], choices: dict[str, Any],
-) -> list[Any]:
-    return snapshot_draft_choices(SEASON, LEAGUE_ID, league_drafts, choices)
+def _snapshot(league_drafts: list[Any], choices: dict[str, Any]) -> list[DraftSnapshotOutcome]:
+    return snapshot_draft_choices(SEASON, LEAGUE_ID, completed_drafts(league_drafts), choices)
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _snapshot_file(draft_id: int = DRAFT_ID) -> Path:
+    return draft_snapshot_path(SEASON, LEAGUE_ID, draft_id)
 
 
 class TestSnapshotPath:
     def test_lives_in_the_draft_ledger_partition_beside_the_gameweek_files(self):
-        path = draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
+        path = _snapshot_file()
 
         assert path == partition_dir(SEASON, "draft", LEAGUE_ID) / "drafts" / f"draft-{DRAFT_ID}.json"
         assert path.is_relative_to(user_data_dir() / "league_history")
+        assert lost_draft_path(SEASON, LEAGUE_ID, DRAFT_ID).parent == path.parent
 
     def test_follows_a_data_dir_override_set_after_import(self, tmp_path, monkeypatch):
         """Resolved at point of use, like every path in `paths.py`'s care."""
-        before = draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
+        before = _snapshot_file()
         moved = tmp_path / "moved-data"
         monkeypatch.setenv("FPL_CLI_DATA_DIR", str(moved))
         user_data_dir.cache_clear()
 
-        after = draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
+        after = _snapshot_file()
 
         assert after != before
         assert after == moved / "league_history" / SEASON / f"draft-{LEAGUE_ID}" / "drafts" / f"draft-{DRAFT_ID}.json"
 
     def test_a_snapshot_does_not_read_as_a_captured_gameweek(self):
-        from fpl_cli.services.league_history import LeagueHistoryStore
-
         _snapshot([_league_draft()], _response(*_picks()))
 
         assert LeagueHistoryStore(SEASON, "draft", LEAGUE_ID).captured_gameweeks() == []
 
+    def test_a_snapshot_alone_does_not_make_the_partition_exist(self):
+        """A hand-saved copy, or one written on a run whose cohort wrote no
+        rows, lands before any gameweek. The next recap must still find the
+        partition new and say where it is recording."""
+        store = LeagueHistoryStore(SEASON, "draft", LEAGUE_ID)
+        _snapshot([_league_draft()], _response(*_picks()))
 
-class TestCompletedDrafts:
+        assert store.partition_dir().is_dir()
+        assert store.partition_exists() is False
+
+        store.append_rows(5, [make_history_row(gameweek=5, gross_points=50)])
+        assert store.partition_exists() is True
+
+
+class TestDraftRecognition:
     def test_keeps_only_held_drafts_with_an_id(self):
         drafts = [
             _league_draft(DRAFT_ID),
@@ -125,6 +152,21 @@ class TestCompletedDrafts:
 
         assert [d["id"] for d in completed_drafts(drafts)] == [DRAFT_ID]
 
+    @pytest.mark.parametrize(
+        ("entry", "recognised"),
+        [
+            pytest.param(_league_draft(), True, id="held"),
+            pytest.param(_league_draft(completed=False), True, id="scheduled"),
+            pytest.param({"id": DRAFT_ID}, False, id="no-completed-flag"),
+            pytest.param({"id": DRAFT_ID, "draft_completed": 1}, False, id="flag-not-a-bool"),
+            pytest.param({"id": "901", "draft_completed": True}, False, id="id-not-a-number"),
+            pytest.param({"draft_id": DRAFT_ID, "draft_completed": True}, False, id="id-renamed"),
+            pytest.param(None, False, id="not-an-object"),
+        ],
+    )
+    def test_an_entry_is_recognised_only_in_the_shape_it_is_read_in(self, entry, recognised):
+        assert is_recognised_draft(entry) is recognised
+
 
 class TestSnapshotWrite:
     def test_a_completed_draft_is_saved_verbatim_with_its_league_entry(self):
@@ -133,29 +175,28 @@ class TestSnapshotWrite:
         [outcome] = _snapshot([_league_draft()], response)
 
         assert outcome.status is DraftSnapshotStatus.SAVED
-        assert outcome.path == draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
+        assert outcome.path == _snapshot_file()
         stored = json.loads(outcome.path.read_text(encoding="utf-8"))
         assert stored == {**response, LEAGUE_DRAFT_KEY: _league_draft()}
+        assert has_saved_picks(SEASON, LEAGUE_ID, DRAFT_ID)
 
     def test_an_identical_second_run_writes_nothing(self):
         _snapshot([_league_draft()], _response(*_picks()))
-        path = draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
-        before = path.read_bytes()
+        before = _snapshot_file().read_bytes()
 
         with patch("fpl_cli.services.league_history_drafts.atomic_write_text") as write:
             [outcome] = _snapshot([_league_draft()], _response(*_picks()))
 
         assert outcome.status is DraftSnapshotStatus.UNCHANGED
         write.assert_not_called()
-        assert path.read_bytes() == before
+        assert _snapshot_file().read_bytes() == before
 
     def test_todays_ownership_and_team_names_moving_on_are_not_a_difference(self):
         """`element_status` is every player's owner today and changes with each
         waiver round; a team rename changes the rows' display names. The picks
         are what was held, and they have not changed."""
         _snapshot([_league_draft()], _response(*_picks()))
-        path = draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
-        before = path.read_bytes()
+        before = _snapshot_file().read_bytes()
         moved_on = _response(
             *[{**row, "entry_name": "Renamed FC"} for row in reversed(_picks())], owner=101,
         )
@@ -163,76 +204,109 @@ class TestSnapshotWrite:
         [outcome] = _snapshot([_league_draft()], moved_on)
 
         assert outcome.status is DraftSnapshotStatus.UNCHANGED
-        assert path.read_bytes() == before
+        assert _snapshot_file().read_bytes() == before
 
     def test_differing_picks_are_refused_and_the_file_kept(self):
         _snapshot([_league_draft()], _response(*_picks()))
-        path = draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
-        before = path.read_bytes()
+        before = _snapshot_file().read_bytes()
         changed = _picks()
         changed[1] = {**changed[1], "element": 999}
 
         [outcome] = _snapshot([_league_draft()], _response(*changed))
 
         assert outcome.status is DraftSnapshotStatus.DIFFERS
+        assert outcome.detail == (
+            f"holds 3 picks for draft {DRAFT_ID} where the API serves 3: 1 served are not in "
+            "the file, and 1 in the file are not served"
+        )
+        assert _snapshot_file().read_bytes() == before
+
+    def test_a_difference_is_described_in_both_directions(self):
+        """The file holding a pick the API no longer serves is a difference
+        too, and must not read as "0 of them not in the file"."""
+        _snapshot([_league_draft()], _response(*_picks()))
+
+        [outcome] = _snapshot([_league_draft()], _response(*_picks()[:2]))
+
+        assert outcome.status is DraftSnapshotStatus.DIFFERS
         assert outcome.detail is not None
-        assert "3 picks" in outcome.detail
-        assert "1 of them not in the file" in outcome.detail
-        assert path.read_bytes() == before
+        assert "where the API serves 2: 0 served are not in the file, and 1 in the file are not served" in outcome.detail
 
-    def test_an_unreadable_file_is_left_alone(self):
-        path = draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
-        path.parent.mkdir(parents=True)
-        path.write_text('{"choices": [', encoding="utf-8")
+    def test_a_file_holding_none_of_a_served_drafts_picks_differs(self):
+        """A capture taken after the redraft was scheduled: valid, but empty."""
+        _write(_snapshot_file(), json.dumps(_response()))
+
+        [outcome] = _snapshot([_league_draft()], _response(*_picks()))
+
+        assert outcome.status is DraftSnapshotStatus.DIFFERS
+        assert json.loads(_snapshot_file().read_text(encoding="utf-8")) == _response()
+
+    @pytest.mark.parametrize(
+        ("text", "detail"),
+        [
+            pytest.param('{"choices": [', "is not valid JSON", id="truncated"),
+            pytest.param('{"detail": "Not found."}', "holds no `choices` list", id="error-body"),
+        ],
+    )
+    def test_an_unreadable_file_is_left_alone(self, text, detail):
+        _write(_snapshot_file(), text)
 
         [outcome] = _snapshot([_league_draft()], _response(*_picks()))
 
         assert outcome.status is DraftSnapshotStatus.UNREADABLE
-        assert path.read_text(encoding="utf-8") == '{"choices": ['
+        assert outcome.detail is not None and outcome.detail.startswith(detail)
+        assert _snapshot_file().read_text(encoding="utf-8") == text
 
-    def test_a_file_with_no_choices_list_is_unreadable(self):
-        path = draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
-        path.parent.mkdir(parents=True)
-        path.write_text('{"detail": "Not found."}', encoding="utf-8")
-
-        [outcome] = _snapshot([_league_draft()], _response(*_picks()))
+    def test_a_permission_error_reading_the_file_is_an_outcome(self):
+        with patch.object(Path, "read_text", side_effect=PermissionError(13, "Permission denied")):
+            [outcome] = _snapshot([_league_draft()], _response(*_picks()))
 
         assert outcome.status is DraftSnapshotStatus.UNREADABLE
+        assert outcome.detail is not None and "Permission denied" in outcome.detail
 
     def test_a_manual_capture_of_the_endpoint_counts_as_saved(self):
         """The fallback the raw format exists for: the response saved straight
         to the path, compact and without `league_draft`, is the same picks and
         is kept exactly as it is."""
-        path = draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
-        path.parent.mkdir(parents=True)
         manual = json.dumps(_response(*_picks()), separators=(",", ":"))
-        path.write_text(manual, encoding="utf-8")
+        _write(_snapshot_file(), manual)
 
         [outcome] = _snapshot([_league_draft()], _response(*_picks()))
 
         assert outcome.status is DraftSnapshotStatus.UNCHANGED
-        assert path.read_text(encoding="utf-8") == manual
+        assert _snapshot_file().read_text(encoding="utf-8") == manual
 
     def test_a_scheduled_but_unheld_draft_writes_nothing(self):
         assert _snapshot([_league_draft(completed=False)], _response()) == []
 
-        assert not draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID).exists()
+        assert not _snapshot_file().exists()
 
     def test_a_draft_under_way_is_not_saved_until_it_completes(self):
         """A partial draft saved now would read as a conflict once it finished."""
         assert _snapshot([_league_draft(completed=False)], _response(*_picks()[:1])) == []
 
-        assert not draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID).exists()
+        assert not _snapshot_file().exists()
 
-    def test_a_write_failure_is_an_outcome_not_an_exception(self):
-        with patch(
-            "fpl_cli.services.league_history_drafts.atomic_write_text",
-            side_effect=OSError("No space left on device"),
-        ):
+    @pytest.mark.parametrize(
+        "failure",
+        [OSError("No space left on device"), UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed")],
+        ids=["disk-full", "unencodable"],
+    )
+    def test_a_write_failure_is_an_outcome_not_an_exception(self, failure):
+        with patch("fpl_cli.services.league_history_drafts.atomic_write_text", side_effect=failure):
             [outcome] = _snapshot([_league_draft()], _response(*_picks()))
 
         assert outcome.status is DraftSnapshotStatus.WRITE_FAILED
-        assert outcome.detail == "No space left on device"
+        assert outcome.detail == str(failure)
+
+    def test_a_response_that_cannot_be_encoded_is_not_written_half_way(self):
+        unencodable = [{**_picks()[0], "entry_name": "\ud800"}]
+
+        [outcome] = _snapshot([_league_draft()], _response(*unencodable))
+
+        assert outcome.status is DraftSnapshotStatus.WRITE_FAILED
+        assert not _snapshot_file().exists()
+        assert list(_snapshot_file().parent.iterdir()) == []
 
 
 class TestDraftsNoLongerServed:
@@ -246,6 +320,7 @@ class TestDraftsNoLongerServed:
         assert outcome.status is DraftSnapshotStatus.LOST
         assert outcome.draft_id == DRAFT_ID
         assert outcome.served_draft_ids == ()
+        assert outcome.detail is None
         assert not outcome.path.exists()
 
     def test_after_the_redraft_the_earlier_draft_is_kept_and_the_new_one_saved(self):
@@ -268,146 +343,254 @@ class TestDraftsNoLongerServed:
         assert lost.served_draft_ids == (REDRAFT_ID,)
         assert saved.status is DraftSnapshotStatus.SAVED
 
+    @pytest.mark.parametrize(
+        ("text", "detail"),
+        [
+            pytest.param("garbage", "is not valid JSON", id="garbage"),
+            pytest.param('{"choices": []}', "holds none of its picks", id="empty-capture"),
+            pytest.param(
+                json.dumps(_response(*_picks(REDRAFT_ID))), "holds none of its picks", id="wrong-draft",
+            ),
+            pytest.param("<html>Service unavailable</html>", "is not valid JSON", id="error-page"),
+        ],
+    )
+    def test_a_file_without_the_picks_is_no_copy(self, text, detail):
+        """A hand-saved curl taken after the redraft was scheduled, or an
+        error page, must not pass as the saved copy and silence the loss."""
+        _write(_snapshot_file(), text)
 
-def _draft_data(league_drafts: list[dict[str, Any]] | None, **overrides: Any) -> LeagueRecapData:
+        [outcome] = _snapshot([_league_draft()], _response())
+
+        assert outcome.status is DraftSnapshotStatus.LOST
+        assert outcome.detail is not None and outcome.detail.startswith(detail)
+        assert _snapshot_file().read_text(encoding="utf-8") == text
+        assert not has_saved_picks(SEASON, LEAGUE_ID, DRAFT_ID)
+
+    def test_a_loss_is_recorded_once(self):
+        [first] = _snapshot([_league_draft()], _response(*_picks(REDRAFT_ID)))
+        [second] = _snapshot([_league_draft()], _response(*_picks(REDRAFT_ID)))
+
+        assert first.status is DraftSnapshotStatus.LOST
+        assert second.status is DraftSnapshotStatus.LOST_NOTED
+        marker = json.loads(lost_draft_path(SEASON, LEAGUE_ID, DRAFT_ID).read_text(encoding="utf-8"))
+        assert marker["draft_id"] == DRAFT_ID
+        assert marker[LEAGUE_DRAFT_KEY] == _league_draft()
+        assert marker["served_draft_ids"] == [REDRAFT_ID]
+        assert marker["noticed_at"]
+
+    def test_a_copy_put_in_place_later_is_kept_over_the_recorded_loss(self):
+        _snapshot([_league_draft()], _response())
+        _write(_snapshot_file(), json.dumps(_response(*_picks())))
+
+        [outcome] = _snapshot([_league_draft()], _response())
+
+        assert outcome.status is DraftSnapshotStatus.KEPT
+
+    def test_a_loss_that_cannot_be_recorded_is_reported_again(self):
+        with patch.object(Path, "is_file", side_effect=PermissionError(13, "Permission denied")):
+            [outcome] = _snapshot([_league_draft()], _response())
+
+        assert outcome.status is DraftSnapshotStatus.LOST
+        assert not lost_draft_path(SEASON, LEAGUE_ID, DRAFT_ID).exists()
+
+
+def _draft_data(league_drafts: Any = ..., **overrides: Any) -> LeagueRecapData:
+    """A draft recap's data, `league_drafts` absent unless passed."""
     data = LeagueRecapData(
         gameweek=5,
         league_name="Test League",
         fpl_format=overrides.get("fpl_format", "draft"),
         managers=[],
         awards=RecapAwards(),
-        league_id=overrides.get("league_id", LEAGUE_ID),
+        league_id=LEAGUE_ID,
     )
-    if league_drafts is not None:
+    if league_drafts is not ...:
         data["league_drafts"] = league_drafts
-    if "league_id" in overrides and overrides["league_id"] is None:
+    if overrides.get("no_league_id"):
         del data["league_id"]
     return data
+
+
+async def _capture(data: LeagueRecapData, fetch: AsyncMock) -> DraftPicksCapture:
+    return await capture_draft_picks(data, season=SEASON, fetch_choices=fetch)
 
 
 class TestCaptureDraftPicks:
     async def test_saves_and_says_where(self, capsys):
         fetch = AsyncMock(return_value=_response(*_picks()))
 
-        warnings = await capture_draft_picks(
-            _draft_data([_league_draft()]), season=SEASON, fetch_choices=fetch,
-        )
+        result = await _capture(_draft_data([_league_draft()]), fetch)
 
-        assert warnings == []
+        assert result.warnings == []
+        assert result.saved == [_snapshot_file()]
         fetch.assert_awaited_once_with(LEAGUE_ID)
-        assert draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID).is_file()
         assert f"Saved the picks of draft {DRAFT_ID}" in capsys.readouterr().err
+
+    async def test_a_second_run_saves_nothing_new(self):
+        await _capture(_draft_data([_league_draft()]), AsyncMock(return_value=_response(*_picks())))
+
+        result = await _capture(_draft_data([_league_draft()]), AsyncMock(return_value=_response(*_picks())))
+
+        assert result == DraftPicksCapture()
 
     @pytest.mark.parametrize(
         "data",
         [
             pytest.param(_draft_data([_league_draft()], fpl_format="classic"), id="classic"),
             pytest.param(_draft_data([_league_draft(completed=False)]), id="no-draft-held-yet"),
-            pytest.param(_draft_data(None), id="no-drafts-list"),
-            pytest.param(_draft_data([_league_draft()], league_id=None), id="no-league-id"),
+            pytest.param(_draft_data([]), id="no-drafts-yet"),
+            pytest.param(_draft_data(), id="details-never-read"),
+            pytest.param(_draft_data([_league_draft()], no_league_id=True), id="no-league-id"),
         ],
     )
     async def test_asks_the_api_nothing_when_there_is_nothing_to_keep(self, data):
         fetch = AsyncMock()
 
-        assert await capture_draft_picks(data, season=SEASON, fetch_choices=fetch) == []
+        assert await _capture(data, fetch) == DraftPicksCapture()
         fetch.assert_not_awaited()
+
+    async def test_a_missing_drafts_list_is_said_rather_than_skipped(self, capsys):
+        fetch = AsyncMock()
+
+        result = await _capture(_draft_data(None), fetch)
+
+        [warning] = result.warnings
+        assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_UNCHECKED
+        assert "no `league.drafts` list" in warning["message"]
+        fetch.assert_not_awaited()
+        assert "no `league.drafts` list" in capsys.readouterr().err.replace("\n", "")
+
+    async def test_an_unrecognised_draft_is_said_and_the_rest_still_saved(self):
+        drafts = [{"id": REDRAFT_ID, "completed": True}, _league_draft()]
+
+        result = await _capture(_draft_data(drafts), AsyncMock(return_value=_response(*_picks())))
+
+        [warning] = result.warnings
+        assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_UNCHECKED
+        assert "1 of the 2 drafts" in warning["message"]
+        assert result.saved == [_snapshot_file()]
 
     async def test_differing_picks_raise_the_conflict_warning(self, capsys):
         _snapshot([_league_draft()], _response(*_picks()))
         changed = [{**row, "entry": 102} for row in _picks()]
 
-        warnings = await capture_draft_picks(
-            _draft_data([_league_draft()]), season=SEASON,
-            fetch_choices=AsyncMock(return_value=_response(*changed)),
-        )
+        result = await _capture(_draft_data([_league_draft()]), AsyncMock(return_value=_response(*changed)))
 
-        [warning] = warnings
+        [warning] = result.warnings
         assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_CONFLICT
         assert f"draft {DRAFT_ID}" in warning["message"]
+        assert "3 served are not in the file, and 3 in the file are not served" in warning["message"]
         assert "left as it is" in warning["message"]
         assert "mv '" in warning["message"]
         assert "differ from the ones the draft API serves now" in capsys.readouterr().err.replace("\n", "")
 
     async def test_an_unreadable_file_raises_the_conflict_warning(self):
-        path = draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)
-        path.parent.mkdir(parents=True)
-        path.write_text("not json", encoding="utf-8")
+        _write(_snapshot_file(), "not json")
 
-        [warning] = await capture_draft_picks(
-            _draft_data([_league_draft()]), season=SEASON,
-            fetch_choices=AsyncMock(return_value=_response(*_picks())),
-        )
+        result = await _capture(_draft_data([_league_draft()]), AsyncMock(return_value=_response(*_picks())))
 
+        [warning] = result.warnings
         assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_CONFLICT
-        assert "could not be read" in warning["message"]
-        assert path.read_text(encoding="utf-8") == "not json"
+        assert "is not valid JSON" in warning["message"]
+        assert _snapshot_file().read_text(encoding="utf-8") == "not json"
 
-    async def test_a_lost_draft_is_named(self, capsys):
-        [warning] = await capture_draft_picks(
-            _draft_data([_league_draft(), _league_draft(REDRAFT_ID, completed=False)]),
-            season=SEASON, fetch_choices=AsyncMock(return_value=_response()),
-        )
+    async def test_a_lost_draft_is_named_once(self, capsys):
+        data = _draft_data([_league_draft(), _league_draft(REDRAFT_ID, completed=False)])
 
+        first = await _capture(data, AsyncMock(return_value=_response()))
+        second = await _capture(data, AsyncMock(return_value=_response()))
+
+        [warning] = first.warnings
         assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_LOST
         assert f"Draft {DRAFT_ID} has been held" in warning["message"]
-        assert str(draft_snapshot_path(SEASON, LEAGUE_ID, DRAFT_ID)) in warning["message"]
-        assert f"Draft {DRAFT_ID} has been held" in capsys.readouterr().err.replace("\n", "")
+        assert "none were saved while it did" in warning["message"]
+        assert str(_snapshot_file()) in warning["message"]
+        assert f"lost-draft-{DRAFT_ID}.json" in warning["message"]
+        assert second.warnings == []
+        assert capsys.readouterr().err.replace("\n", "").count(f"Draft {DRAFT_ID} has been held") == 1
+
+    async def test_a_lost_draft_with_a_useless_file_says_what_is_wrong_with_it(self):
+        _write(_snapshot_file(), '{"choices": []}')
+
+        result = await _capture(_draft_data([_league_draft()]), AsyncMock(return_value=_response()))
+
+        [warning] = result.warnings
+        assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_LOST
+        assert f"the file at {_snapshot_file()} holds none of its picks" in warning["message"]
 
     async def test_a_kept_draft_says_nothing(self, capsys):
         _snapshot([_league_draft()], _response(*_picks()))
         capsys.readouterr()
 
-        warnings = await capture_draft_picks(
+        result = await _capture(
             _draft_data([_league_draft(), _league_draft(REDRAFT_ID, event=20)]),
-            season=SEASON, fetch_choices=AsyncMock(return_value=_response(*_picks(REDRAFT_ID))),
+            AsyncMock(return_value=_response(*_picks(REDRAFT_ID))),
         )
 
-        assert warnings == []
+        assert result.warnings == []
         assert f"draft {DRAFT_ID}" not in capsys.readouterr().err
 
     @pytest.mark.parametrize(
-        "failure",
-        [httpx.ConnectError("unreachable"), ValueError("not JSON")],
-        ids=["unreachable", "not-json"],
+        "fetch",
+        [
+            pytest.param(AsyncMock(side_effect=httpx.ConnectError("unreachable")), id="unreachable"),
+            pytest.param(AsyncMock(side_effect=httpx.InvalidURL("bad url")), id="invalid-url"),
+            pytest.param(AsyncMock(side_effect=ValueError("not JSON")), id="not-json"),
+            pytest.param(AsyncMock(return_value=[]), id="not-an-object"),
+            pytest.param(AsyncMock(return_value={"detail": "maintenance"}), id="no-choices-list"),
+            pytest.param(AsyncMock(return_value={"choices": None}), id="choices-not-a-list"),
+        ],
     )
-    async def test_an_unreadable_api_warns_while_a_draft_is_unsaved(self, failure):
-        [warning] = await capture_draft_picks(
-            _draft_data([_league_draft()]), season=SEASON,
-            fetch_choices=AsyncMock(side_effect=failure),
-        )
+    async def test_an_unreadable_api_warns_while_a_draft_is_unsaved(self, fetch):
+        """A failed read, a reshaped body or a maintenance object is a retry,
+        never "no picks served": read as that, it would report the draft as
+        gone for good."""
+        result = await _capture(_draft_data([_league_draft()]), fetch)
 
+        [warning] = result.warnings
         assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_UNSAVED
         assert f"draft {DRAFT_ID} are still not saved" in warning["message"]
-
-    async def test_a_response_that_is_not_an_object_warns_like_a_failed_read(self):
-        [warning] = await capture_draft_picks(
-            _draft_data([_league_draft()]), season=SEASON,
-            fetch_choices=AsyncMock(return_value=[]),
-        )
-
-        assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_UNSAVED
+        assert not lost_draft_path(SEASON, LEAGUE_ID, DRAFT_ID).exists()
 
     async def test_an_unreadable_api_costs_nothing_once_every_draft_is_saved(self):
         _snapshot([_league_draft()], _response(*_picks()))
 
-        warnings = await capture_draft_picks(
-            _draft_data([_league_draft()]), season=SEASON,
-            fetch_choices=AsyncMock(side_effect=httpx.ConnectError("unreachable")),
+        result = await _capture(
+            _draft_data([_league_draft()]), AsyncMock(side_effect=httpx.ConnectError("unreachable")),
         )
 
-        assert warnings == []
+        assert result.warnings == []
+
+    async def test_a_file_without_the_picks_does_not_count_as_saved_when_the_api_is_down(self):
+        _write(_snapshot_file(), '{"choices": []}')
+
+        result = await _capture(
+            _draft_data([_league_draft()]), AsyncMock(side_effect=httpx.ConnectError("unreachable")),
+        )
+
+        [warning] = result.warnings
+        assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_UNSAVED
+
+    async def test_a_permission_error_on_the_saved_copy_does_not_escape(self):
+        with patch.object(Path, "read_text", side_effect=PermissionError(13, "Permission denied")):
+            result = await _capture(
+                _draft_data([_league_draft()]), AsyncMock(side_effect=httpx.ConnectError("unreachable")),
+            )
+
+        [warning] = result.warnings
+        assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_UNSAVED
 
     async def test_a_write_failure_warns_and_the_next_run_retries(self):
         with patch(
             "fpl_cli.services.league_history_drafts.atomic_write_text",
             side_effect=OSError("Read-only file system"),
         ):
-            [warning] = await capture_draft_picks(
-                _draft_data([_league_draft()]), season=SEASON,
-                fetch_choices=AsyncMock(return_value=_response(*_picks())),
+            result = await _capture(
+                _draft_data([_league_draft()]), AsyncMock(return_value=_response(*_picks())),
             )
 
+        [warning] = result.warnings
         assert warning["code"] == HISTORY_WARNING_DRAFT_PICKS_UNSAVED
         assert "Read-only file system" in warning["message"]
         assert "next run tries again" in warning["message"]
+        assert result.saved == []

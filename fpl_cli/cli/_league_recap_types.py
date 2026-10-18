@@ -735,8 +735,9 @@ class LeagueRecapData(TypedDict):
     # Draft only: `league.drafts` from the league details, verbatim -- one
     # entry per draft the league has scheduled or held. Read by the snapshot
     # that keeps each held draft's picks before a redraft erases them from
-    # the API (#461). Absent on classic.
-    league_drafts: NotRequired[list[dict[str, Any]]]
+    # the API (#461). None when the details carry no such list; absent on
+    # classic.
+    league_drafts: NotRequired[list[Any] | None]
     # Every member of the league table, in standings order.
     standings_cohort: NotRequired[list[RecapStandingsEntry]]
     # The standings response reported members beyond the ones fetched (classic

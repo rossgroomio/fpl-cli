@@ -1259,8 +1259,10 @@ judged: 1, or 2 after a retry), `synthesis_shipped_attempt` (which of them shipp
 when it ranks better, so 2 judged can still ship the first) and `synthesis_usage` (`input_tokens`
 and `output_tokens` summed over every answer judged, so a retry's cost is counted) — all three
 `null` whenever no editorial came back, whether it was not asked for, the run was `--dry-run`, or
-the call failed — `warnings`, and `first_capture_store_path` — always present, carrying the
-partition directory on its first capture and `null` on every run after that. Warning
+the call failed — `warnings`, `first_capture_store_path` — always present, carrying the
+partition directory on its first capture and `null` on every run after that — and
+`draft_picks_saved`, always present, listing the draft-picks snapshots this run wrote (see
+[League history](#league-history); empty on classic and on any run that saved none). Warning
 codes are listed under [Capture warnings](#capture-warnings).
 
 #### League history
@@ -1288,14 +1290,25 @@ the API. Every `--draft` run, a `-g` replay included, checks each draft the leag
 (`league.drafts`) mark completed:
 
 - Still served and not yet saved: the endpoint's response is written as served, with that
-  draft's `league.drafts` entry added under `league_draft`, and the path is printed on
-  stderr in table mode.
+  draft's `league.drafts` entry added under `league_draft`. The path is printed on stderr,
+  and under `--format json` listed in `metadata.draft_picks_saved`.
 - Still served and already saved: nothing is written. The two are compared on the picks
   alone (`draft`, `index`, `round`, `pick`, `entry`, `element`, `was_auto`,
   `choice_time`), since the response's `element_status` is every player's owner *today*
   and changes each waiver round. Different picks leave the file untouched and raise
   `league_history_draft_picks_conflict`.
-- No longer served: silent if a file holds it, `league_history_draft_picks_lost` if not.
+- No longer served: silent if a file holds at least one of its picks. If not —
+  no file, or one that is not valid JSON, has no `choices` list, or holds none of that
+  draft's picks — `league_history_draft_picks_lost`, once: that run records the loss in
+  `lost-draft-<draft id>.json` beside it and later runs stay quiet. Delete that file to
+  hear it again; a real copy put at the snapshot path is read in preference to it.
+
+A failed read of the draft API, or a response with no `choices` list (an error or
+maintenance body), is retried by the next run (`league_history_draft_picks_unsaved`) and
+never read as a draft that is no longer served. A `league.drafts` list that is missing, or
+holds an entry without a numeric `id` and a true-or-false `draft_completed`, raises
+`league_history_draft_picks_unchecked` instead of being skipped quietly, since a held
+draft the snapshot cannot recognise is one whose picks would be lost with no sign.
 
 The file is the endpoint's response with one key added, so the response saved by hand
 (`curl -s https://draft.premierleague.com/api/draft/<league id>/choices > draft-<draft id>.json`
@@ -1468,7 +1481,8 @@ and `league_tables_updating`.
 | `league_history_standings_repaired` | A gameweek whose recorded positions an *earlier* run had already erased was restored from the ledger itself — the last superseded line that recorded them, or, on draft, a cumulative total re-summed from earlier gameweeks. The *last* one, not the first: a gameweek captured several times while bonus and late results were still landing recorded a stale position early and the settled one last, and only the latest recorded value is the one the damage destroyed. Nothing is re-fetched, so this needs neither `--backfill-detail` nor a network call, and it stops once the damage is repaired. The count is the managers whose league position or cumulative total actually changed — a row rewritten only to restate a fine's player names is not one of them |
 | `league_history_draft_picks_unsaved` | Draft only. A held draft's picks are still served but were not saved this run: the draft API could not be read, or the file could not be written. Raised only while some held draft has no saved copy; the next run tries again |
 | `league_history_draft_picks_conflict` | Draft only. A held draft's saved picks differ from the ones the draft API serves now, or the file cannot be read as a snapshot. The file is left exactly as it is, since a held draft's picks never change and only you can say which side is wrong; the message names the `mv` that retires the file if it is the wrong one |
-| `league_history_draft_picks_lost` | Draft only. The league details say a draft was held, the draft API no longer serves its picks, and no saved copy exists, so who picked whom in that draft is not recorded. Raised on every run, because the state is permanent; the message names the path a copy of the choices response would go to |
+| `league_history_draft_picks_lost` | Draft only. The league details say a draft was held, the draft API no longer serves its picks, and no usable copy exists (no file, or one that holds none of that draft's picks, which the message describes), so who picked whom in that draft is not recorded. Raised once per draft: the run that raises it records the loss in `lost-draft-<draft id>.json` beside the snapshot path, and later runs stay quiet while that file is there. The message names the path a copy of the choices response would go to |
+| `league_history_draft_picks_unchecked` | Draft only. The league details carry no `league.drafts` list, or an entry in it without a numeric `id` and a true-or-false `draft_completed`, so those drafts' picks were neither checked nor saved. Most likely the draft API changed shape; the drafts it can read are still handled |
 | `synthesis_provider_unavailable` | `--summarise` was asked for but the synthesis provider had no usable key; everything else in the recap, the capture included, ran normally |
 | `synthesis_stopped_early` | The provider reported that the editorial stopped for a reason other than finishing (a token ceiling, a refusal) on the attempt that shipped — a token ceiling only after one retry, a refusal never retried — so `synthesis_summary` may be cut off mid-sentence. The saved report says so in the warning callout above the editorial, naming the stop reason. For a refusal (`refusal`, `content_filter`) the message and the callout say the provider refused the editorial rather than that it may be cut off, since re-running usually draws the same refusal, and name the refusal's category when the provider gave one (Anthropic only: its `stop_details.category`, e.g. `cyber`, `general_harms`; an OpenAI-compatible `content_filter` stop carries none). Everything else in the recap is unaffected |
 | `synthesis_contested_misattribution` | Draft only. The editorial still puts a manager in the wrong role of a contested waiver race after one retry — beaten to a player the race's line does not name them as beaten to, or winning one someone else won. The message quotes each wrong claim beside the contested line it contradicts. `synthesis_summary` is the editorial as written; the saved report carries the same lines in a warning callout above it |

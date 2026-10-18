@@ -7435,13 +7435,39 @@ class TestDraftPicksSnapshot:
         assert "Draft 901 has been held" in lost["message"]
         assert not self._snapshot_path().exists()
 
+    def test_json_names_the_snapshot_a_run_saved(self):
+        """The stderr notice is suppressed under `--format json`, so a run
+        that commits the ledger learns of the new file from the payload."""
+        result, _ = self._invoke([self._DRAFT], self._CHOICES, ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["metadata"]["draft_picks_saved"] == [str(self._snapshot_path())]
+
+        again, _ = self._invoke([self._DRAFT], self._CHOICES, ["--format", "json"])
+
+        assert json.loads(again.stdout)["metadata"]["draft_picks_saved"] == []
+
+    def test_a_hand_saved_copy_does_not_swallow_the_first_capture_notice(self):
+        """The documented fallback creates the partition directory before any
+        gameweek is recorded; the first recap must still say where it records."""
+        self._snapshot_path().parent.mkdir(parents=True)
+        self._snapshot_path().write_text(json.dumps(self._CHOICES), encoding="utf-8")
+
+        result, _ = self._invoke([self._DRAFT], self._CHOICES, ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        metadata = json.loads(result.stdout)["metadata"]
+        assert metadata["first_capture_store_path"] == str(_store("draft").partition_dir())
+        assert metadata["draft_picks_saved"] == []
+
     def test_a_classic_recap_never_asks_for_draft_picks(self):
         draft_client = _draft_feed_client()
         draft_client.get_draft_choices = AsyncMock()
         data = _recap_data()
         data["league_drafts"] = [self._DRAFT]
 
-        result = _invoke_recap(data, [], draft_client=draft_client)
+        result = _invoke_recap(data, ["--format", "json"], draft_client=draft_client)
 
         assert result.exit_code == 0, result.output
         draft_client.get_draft_choices.assert_not_awaited()
+        assert json.loads(result.stdout)["metadata"]["draft_picks_saved"] == []

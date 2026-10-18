@@ -198,12 +198,15 @@ class LeagueHistoryStore:
         return self.partition_dir() / f"gw{gameweek:02d}.ndjson"
 
     def partition_exists(self) -> bool:
-        """Whether this season's partition has been created yet.
+        """Whether this season's partition holds any gameweek yet.
 
         Callers print the resolved path on first creation, so an ephemeral
         container-local data directory is visible before a season is lost to it.
+        Asked of the gameweek files rather than the directory: a draft
+        partition's `drafts/` snapshots can be there first (a hand-saved copy,
+        or a run whose cohort wrote no rows), and must not swallow that notice.
         """
-        return self.partition_dir().is_dir()
+        return bool(self.captured_gameweeks())
 
     def captured_gameweeks(self) -> list[int]:
         """Gameweeks with a file, ascending. Says nothing about readability."""

@@ -115,8 +115,8 @@ A draft recap also keeps each held draft's picks, who picked whom in which round
 ledger beside the gameweeks. The draft API serves only a league's latest draft, so the
 moment a redraft is scheduled the previous draft's picks are gone from it for good. The
 recap saves them the first time it sees them and never rewrites them, says so on stderr if
-the API ever serves different picks for the same draft, and names any draft that was held
-before anything saved it.
+the API ever serves different picks for the same draft, and names, once, any draft that
+was held before anything saved it.
 
 The recap prints the season table only at GW19 and at the finale, so the set-piece
 stays a set-piece — though with `--summarise` its editorial knows the running totals

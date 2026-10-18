@@ -26,8 +26,10 @@ def atomic_write_text(path: Path, text: str, file_mode: int | None = None) -> No
             suffix=path.suffix or ".tmp",
             delete=False,
         ) as f:
-            f.write(text)
+            # Named before the write, so a write that raises (a full disk, a
+            # string that cannot be encoded) still has its temp file removed.
             tmp_path = f.name
+            f.write(text)
         os.replace(tmp_path, path)
         tmp_path = None
         if file_mode is not None and os.name != "nt":
