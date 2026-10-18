@@ -832,19 +832,26 @@ class TestWaiverAgentAppearances:
     the score with none. From GW6 that read as "never played" and zeroed the
     combined minutes factor, taking every per-90 term and the matchup bonus
     out of the ranking. These rows come through ``parse_player``, the way
-    ``run()`` builds the pool.
+    ``run()`` builds the pool, and the evaluation reads the count off the row
+    alone, so each test here fails if the parser stops supplying it.
     """
 
     NEXT_GW = 8
     SQUAD_BY_POSITION: dict[str, list] = {"GK": [], "DEF": [], "MID": [], "FWD": []}
 
-    def _pool_row(self, agent: WaiverAgent, **overrides: Any):
-        raw = make_draft_player(
-            element_type=4, team=14, minutes=900, total_points=50, points_per_game=5.0,
-            **overrides,
-        )
+    def _pool_row(self, agent: WaiverAgent, matchup_avg_3gw: float | None = None, **overrides: Any):
+        fields: dict[str, Any] = {
+            "element_type": 4, "team": 14, "minutes": 900, "total_points": 50, "points_per_game": 5.0,
+        }
+        raw = make_draft_player(**{**fields, **overrides})
         team = make_draft_team(id=14, name="Liverpool", short_name="LIV")
-        return agent._enrich(raw, {14: 12}, {14: team})
+        row = agent._enrich(raw, {14: 12}, {14: team})
+        if matchup_avg_3gw is not None:
+            row["matchup_avg_3gw"] = matchup_avg_3gw
+        return row
+
+    def _score(self, agent: WaiverAgent, row) -> int:
+        return agent._calculate_waiver_score(row, self.SQUAD_BY_POSITION, next_gw_id=self.NEXT_GW)
 
     def test_a_parsed_row_reaches_the_evaluation_with_appearances(self):
         agent = WaiverAgent()
@@ -863,10 +870,35 @@ class TestWaiverAgentAppearances:
         busy = self._pool_row(agent, expected_goals=6.0)
         quiet = self._pool_row(agent, expected_goals=0.0)
 
-        busy_score = agent._calculate_waiver_score(busy, self.SQUAD_BY_POSITION, next_gw_id=self.NEXT_GW)
-        quiet_score = agent._calculate_waiver_score(quiet, self.SQUAD_BY_POSITION, next_gw_id=self.NEXT_GW)
+        assert self._score(agent, busy) > self._score(agent, quiet)
 
-        assert busy_score > quiet_score
+    def test_the_matchup_bonus_reaches_a_defenders_score(self):
+        """The bonus is scaled by the same factor at every position.
+
+        So defenders and keepers lost their fixtures too, not only the
+        attackers their per-90 terms: two defenders alike but for the run
+        ahead must not score the same.
+        """
+        agent = WaiverAgent()
+        kind = self._pool_row(agent, element_type=2, matchup_avg_3gw=8.0)
+        hard = self._pool_row(agent, element_type=2, matchup_avg_3gw=2.0)
+
+        assert self._score(agent, kind) > self._score(agent, hard)
+
+    def test_the_factor_follows_the_derived_count_for_a_rotation_player(self):
+        """300 minutes over 4 appearances is a starter's share; over 10, cameos.
+
+        Neither the per-appearance (minutes / appearances x 80) nor the
+        availability (minutes / 450) half saturates at 300 minutes, so the
+        derived count decides the score: the same minutes, ppg and xG spread
+        over more appearances must score lower.
+        """
+        agent = WaiverAgent()
+        starter = self._pool_row(agent, minutes=300, total_points=8, points_per_game=2.0)
+        cameos = self._pool_row(agent, minutes=300, total_points=20, points_per_game=2.0)
+
+        assert (starter["appearances"], cameos["appearances"]) == (4, 10)
+        assert self._score(agent, starter) > self._score(agent, cameos)
 
 
 class TestWaiverAgentGkSignals:

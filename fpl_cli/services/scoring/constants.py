@@ -530,9 +530,6 @@ VALID_FORMATIONS: list[tuple[int, int, int]] = [
     (5, 4, 1),
 ]
 
-# Max PL gameweeks in a season (caps derived appearances)
-MAX_GAMEWEEKS = 38
-
 # FDR thresholds for fixture difficulty classification
 FDR_EASY = 2.5
 FDR_MEDIUM = 3.5

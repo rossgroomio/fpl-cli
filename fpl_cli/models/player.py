@@ -148,22 +148,28 @@ class Player(BaseModel):
     @property
     def appearances(self) -> int:
         """GWs where the player featured (starts + sub appearances)."""
-        return derive_appearances(self.total_points, self.points_per_game)
+        return derive_appearances(self.total_points, self.points_per_game, self.minutes)
 
 
-def derive_appearances(total_points: float, points_per_game: float) -> int:
+def derive_appearances(total_points: float, points_per_game: float, minutes: int) -> int:
     """Gameweeks a player featured in (starts + sub appearances).
 
     Derived from total_points / ppg (FPL's own inverse), since neither game's
-    bootstrap publishes the count. Capped at a season's gameweeks to guard
-    against near-zero ppg inflating it. The one derivation behind
+    bootstrap publishes the count. The one derivation behind
     ``Player.appearances`` and the draft parser's row, so the two games
-    cannot drift apart: a draft row without the field read as "never
-    played" and zeroed the waiver score's per-90 terms from GW6 (#471).
+    cannot drift apart (#471).
+
+    The minutes factor reads 0 as "never played" and, from GW6, drops every
+    per-90 term and the matchup bonus, so 0 is kept for a player who has not
+    played. A negative ppg divides as well as a positive one, and a player
+    with minutes but nothing to divide (0 points, so ppg 0) featured at least
+    once. Floored at 0 for an inconsistent row, and capped at a season's
+    gameweeks to guard against near-zero ppg inflating the count.
     """
-    if points_per_game > 0:
-        return min(round(total_points / points_per_game), TOTAL_GAMEWEEKS)
-    return 0
+    derived = round(total_points / points_per_game) if points_per_game else 0
+    if minutes > 0:
+        derived = max(derived, 1)
+    return min(max(derived, 0), TOTAL_GAMEWEEKS)
 
 
 def usable_code(value: object) -> int | None:

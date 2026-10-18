@@ -104,6 +104,7 @@ class WaiverTarget(TypedDict):
     form: float
     ppg: float
     minutes: int
+    appearances: int  # as on EnrichedPlayer
     status: str
     xGI_per_90: float
     waiver_score: float

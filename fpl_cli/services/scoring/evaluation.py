@@ -13,7 +13,7 @@ import dataclasses
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from fpl_cli.models.player import derive_appearances, usable_code
+from fpl_cli.models.player import usable_code
 from fpl_cli.services.scoring.constants import (
     GK_SAMPLE_RAMP_MINUTES,
     GK_XGC_QUALITY_ANCHOR,
@@ -352,13 +352,7 @@ def build_player_evaluation(
         return read_player_field(player, key, default)
 
     minutes = _get("minutes", 0)
-    ppg = float(_get("ppg") if _get("ppg") is not None else _get("points_per_game", 0))
-    appearances = _get("appearances")
-    if appearances is None:
-        # A row without the field is not a player who never played: 0 gates
-        # every per-90 term and the matchup bonus off from GW6, which is how
-        # the draft waiver pool lost them for weeks without a word (#471).
-        appearances = derive_appearances(_get("total_points", 0) or 0, ppg)
+    appearances = _get("appearances", 0)
 
     chance_of_playing = read_chance_of_playing(player, overlay=enrichment)
 
@@ -376,7 +370,7 @@ def build_player_evaluation(
     # Build evaluation
     evaluation = PlayerEvaluation(
         form=float(_get("form", 0)),
-        ppg=ppg,
+        ppg=float(_get("ppg") if _get("ppg") is not None else _get("points_per_game", 0)),
         xgi_per_90=float(_get("xGI_per_90", 0) or 0),
         npxg_per_90=_get("npxG_per_90"),
         xg_chain_per_90=_get("xGChain_per_90"),

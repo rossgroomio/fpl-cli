@@ -638,8 +638,11 @@ class FPLDraftClient:
             Cleaned player data. `team_id` is the **main-game** team id, or
             None for a club the main game's team list does not carry.
         """
-        total_points = player_data.get("total_points", 0)
+        # `or 0`: a null total must not crash the derivation below and fail
+        # the whole pool, which `get_available_players` already tolerates.
+        total_points = player_data.get("total_points") or 0
         ppg = float(player_data.get("points_per_game", 0))
+        minutes = player_data.get("minutes") or 0
         return {
             "id": player_data.get("id"),
             # The draft game's own element id above, and the cross-game key
@@ -661,7 +664,7 @@ class FPLDraftClient:
             # score's minutes factor reads a missing one as "never played",
             # zeroing every per-90 term and the matchup bonus from GW6 (#471).
             # Derived the way the main game's `Player.appearances` is.
-            "appearances": derive_appearances(total_points, ppg),
+            "appearances": derive_appearances(total_points, ppg, minutes),
             "form": float(player_data.get("form", 0)),
             "status": player_data.get("status", "a"),
             "news": player_data.get("news", ""),
@@ -669,7 +672,7 @@ class FPLDraftClient:
             "goals_scored": player_data.get("goals_scored", 0),
             "assists": player_data.get("assists", 0),
             "clean_sheets": player_data.get("clean_sheets", 0),
-            "minutes": player_data.get("minutes", 0),
+            "minutes": minutes,
             "expected_goals": float(player_data.get("expected_goals", 0)),
             "expected_assists": float(player_data.get("expected_assists", 0)),
         }
