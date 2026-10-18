@@ -13,7 +13,12 @@ from fpl_cli.agents.base import AgentStatus
 from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.services.player_prior import PlayerPrior
-from fpl_cli.services.scoring import ConsistencySignals, ScoringContext, ScoringData
+from fpl_cli.services.scoring import (
+    ConsistencySignals,
+    ScoringContext,
+    ScoringData,
+    build_player_evaluation,
+)
 from tests.conftest import (
     assert_player_rows_carry_code,
     make_draft_league_entry,
@@ -555,9 +560,11 @@ class TestWaiverAgentPool:
 
         The fixture was generated from the agent as it stood before ``pool``
         existed, so any drift in ``top_targets`` or ``targets_by_position``
-        fails here rather than in the skill scripts that read them. It was
-        regenerated once, when every draft row gained ``code`` beside its
-        draft ``id`` (#418) -- the one deliberate, additive change since.
+        fails here rather than in the skill scripts that read them. It has
+        been regenerated twice, each a deliberate change: when every draft row
+        gained ``code`` beside its draft ``id`` (#418), and when it gained
+        ``appearances``, which put the per-90 terms back into every score
+        from GW6 and lifted the midfielders and forwards (#471).
         """
         result = await _run_waivers(_ALL_AVAILABLE)
         golden = json.loads(GOLDEN_RANKED.read_text(encoding="utf-8"))
@@ -815,6 +822,83 @@ class TestWaiverAgentScoring:
         player_with_apps = {**player, "minutes": 900, "appearances": 10}
         score_with_apps = agent._calculate_waiver_score(player_with_apps, squad_by_position, next_gw_id=25)
         assert score_with_apps > score
+
+
+class TestWaiverAgentAppearances:
+    """#471: a parsed draft row carries the appearance count scoring needs.
+
+    The hand-built rows above set ``appearances`` themselves, which the draft
+    parser never did, so they could not see that every real pool row reached
+    the score with none. From GW6 that read as "never played" and zeroed the
+    combined minutes factor, taking every per-90 term and the matchup bonus
+    out of the ranking. These rows come through ``parse_player``, the way
+    ``run()`` builds the pool, and the evaluation reads the count off the row
+    alone, so each test here fails if the parser stops supplying it.
+    """
+
+    NEXT_GW = 8
+    SQUAD_BY_POSITION: dict[str, list] = {"GK": [], "DEF": [], "MID": [], "FWD": []}
+
+    def _pool_row(self, agent: WaiverAgent, matchup_avg_3gw: float | None = None, **overrides: Any):
+        fields: dict[str, Any] = {
+            "element_type": 4, "team": 14, "minutes": 900, "total_points": 50, "points_per_game": 5.0,
+        }
+        raw = make_draft_player(**{**fields, **overrides})
+        team = make_draft_team(id=14, name="Liverpool", short_name="LIV")
+        row = agent._enrich(raw, {14: 12}, {14: team})
+        if matchup_avg_3gw is not None:
+            row["matchup_avg_3gw"] = matchup_avg_3gw
+        return row
+
+    def _score(self, agent: WaiverAgent, row) -> int:
+        return agent._calculate_waiver_score(row, self.SQUAD_BY_POSITION, next_gw_id=self.NEXT_GW)
+
+    def test_a_parsed_row_reaches_the_evaluation_with_appearances(self):
+        agent = WaiverAgent()
+
+        evaluation, _ = build_player_evaluation(self._pool_row(agent))
+
+        assert evaluation.appearances == 10
+
+    def test_per_90_terms_reach_the_score_past_gw5(self):
+        """Two forwards alike but for xG: the one creating more must rank higher.
+
+        With the count missing both scored the same, because the factor that
+        scales xGI/90 was 0 for each of them.
+        """
+        agent = WaiverAgent()
+        busy = self._pool_row(agent, expected_goals=6.0)
+        quiet = self._pool_row(agent, expected_goals=0.0)
+
+        assert self._score(agent, busy) > self._score(agent, quiet)
+
+    def test_the_matchup_bonus_reaches_a_defenders_score(self):
+        """The bonus is scaled by the same factor at every position.
+
+        So defenders and keepers lost their fixtures too, not only the
+        attackers their per-90 terms: two defenders alike but for the run
+        ahead must not score the same.
+        """
+        agent = WaiverAgent()
+        kind = self._pool_row(agent, element_type=2, matchup_avg_3gw=8.0)
+        hard = self._pool_row(agent, element_type=2, matchup_avg_3gw=2.0)
+
+        assert self._score(agent, kind) > self._score(agent, hard)
+
+    def test_the_factor_follows_the_derived_count_for_a_rotation_player(self):
+        """300 minutes over 4 appearances is a starter's share; over 10, cameos.
+
+        Neither the per-appearance (minutes / appearances x 80) nor the
+        availability (minutes / 450) half saturates at 300 minutes, so the
+        derived count decides the score: the same minutes, ppg and xG spread
+        over more appearances must score lower.
+        """
+        agent = WaiverAgent()
+        starter = self._pool_row(agent, minutes=300, total_points=8, points_per_game=2.0)
+        cameos = self._pool_row(agent, minutes=300, total_points=20, points_per_game=2.0)
+
+        assert (starter["appearances"], cameos["appearances"]) == (4, 10)
+        assert self._score(agent, starter) > self._score(agent, cameos)
 
 
 class TestWaiverAgentGkSignals:

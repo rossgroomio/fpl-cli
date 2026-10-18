@@ -181,8 +181,17 @@ class TestPlayer:
         assert player.appearances == 21
 
     def test_player_appearances_zero_ppg(self):
-        player = make_player(total_points=0, points_per_game=0.0)
+        player = make_player(total_points=0, points_per_game=0.0, minutes=0)
         assert player.appearances == 0
+
+    def test_player_appearances_zero_ppg_with_minutes_featured_once(self):
+        """0 points over 35 minutes is a cameo, not "never played" (#471)."""
+        player = make_player(total_points=0, points_per_game=0.0, minutes=35)
+        assert player.appearances == 1
+
+    def test_player_appearances_negative_ppg(self):
+        player = make_player(total_points=-2, points_per_game=-0.7, minutes=90)
+        assert player.appearances == 3
 
     def test_player_appearances_sub_only(self):
         player = make_player(starts=0, total_points=6, points_per_game=1.0)

@@ -595,9 +595,52 @@ class TestFPLDraftClientParsePlayer:
         assert result["id"] == 1
         assert result["player_name"] == ""
         assert result["total_points"] == 0
+        assert result["appearances"] == 0
         assert result["form"] == 0.0
         assert result["code"] is None
         assert result["team_id"] is None
+
+    @pytest.mark.parametrize(
+        ("total_points", "points_per_game", "minutes", "expected"),
+        [
+            (50, 5.0, 900, 10),
+            (37, 4.6, 700, 8),
+            (40, 0.1, 3000, 38),   # near-zero ppg: capped at a season
+            (0, 0.0, 0, 0),        # never played
+            (0, 0.0, 35, 1),       # featured, but nothing to divide
+            (-2, -0.7, 90, 3),     # negative ppg divides too
+            (-4, 1.0, 0, 0),       # inconsistent row: floored, not negative
+        ],
+    )
+    def test_parse_player_carries_appearances_as_the_main_game_derives_them(
+        self, total_points, points_per_game, minutes, expected,
+    ):
+        """#471: the row must say how often the player featured.
+
+        The waiver score's minutes factor reads 0 as "never played" and, from
+        GW6, zeroes every per-90 term and the matchup bonus, so a player with
+        minutes must never come out at 0. The count is derived as
+        `Player.appearances` derives it, so the two games agree.
+        """
+        client = FPLDraftClient()
+        raw = make_draft_player(
+            total_points=total_points, points_per_game=points_per_game, minutes=minutes,
+        )
+
+        result = client.parse_player(raw, {1: 1})
+
+        main = make_player(
+            total_points=total_points, points_per_game=points_per_game, minutes=minutes,
+        )
+        assert result["appearances"] == main.appearances == expected
+
+    def test_parse_player_tolerates_a_null_total(self):
+        """A null total reads as 0 rather than failing the whole pool."""
+        client = FPLDraftClient()
+
+        result = client.parse_player(make_draft_player(total_points=None, minutes=90), {1: 1})
+
+        assert (result["total_points"], result["appearances"]) == (0, 1)
 
     def test_parse_player_emits_the_main_games_team_id(self):
         """#423: the draft game numbers its clubs on its own, and everything a
