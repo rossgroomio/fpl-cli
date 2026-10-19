@@ -309,9 +309,7 @@ def preview_command(ctx: click.Context, save: bool, output: str | None, scout: b
                 # LLM call the user also asked for, but the run still has to
                 # exit nonzero. Printing the reason here rather than at the
                 # exit keeps it if the scout block itself raises (#387).
-                error_console.print(
-                    f"[red]Failed to save report: {rich_escape(save_failure_message(report_result))}[/red]"
-                )
+                error_console.print(f"[red]{rich_escape(save_failure_message(report_result))}[/red]")
                 save_failed = True
 
         # Run scout analysis if requested (or dry-run to preview prompts)

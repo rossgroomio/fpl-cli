@@ -680,6 +680,6 @@ def review_command(
                 if report_result.success:
                     console.print(f"[green]✓[/green] Report saved to: {report_result.data['report_path']}")
                 else:
-                    emit_failure("review", f"Failed to save report: {save_failure_message(report_result)}", "table")
+                    emit_failure("review", save_failure_message(report_result), "table")
 
     asyncio.run(_review())

@@ -1085,6 +1085,13 @@ fpl league-recap --backfill-detail  # Rebuild earlier gameweeks in full detail
 fpl league-recap --format json     # JSON envelope for scripting/agents
 ```
 
+**A `--save` that did not save** exits **1** with `Failed to save report: <reason>` on stderr,
+the same as `review` and `preview`. Under `--format json` stdout is the `{command, error}`
+envelope instead of the recap, and the message names the codes of any warnings the ledger capture
+raised (`... (the ledger capture also reported: league_history_store_unreadable)`), since the
+payload that would have carried them is not emitted. When `--summarise` produced an editorial, it is printed on stderr first, since the report was its only destination. The capture itself runs before the report is
+written, so the failure does not undo it.
+
 **When to run it:** any time after the gameweek has finished, but the fullest capture is the
 window between its last whistle and the next deadline. Only in that window does the league
 table still describe the gameweek being recapped, so only there can the recap cross-check

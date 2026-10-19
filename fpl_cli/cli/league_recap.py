@@ -21,6 +21,7 @@ from fpl_cli.cli._context import (
     get_format,
     get_settings,
     resolve_output_dir,
+    save_failure_message,
 )
 from fpl_cli.cli._draft_provenance import DRAFT_PROVENANCE_UNAVAILABLE
 from fpl_cli.cli._json import (
@@ -631,14 +632,38 @@ def league_recap_command(
             # Generate report if saving
             if save or output:
                 output_dir = resolve_output_dir(settings, output, season=season)
-                agent = ReportAgent(config={"output_dir": output_dir})
-                result = await agent.run(context={
-                    "report_type": "league-recap",
-                    "gameweek": gw,
-                    "data": dict(collected_data),
-                })
-                if result.data and result.data.get("report_path"):
-                    console.print(f"\n[green]Report saved to {result.data['report_path']}[/green]")
+                async with ReportAgent(config={"output_dir": output_dir}) as agent:
+                    result = await agent.run(context={
+                        "report_type": "league-recap",
+                        "gameweek": gw,
+                        "data": dict(collected_data),
+                    })
+                if not result.success:
+                    message = save_failure_message(result)
+                    # The report was the editorial's only destination, and the
+                    # provider call that wrote it is paid and not repeatable,
+                    # so it goes to stderr rather than out with the failure.
+                    # A dry run's placeholder is not worth printing.
+                    editorial = collected_data.get("synthesis_summary")
+                    if editorial and not dry_run:
+                        error_console.print(
+                            "[yellow]The editorial could not be saved with the report;"
+                            " it follows:[/yellow]\n"
+                        )
+                        error_console.print(rich_escape(editorial), highlight=False)
+                    if output_format == "json":
+                        # The envelope below is all a JSON consumer gets, and
+                        # the capture's own prose is suppressed in this mode,
+                        # so a ledger problem that shares the save's cause
+                        # would otherwise vanish. Naming the codes tells the
+                        # consumer to look (#474).
+                        codes = list(dict.fromkeys(
+                            w["code"] for w in capture_result.warnings + draft_picks.warnings
+                        ))
+                        if codes:
+                            message += f" (the ledger capture also reported: {', '.join(codes)})"
+                    emit_failure("league-recap", message, output_format)
+                console.print(f"\n[green]Report saved to {result.data['report_path']}[/green]")
 
             if output_format == "json":
                 from fpl_cli.prompts.league_recap_checks import editorial_warning_message

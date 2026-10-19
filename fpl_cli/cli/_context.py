@@ -297,16 +297,16 @@ def _warn_if_stale_season_dir(base: Path, season: str | None = None) -> None:
 
 
 def save_failure_message(result: AgentResult) -> str:
-    """The line for a report that did not save: the agent's message plus its reason.
+    """The line for a report that did not save, shared by every `--save` command.
 
     `ReportAgent` puts a generic message in `message` and the cause (the
     errno) in `errors`, and the line a user or script reads is the CLI's own,
     so the first error is appended to it rather than left on the agent's
-    stderr line (#411).
+    stderr line (#411). The `Failed to save report:` prefix lives here so the
+    wording of the three commands cannot drift apart (#474).
     """
-    if result.errors:
-        return f"{result.message} ({result.errors[0]})"
-    return result.message
+    reason = f"{result.message} ({result.errors[0]})" if result.errors else result.message
+    return f"Failed to save report: {reason}"
 
 
 def resolve_output_dir(
