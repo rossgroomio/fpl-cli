@@ -3,6 +3,7 @@
 import pytest
 
 from fpl_cli.utils.text import (
+    join_and,
     normalise_name,
     ordinal_suffix,
     ordinal_word,
@@ -109,3 +110,11 @@ def test_ordinal_suffix(n: int, expected: str) -> None:
 )
 def test_ordinal_word(n: int, expected: str) -> None:
     assert ordinal_word(n) == expected
+
+
+@pytest.mark.parametrize(
+    ("parts", "expected"),
+    [([], ""), (["a"], "a"), (["a", "b"], "a and b"), (["a", "b", "c"], "a, b and c")],
+)
+def test_join_and(parts: list[str], expected: str) -> None:
+    assert join_and(parts) == expected

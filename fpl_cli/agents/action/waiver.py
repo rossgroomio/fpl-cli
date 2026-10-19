@@ -22,7 +22,7 @@ from fpl_cli.api.fpl_draft import (
 )
 from fpl_cli.models.player import Player
 from fpl_cli.models.types import EnrichedPlayer, WaiverPoolEntry, WaiverTarget
-from fpl_cli.services.player_prior import early_season_quality_warning
+from fpl_cli.services.player_prior import CUTOFF_GW, early_season_quality_warning
 from fpl_cli.services.scoring import (
     ConsistencySignals,
     apply_adjusted_npxg,
@@ -38,16 +38,13 @@ from fpl_cli.services.scoring import (
     read_chance_of_playing,
     understat_join_coverage,
 )
+from fpl_cli.services.scoring.constants import CONSISTENCY_PHASE_IN_START
+from fpl_cli.utils.text import join_and
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-
-def _join_and(parts: list[str]) -> str:
-    """``a``, ``a and b``, ``a, b and c``: a list as a sentence reads it."""
-    if len(parts) < 2:
-        return "".join(parts)
-    return f"{', '.join(parts[:-1])} and {parts[-1]}"
+    from fpl_cli.services.scoring import ScoringData
 
 
 class WaiverAgent(Agent):
@@ -308,7 +305,13 @@ class WaiverAgent(Agent):
                 warnings.append(club_warning)
             # Table mode prints every entry here to stderr, so this is the one
             # place the miss is reported for either format (#448).
-            unjoined_warning = self._unjoined_player_warning(parsed_available)
+            # Ranked order, so the names the entry shows are the misses most
+            # likely to be claimed rather than whoever sorts first in the pool.
+            unjoined_warning = self._unjoined_player_warning(
+                waiver_targets,
+                carried_terms=self._join_carried_terms(data, next_gw_id),
+                main_list_empty=not data.players,
+            )
             if unjoined_warning is not None:
                 warnings.append(unjoined_warning)
             squads_warning = unread_squads_warning(self.client.unread_squads)
@@ -419,22 +422,52 @@ class WaiverAgent(Agent):
             ),
         }
 
-    def _unjoined_player_warning(
-        self, pool: list[EnrichedPlayer],
-    ) -> dict[str, str] | None:
-        """The notice for players the main-game join missed, at every position.
+    @staticmethod
+    def _join_carried_terms(data: ScoringData, next_gw_id: int) -> list[str]:
+        """The score terms the join carries onto every position this gameweek.
 
-        The join carries each player's history, prior, adjusted npxG and
-        consistency signals onto the draft pool, so a miss scores any player
-        on a different mix of terms from the rest of the pool. Keepers and
-        defenders lose a position-specific input as well (a keeper's
-        saves/xGC block, a defender's DC/90). The change is not uniformly
-        down: a midfielder dropped from the join has been seen to climb past
-        the top defender (#475), so a consumer cannot read a miss as an
-        under-rating, only as a score that is not comparable, and nothing in
-        the payload would otherwise say so. An empty main-game player list
-        misses the whole pool at once, which is why the entry is one aggregate
-        naming counts and the first few names rather than a line per player.
+        Each lookup is main-keyed and reaches a draft player only through the
+        join, but it is only a lost term where it would have scored: a feed
+        that came back empty is missing for joined players too, the prior
+        blend ends at ``CUTOFF_GW``, and the consistency bonus phases in after
+        ``CONSISTENCY_PHASE_IN_START``. Naming a term outside those windows
+        blames the join for something no player is scored on (#479 review).
+        """
+        terms = []
+        if data.player_histories:
+            terms.append("history")
+        if data.player_priors and next_gw_id < CUTOFF_GW:
+            terms.append("prior")
+        if data.adjusted_npxg_lookup:
+            terms.append("adjusted npxG")
+        if data.consistency_lookup and next_gw_id > CONSISTENCY_PHASE_IN_START:
+            terms.append("consistency signals")
+        return terms
+
+    def _unjoined_player_warning(
+        self,
+        ranked: Sequence[Mapping[str, Any]],
+        *,
+        carried_terms: Sequence[str] = (),
+        main_list_empty: bool = False,
+    ) -> dict[str, str] | None:
+        """The notice for players the main-game join missed.
+
+        *carried_terms* (``_join_carried_terms``) are what a miss costs every
+        position: a player without them is scored on a different mix of terms
+        from the rest of the pool, and the change is not uniformly down (a
+        midfielder dropped from the join has been seen to climb past the top
+        defender, #475), so a consumer can read a miss only as a score that is
+        not comparable, never as an under-rating. Keepers and defenders lose a
+        position-specific input on top (a keeper's saves/xGC block, a
+        defender's DC/90), so they count even when nothing is carried; a
+        midfielder or forward counts only when something is. The names come
+        from *ranked* in its order, the first three per position, so the miss
+        a consumer is likeliest to claim is the one shown.
+
+        An empty main-game player list misses the whole pool for one upstream
+        reason, so it gets one sentence saying so rather than counts naming
+        hundreds of players.
         """
         missed = []
         extras = []
@@ -444,8 +477,10 @@ class WaiverAgent(Agent):
             ("MID", "midfielder", None),
             ("FWD", "forward", None),
         ):
+            if extra is None and not carried_terms:
+                continue
             names = [
-                p["player_name"] for p in pool
+                p["player_name"] for p in ranked
                 if p.get("position") == position
                 and int(p.get("id") or 0) not in self._main_player_map
             ]
@@ -453,18 +488,25 @@ class WaiverAgent(Agent):
                 shown = ", ".join(names[:3]) + (", ..." if len(names) > 3 else "")
                 missed.append(f"{len(names)} draft {noun}(s) ({shown})")
                 if extra is not None:
-                    extras.append(f"{noun}s also without {extra}")
+                    extras.append((noun, extra))
         if not missed:
             return None
-        return {
-            "code": "draft_player_unjoined",
-            "message": (
-                f"No main-game match for {_join_and(missed)}: each is scored without"
-                " its history, prior, adjusted npxG and consistency signals"
-                f"{''.join(f', {e}' for e in extras)}, so its waiver score is not"
-                " comparable with the rest of the pool and can read high or low."
-            ),
-        }
+        clauses = []
+        if carried_terms:
+            clauses.append(f"each is scored without its {join_and(carried_terms)}")
+        verb = "also" if carried_terms else "are scored"
+        clauses.extend(f"{noun}s {verb} without {extra}" for noun, extra in extras)
+        if main_list_empty:
+            message = (
+                "The main-game player list is empty, so no draft player could be"
+                f" joined: {join_and(clauses)}."
+            )
+        else:
+            message = (
+                f"No main-game match for {join_and(missed)}: {join_and(clauses)},"
+                " so their waiver scores are not comparable with the rest of the pool."
+            )
+        return {"code": "draft_player_unjoined", "message": message}
 
     @staticmethod
     def _build_pool(available: list[EnrichedPlayer]) -> list[WaiverPoolEntry]:
