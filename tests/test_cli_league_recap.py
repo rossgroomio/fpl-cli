@@ -3907,6 +3907,30 @@ class TestLeagueRecapFailedSave:
             " (the ledger capture also reported: league_history_store_unreadable)"
         )
 
+    @pytest.mark.parametrize("fmt", [[], ["--format", "json"]])
+    def test_a_failed_save_prints_the_editorial_it_would_have_held(self, tmp_path: Path, fmt: list[str]):
+        _, provider = _queued_provider("Alice ran away with it, and Bob never recovered.")
+        with provider, patch(
+            "fpl_cli.agents.orchestration.report.ReportAgent",
+            return_value=make_agent(success=False, message="disk full"),
+        ):
+            result = _invoke_recap(
+                _recap_data(), ["--summarise", "--save", "--output", str(tmp_path), *fmt],
+            )
+
+        assert result.exit_code == 1
+        assert "Alice ran away with it, and Bob never recovered." in result.stderr
+        assert "Alice ran away" not in result.stdout
+        assert "Failed to save report: disk full" in (result.stderr + result.stdout)
+
+    def test_a_failed_save_with_no_editorial_prints_none(self, tmp_path: Path):
+        result = self._invoke(
+            ["--save", "--output", str(tmp_path)], make_agent(success=False, message="disk full"),
+        )
+
+        assert result.exit_code == 1
+        assert "could not be saved with the report" not in result.stderr
+
     def test_the_ledger_capture_still_happened_before_the_save_failed(self, tmp_path: Path):
         result = self._invoke(
             ["--save", "--output", str(tmp_path)], make_agent(success=False, message="disk full"),

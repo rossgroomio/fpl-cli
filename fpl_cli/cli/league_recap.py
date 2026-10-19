@@ -640,6 +640,17 @@ def league_recap_command(
                     })
                 if not result.success:
                     message = save_failure_message(result)
+                    # The report was the editorial's only destination, and the
+                    # provider call that wrote it is paid and not repeatable,
+                    # so it goes to stderr rather than out with the failure.
+                    # A dry run's placeholder is not worth printing.
+                    editorial = collected_data.get("synthesis_summary")
+                    if editorial and not dry_run:
+                        error_console.print(
+                            "[yellow]The editorial could not be saved with the report;"
+                            " it follows:[/yellow]\n"
+                        )
+                        error_console.print(rich_escape(editorial), highlight=False)
                     if output_format == "json":
                         # The envelope below is all a JSON consumer gets, and
                         # the capture's own prose is suppressed in this mode,
@@ -652,8 +663,7 @@ def league_recap_command(
                         if codes:
                             message += f" (the ledger capture also reported: {', '.join(codes)})"
                     emit_failure("league-recap", message, output_format)
-                if result.data and result.data.get("report_path"):
-                    console.print(f"\n[green]Report saved to {result.data['report_path']}[/green]")
+                console.print(f"\n[green]Report saved to {result.data['report_path']}[/green]")
 
             if output_format == "json":
                 from fpl_cli.prompts.league_recap_checks import editorial_warning_message

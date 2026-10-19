@@ -1089,7 +1089,7 @@ fpl league-recap --format json     # JSON envelope for scripting/agents
 the same as `review` and `preview`. Under `--format json` stdout is the `{command, error}`
 envelope instead of the recap, and the message names the codes of any warnings the ledger capture
 raised (`... (the ledger capture also reported: league_history_store_unreadable)`), since the
-payload that would have carried them is not emitted. The capture itself runs before the report is
+payload that would have carried them is not emitted. When `--summarise` produced an editorial, it is printed on stderr first, since the report was its only destination. The capture itself runs before the report is
 written, so the failure does not undo it.
 
 **When to run it:** any time after the gameweek has finished, but the fullest capture is the
