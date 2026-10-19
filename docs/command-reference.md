@@ -663,7 +663,7 @@ everyone is), nobody is described, the lines read as they did before, and a
 transaction log, read alongside the squads, plus one squad per manager at the draft's gameweek
 when its picks are lost. Those squads are read once: the first lookup whose history checks out,
 once that gameweek is under way, keeps them in the cache dir, and later lookups rebuild from the
-copy. `fpl stats` refuses an unknown `--team` before reading any of it.
+copy under the same checks. `fpl stats` refuses an unknown `--team` before reading any of it.
 
 ### Historical Data
 
@@ -1268,7 +1268,8 @@ players, a squad that could not be read, or an undone move that does not fit the
 refuse it. It costs one request per manager (their squad at the draft's gameweek), only when
 the picks are lost and only once: a run whose replay passes keeps those squads in the cache dir
 (`draft_rebuilds/`), and later runs, `fpl player` and `fpl stats` included, rebuild from that copy
-under the same checks, dropping a copy they refuse so the run after reads the squads again. It is
+under the same checks. A copy whose squads do not fit the moves undone is dropped, so the run after
+reads the squads again; any other refusal leaves it. It is
 reported as a `draft_rounds_unknown` notice on stderr and in
 `metadata.warnings`, saying where a copy of the draft's choices response would restore the rounds,
 not as `draft_provenance_unavailable`. With neither the picks nor squads that can be rebuilt from,

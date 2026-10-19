@@ -200,6 +200,12 @@ class DraftProvenance:
     the history held and let go, whom nobody holds at the gameweek. Both are
     empty and ``problem`` says why whenever the history could not be shown to
     be complete.
+
+    ``rebuilt_drafts`` are the held drafts, by id, whose start this replay
+    rebuilt from the squads at their gameweek, set only when it passed;
+    ``misfit_drafts`` the ones whose squads did not fit the moves undone to
+    rebuild them, the one refusal a draft's squads can be blamed for.
+    ``keep_rebuild_squads()`` reads both (#472).
     """
 
     gameweek: int
@@ -207,6 +213,8 @@ class DraftProvenance:
     players: Mapping[int, DraftPlayerHistory] = field(default_factory=dict)
     released: Mapping[int, DraftFreeAgentHistory] = field(default_factory=dict)
     problem: str | None = None
+    rebuilt_drafts: frozenset[int] = frozenset()
+    misfit_drafts: frozenset[int] = frozenset()
 
     @property
     def available(self) -> bool:
@@ -372,7 +380,9 @@ async def read_draft_logs(
         kept = {
             d["id"]: found for d in asked
             if season is not None
-            and (found := read_rebuild_squads(season, league_id, d["id"], gameweek=d["event"])) is not None
+            and (found := read_rebuild_squads(
+                season, league_id, d["id"], gameweek=d["event"], entries=entry_ids,
+            )) is not None
         }
         squads.update(kept)
         live = [d for d in asked if d["id"] not in kept]
@@ -467,6 +477,8 @@ class _Replay:
     problems: list[str] = field(default_factory=list)
     # False when the chains start from squads, not from the draft's picks.
     rounds_known: bool = True
+    # True when the squads did not fit the moves undone to rebuild the draft.
+    misfit: bool = False
 
     def link(self, element: int, step: DraftStep) -> None:
         self.chains.setdefault(element, []).append(step)
@@ -602,11 +614,16 @@ def _start_from_squads(
             return
 
     drafted = dict(squad)
+    misfits: list[str] = []
     for _, what, row in reversed([m for m in moves if m[2]["event"] <= event]):
         if what == "transaction":
-            _unapply_transaction(drafted, row, replay.problems)
+            _unapply_transaction(drafted, row, misfits)
         else:
-            _unapply_trade(drafted, row, replay.problems)
+            _unapply_trade(drafted, row, misfits)
+    if misfits:
+        replay.problems.extend(misfits)
+        replay.misfit = True
+        return
     for element, entry in drafted.items():
         replay.owner[element] = entry
         replay.link(element, DraftStep(kind="draft", entry=entry, gameweek=event, at=started))
@@ -829,7 +846,10 @@ def replay_draft_history(
 
     whole = _replay(held[-1], logs, through=None)
     if whole.problems:
-        return DraftProvenance(gameweek, problem=_problem_text(whole.problems))
+        return DraftProvenance(
+            gameweek, problem=_problem_text(whole.problems),
+            misfit_drafts=frozenset({held[-1]["id"]} if whole.misfit else ()),
+        )
     owners_now = {
         element: row.get("owner") for row in logs.element_status if (element := api_id(row.get("element"))) is not None
     }
@@ -847,7 +867,10 @@ def replay_draft_history(
 
     replay = _replay(in_force, logs, through=gameweek)
     if replay.problems:
-        return DraftProvenance(gameweek, problem=_problem_text(replay.problems))
+        return DraftProvenance(
+            gameweek, problem=_problem_text(replay.problems),
+            misfit_drafts=frozenset({in_force["id"]} if replay.misfit else ()),
+        )
     if observed is not None:
         off = sum(1 for element, entry in observed.items() if replay.owner.get(element) != entry)
         if off:
@@ -890,44 +913,55 @@ def replay_draft_history(
         ),
         players=players,
         released=released,
+        rebuilt_drafts=frozenset(
+            draft["id"] for draft, run in ((held[-1], whole), (in_force, replay)) if not run.rounds_known
+        ),
     )
 
 
-def keep_rebuild_squads(
+async def keep_rebuild_squads(
+    draft_client: FPLDraftClient,
     logs: DraftLogs,
     provenance: DraftProvenance,
     *,
     season: str,
     league_id: int,
-    started: int | None,
 ) -> None:
-    """Keep the squads a lost draft was rebuilt from once a replay has vouched for them (#472).
+    """Keep the squads a lost draft was rebuilt from once a replay has passed on them (#472).
 
     Given the *logs* ``replay_draft_history()`` was handed and the
-    *provenance* it returned. Squads read from the API are kept only when the
-    replay passed its checks, and only for a draft the replay started from
-    (the league's latest, which the whole history runs from, and the one in
-    force) whose gameweek has started by *started*, the latest gameweek whose
-    deadline has passed (None when none has): until then its squads can still
-    change. A replay refused on squads read from the cache discards them, so
-    the next run reads them from the API rather than refusing on the copy's
-    account. Never raises for a file problem: a lost write costs the next
-    run its reads.
+    *provenance* it returned. Squads read from the API are kept for each draft
+    the replay rebuilt from them, when it passed and the draft game's current
+    gameweek has reached the draft's: a gameweek's squads are locked from its
+    deadline, so a copy kept after it is what any later read would return, and
+    a run reading it applies the checks that run would apply to a live read.
+    The game state is read only when there is something to keep, and the
+    lookups have already read it (it is memoised on the client).
+
+    A copy is dropped only when its squads did not fit the moves undone to
+    rebuild the draft, the one refusal a copy can be blamed for (one kept
+    before the deadline, say), so the next run reads them again. Any other
+    refusal leaves it: a waiver run FPL's ownership list has yet to catch up
+    with says nothing about squads locked weeks ago. Never raises for a failed
+    read or a file problem: either costs the next run its reads.
     """
-    if not provenance.available or provenance.draft is None:
-        for draft_id in logs.kept_squads:
-            discard_rebuild_squads(league_id, draft_id)
+    for draft_id in provenance.misfit_drafts & logs.kept_squads:
+        discard_rebuild_squads(league_id, draft_id)
+    fresh = provenance.rebuilt_drafts - logs.kept_squads
+    if not fresh:
         return
-    held = _held_drafts(logs.drafts or [])
-    replayed = {provenance.draft.id, *(d["id"] for d in held[-1:])}
-    for draft in held:
+    try:
+        game = await draft_client.get_game_state()
+    except (httpx.HTTPError, ValueError) as e:
+        logger.debug("Could not read the draft game's current gameweek to keep the squads: %s", e)
+        return
+    started = api_id(game.get("current_event")) if isinstance(game, Mapping) else None
+    if started is None:
+        return
+    for draft in _held_drafts(logs.drafts or []):
         squad = logs.draft_squads.get(draft["id"])
-        if (
-            squad is None or draft["id"] in logs.kept_squads or draft["id"] not in replayed
-            or started is None or draft["event"] > started
-        ):
-            continue
-        save_rebuild_squads(season, league_id, draft["id"], gameweek=draft["event"], squads=squad)
+        if draft["id"] in fresh and squad is not None and draft["event"] <= started:
+            save_rebuild_squads(season, league_id, draft["id"], gameweek=draft["event"], squads=squad)
 
 
 async def get_draft_provenance(
@@ -941,7 +975,6 @@ async def get_draft_provenance(
     transactions: Sequence[Mapping[str, Any]] | None = None,
     season: str | None = None,
     entry_ids: Sequence[int] | None = None,
-    started: int | None = None,
 ) -> DraftProvenance:
     """Read a league's logs and replay them: ``read_draft_logs()``, ``replay_draft_history()``
     and, under a *season*, ``keep_rebuild_squads()``.
@@ -952,8 +985,8 @@ async def get_draft_provenance(
     when given. Given *entry_ids*, a draft whose picks neither the feed nor a
     snapshot holds is rebuilt from the managers' squads at its gameweek, one
     request each (``DraftInForce.rounds_known`` is then False) until a replay
-    passes on them once its gameweek has started by *started*, and from the
-    copy kept then after that. Never raises for a failed read.
+    passes on them once its gameweek has started, and from the copy kept then
+    after that. Never raises for a failed read.
     """
     logs = await read_draft_logs(
         draft_client, league_id, drafts=drafts, transactions=transactions, season=season,
@@ -961,5 +994,5 @@ async def get_draft_provenance(
     )
     provenance = replay_draft_history(logs, gameweek, main_players=main_players, observed=observed)
     if season is not None:
-        keep_rebuild_squads(logs, provenance, season=season, league_id=league_id, started=started)
+        await keep_rebuild_squads(draft_client, logs, provenance, season=season, league_id=league_id)
     return provenance

@@ -2436,11 +2436,10 @@ async def _attach_draft_acquisitions(
         )
         choices = logs.choices_payload
         provenance = replay_draft_history(logs, gameweek, main_players=main_players, observed=observed)
-        # A recapped gameweek has finished, so every draft in force by then has started.
-        keep_rebuild_squads(logs, provenance, season=season, league_id=league_id, started=gameweek)
     except (KeyError, TypeError, ValueError, AttributeError) as e:
         logger.debug("Draft provenance could not be replayed", exc_info=True)
         return f"the league's history could not be replayed ({type(e).__name__})", None, choices
+    await keep_rebuild_squads(draft_client, logs, provenance, season=season, league_id=league_id)
     if provenance.problem:
         # Shown by the caller; a warning here would print it a second time.
         logger.debug("Draft provenance unavailable: %s", provenance.problem)

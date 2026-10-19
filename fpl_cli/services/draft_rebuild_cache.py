@@ -16,22 +16,22 @@ later runs read the file instead.
 The squads, not the set rebuilt from them: a run that reads the file undoes
 the moves made before the gameweek and replays on exactly as it would from
 squads just read, so a wrong file faces every check a wrong read does, the
-moves fitting the squads included. A replay that refuses squads read from here
-discards the file, so the next run reads them again rather than refusing on
-the file's account for the rest of the season.
+moves fitting the squads included. A copy whose squads do not fit those moves
+is discarded, so the next run reads them again rather than refusing on the
+file's account for the rest of the season; any other refusal leaves it.
 
 The cache dir, not the ledger beside the snapshots: the endpoint serves a
 gameweek's squads all season, so a lost file costs one read per manager and
 nothing else, and none of the snapshot's write-once and conflict rules apply.
 Each file is stamped with its season and the draft's gameweek; one that names
-another, or that cannot be read, is no file.
+another, holds other managers than the league's, or cannot be read, is no file.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 from fpl_cli.paths import user_cache_dir
@@ -50,12 +50,16 @@ def rebuild_squads_path(league_id: int, draft_id: int) -> Path:
     return user_cache_dir() / REBUILD_DIRNAME / f"draft-{league_id}" / f"draft-{draft_id}.json"
 
 
-def read_rebuild_squads(season: str, league_id: int, draft_id: int, *, gameweek: int) -> dict[int, int] | None:
+def read_rebuild_squads(
+    season: str, league_id: int, draft_id: int, *, gameweek: int, entries: Collection[int],
+) -> dict[int, int] | None:
     """The squads kept for one draft at its *gameweek* (draft element id to entry id), or None.
 
     None for no file, one that cannot be read or is not the shape
-    `save_rebuild_squads()` writes, and one stamped with another season or
-    gameweek: each is no file, and the run reads the squads from the API.
+    `save_rebuild_squads()` writes, one stamped with another season or
+    gameweek, and one whose managers are not exactly *entries* (the league's,
+    as a live read would ask for): each is no file, and the run reads the
+    squads from the API.
     """
     path = rebuild_squads_path(league_id, draft_id)
     try:
@@ -71,12 +75,16 @@ def read_rebuild_squads(season: str, league_id: int, draft_id: int, *, gameweek:
     rows = stored.get("squads")
     rows = rows if isinstance(rows, dict) else {}
     # JSON keys are strings: each is a draft element id, each value an entry id.
+    # ASCII decimals only, since `isdigit()` passes characters `int()` rejects.
     squads = {
         int(element): entry for element, value in rows.items()
-        if element.isdigit() and (entry := api_id(value)) is not None
+        if element.isascii() and element.isdecimal() and (entry := api_id(value)) is not None
     }
     if not squads or len(squads) != len(rows):
         logger.debug("Kept squads for draft %s hold no usable squads; reading them again", draft_id)
+        return None
+    if set(squads.values()) != set(entries):
+        logger.debug("Kept squads for draft %s are for other managers than the league's; reading them again", draft_id)
         return None
     return squads
 

@@ -9089,6 +9089,7 @@ class TestCollectorDraftAcquisitions:
             "league_entries": [{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
         })
         client.get_bootstrap_static = AsyncMock(return_value={"elements": draft_players})
+        client.get_game_state = AsyncMock(return_value={"current_event": 5, "next_event": 6})
         client.get_league_transactions = AsyncMock(return_value={"transactions": transactions or []})
         held = owners if owners is not None else {900 + i: 1 for i in range(1, 16)}
         client.get_draft_choices = AsyncMock(return_value={

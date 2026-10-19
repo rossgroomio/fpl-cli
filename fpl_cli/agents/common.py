@@ -336,7 +336,6 @@ async def _read_ownership_provenance(
             return DraftProvenance(0, problem="the draft game names no gameweek to replay the history to")
         league = league_details.get("league")
         drafts = league.get("drafts") if isinstance(league, Mapping) else None
-        current = game.get("current_event")
         return await get_draft_provenance(
             draft_client, league_id, gameweek,
             main_players=main_players,
@@ -347,9 +346,6 @@ async def _read_ownership_provenance(
                 e["entry_id"] for e in league_details.get("league_entries", [])
                 if isinstance(e.get("entry_id"), int)
             ],
-            # The gameweek under way, not the coming one: a lost draft's squads
-            # are kept only once its own gameweek has started (#472).
-            started=current if _is_gameweek(current) else None,
         )
     except Exception as e:  # noqa: BLE001 — optional enrichment: the ownership read beside it must survive
         logger.debug("Draft provenance could not be replayed", exc_info=True)
