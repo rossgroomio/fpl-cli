@@ -46,6 +46,7 @@ from fpl_cli.services.fixture_predictions import (
     resolve_players_with_double,
     resolve_players_with_fixture,
 )
+from fpl_cli.utils.text import join_and
 from fpl_cli.utils.time import format_deadline
 
 if TYPE_CHECKING:
@@ -136,8 +137,7 @@ def _unread_recs_warning(recs_comparison: dict[str, Any], recs_path: str) -> str
     unread = recs_comparison["unread"]
     if len(unread) == 1:
         return f"[yellow]Could not read the {unread[0]} from {where}, so it is not graded. {hint}[/yellow]"
-    parts = f"{', '.join(unread[:-1])} and {unread[-1]}"
-    return f"[yellow]Could not read the {parts} from {where}, so they are not graded. {hint}[/yellow]"
+    return f"[yellow]Could not read the {join_and(unread)} from {where}, so they are not graded. {hint}[/yellow]"
 
 
 def _print_squad_comparison(sq: dict[str, Any]) -> None:

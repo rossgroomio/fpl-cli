@@ -1,7 +1,13 @@
-"""Text utilities: cross-source name comparison, and number wording."""
+"""Text utilities: cross-source name comparison, and number and list wording."""
+
+from __future__ import annotations
 
 import re
 import unicodedata
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _LETTER_VARIANTS: dict[int, str] = {
     0x0131: "i",  # ı → i  (Turkish dotless i)
@@ -134,3 +140,13 @@ def ordinal_word(n: int) -> str:
     if 1 <= n <= _SPELT_OUT_ORDINALS:
         return ORDINAL_WORDS[n - 1]
     return f"{n}{ordinal_suffix(n)}"
+
+
+def join_and(parts: Sequence[str]) -> str:
+    """"a", "a and b", "a, b and c": a list as a sentence reads it.
+
+    No Oxford comma, the house style everywhere a list reaches prose.
+    """
+    if len(parts) <= 1:
+        return "".join(parts)
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"

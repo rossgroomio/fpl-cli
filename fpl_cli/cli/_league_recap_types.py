@@ -8,7 +8,7 @@ from typing import Any, Literal, NotRequired, TypedDict
 
 from fpl_cli.api.fpl_draft import draft_claim_priority_rank
 from fpl_cli.season import TOTAL_GAMEWEEKS
-from fpl_cli.utils.text import ordinal_suffix, ordinal_word
+from fpl_cli.utils.text import join_and, ordinal_suffix, ordinal_word
 
 # Most managers, moves or picks one line of the recap names before it counts
 # the rest instead: the awards' tie details and the Standout Players lines
@@ -548,7 +548,7 @@ def _standout_names(managers: Sequence[RecapStandoutManager]) -> str:
     names = [m["manager_name"] for m in managers]
     if len(names) > DETAIL_CAP or len(set(names)) < len(names):
         return f"{len(names)} manager{'s' if len(names) != 1 else ''}"
-    return _join_names(names)
+    return join_and(names)
 
 
 def _standout_for(
@@ -950,12 +950,12 @@ class PriorSeasonsSummary:
         lines: list[str] = []
         if self.new_to_fpl:
             lines.append(
-                f"No prior FPL seasons on record for {_join_names(self.new_to_fpl)}: "
+                f"No prior FPL seasons on record for {join_and(self.new_to_fpl)}: "
                 "this is their first season of FPL on record."
             )
         if self.unavailable:
             lines.append(
-                f"Prior seasons could not be fetched for {_join_names(self.unavailable)}."
+                f"Prior seasons could not be fetched for {join_and(self.unavailable)}."
             )
         return lines
 
@@ -1098,13 +1098,6 @@ def _seasons_missed(ordered: Sequence[RecapPriorSeason]) -> int:
     except ValueError:
         return 0
     return max(0, (last - first + 1) - len(ordered))
-
-
-def _join_names(names: Sequence[str]) -> str:
-    """"Alice", "Alice and Bob", "Alice, Bob and Carol"."""
-    if len(names) <= 1:
-        return "".join(names)
-    return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 # ---------------------------------------------------------------------------
@@ -1261,7 +1254,7 @@ def format_contested_claim(contest: RecapContestedClaim) -> str:
     winner and leaving the reader to infer that nobody won.
     """
     losers = contest["losers"]
-    beaten = _join_names([_claimant_text(c) for c in losers])
+    beaten = join_and([_claimant_text(c) for c in losers])
     verb = "was" if len(losers) == 1 else "were"
     if contest["winner"] is None:
         return (
