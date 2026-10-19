@@ -20,11 +20,12 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from fpl_cli.paths import user_cache_dir, user_data_dir
 from fpl_cli.services.draft_provenance import (
     DraftLogs,
     DraftProvenance,
@@ -34,6 +35,7 @@ from fpl_cli.services.draft_provenance import (
     read_draft_logs,
     replay_draft_history,
 )
+from fpl_cli.services.draft_rebuild_cache import rebuild_squads_path, save_rebuild_squads
 from fpl_cli.services.league_history_drafts import (
     completed_drafts,
     lost_draft_path,
@@ -1091,3 +1093,262 @@ class TestReadingTheSquadsAtTheDraftsGameweek:
         assert provenance.available, provenance.problem
         assert provenance.draft is not None and provenance.draft.rounds_known is False
         assert provenance.players[1].latest.kind == "draft"
+
+
+class TestKeepingTheSquadsALostDraftWasRebuiltFrom:
+    """#472: a lost draft's squads at its gameweek are read once. A replay that
+    passes on them keeps them in the cache dir, and later lookups rebuild from
+    that copy under the same checks instead of asking every manager again.
+
+    The league of `TestWhenThePicksAreLost`, looked up at GW4 with GW4 under way.
+    """
+
+    LOST = TestWhenThePicksAreLost
+    SQUADS = {ALICE: [1, 6, 7], BOB: [2, 8, 10], CAM: [3, 4, 11]}
+
+    def _client(
+        self,
+        *,
+        choices: list[dict[str, Any]] | None = None,
+        owners: dict[int, int] | None = None,
+        game: Any = None,
+        squads: dict[int, dict[int, list[int]]] | None = None,
+    ) -> MagicMock:
+        """*squads* by gameweek, then entry; GW1's are `SQUADS` unless given."""
+        by_gameweek = squads or {1: self.SQUADS}
+        client = MagicMock()
+        client.get_draft_choices = AsyncMock(return_value={
+            "choices": choices or [], "element_status": _status(self.LOST.OWNERS if owners is None else owners),
+            "idle": [],
+        })
+        client.get_league_trades = AsyncMock(return_value={"trades": self.LOST.TRADES})
+        client.get_entry_picks = AsyncMock(side_effect=lambda entry, gameweek: {
+            "picks": [{"element": e, "position": n} for n, e in enumerate(by_gameweek[gameweek][entry], start=1)],
+        })
+        client.get_game_state = (
+            AsyncMock(side_effect=game) if isinstance(game, Exception)
+            else AsyncMock(return_value={"current_event": 4, "next_event": 5} if game is None else game)
+        )
+        return client
+
+    async def _lookup(
+        self,
+        client: MagicMock,
+        *,
+        season: str | None = SEASON,
+        drafts: list[dict[str, Any]] | None = None,
+        entry_ids: list[int] | None = None,
+    ) -> DraftProvenance:
+        return await get_draft_provenance(
+            client, LEAGUE, 4, drafts=drafts or [_draft_row(DRAFT, 1, DRAFTED_AT)], transactions=self.LOST.TXNS,
+            season=season, entry_ids=entry_ids or [ALICE, BOB, CAM],
+        )
+
+    def _path(self, draft: int = DRAFT) -> Path:
+        return rebuild_squads_path(LEAGUE, draft)
+
+    def _keep(self, squads: dict[int, int], *, season: str = SEASON, gameweek: int = 1) -> None:
+        save_rebuild_squads(season, LEAGUE, DRAFT, gameweek=gameweek, squads=squads)
+
+    async def test_a_second_lookup_reads_no_squad_and_tells_the_same_story(self):
+        first_client, second_client = self._client(), self._client()
+
+        first = await self._lookup(first_client)
+        second = await self._lookup(second_client)
+
+        assert first_client.get_entry_picks.await_count == 3
+        second_client.get_entry_picks.assert_not_awaited()
+        assert second.draft is not None and second.draft.rounds_known is False
+        assert _histories(second) == _histories(first)
+
+    async def test_the_game_state_is_read_only_when_there_is_something_to_keep(self):
+        self._keep(self.LOST.SQUADS_AT_GW1)
+        client = self._client()
+
+        await self._lookup(client)
+
+        client.get_game_state.assert_not_awaited()
+
+    async def test_the_copy_lives_in_the_cache_dir_stamped_with_its_season_and_gameweek(self):
+        await self._lookup(self._client())
+
+        assert self._path().is_relative_to(user_cache_dir())
+        stored = json.loads(self._path().read_text(encoding="utf-8"))
+        assert (stored["season"], stored["gameweek"]) == (SEASON, 1)
+        assert {int(e): entry for e, entry in stored["squads"].items()} == self.LOST.SQUADS_AT_GW1
+        assert not any(p.is_file() for p in user_data_dir().rglob("*"))
+
+    async def test_a_refused_replay_keeps_nothing(self):
+        refused = await self._lookup(self._client(owners={**self.LOST.OWNERS, 2: ALICE}))
+
+        assert not refused.available
+        assert not self._path().exists()
+
+    @pytest.mark.parametrize("game", [
+        {"current_event": None, "next_event": 1},
+        {"current_event": 0, "next_event": 1},
+        {"next_event": 1},
+        ["not", "a", "dict"],
+    ])
+    async def test_squads_read_before_the_drafts_gameweek_started_are_not_kept(self, game: Any):
+        """Until GW1's deadline its squads can still change, and a game state that
+        names no current gameweek cannot say the deadline has passed."""
+        provenance = await self._lookup(self._client(game=game))
+
+        assert provenance.available, provenance.problem
+        assert not self._path().exists()
+
+    async def test_a_game_state_that_cannot_be_read_keeps_nothing_and_costs_the_lookup_nothing(self):
+        provenance = await self._lookup(self._client(game=httpx.ConnectError("down")))
+
+        assert provenance.available, provenance.problem
+        assert not self._path().exists()
+
+    async def test_without_a_season_nothing_is_read_from_or_kept_in_the_cache(self):
+        clients = [self._client(), self._client()]
+
+        for client in clients:
+            await self._lookup(client, season=None)
+
+        assert [c.get_entry_picks.await_count for c in clients] == [3, 3]
+        assert not self._path().exists()
+
+    async def test_a_copy_from_another_season_is_no_copy(self):
+        self._keep(self.LOST.SQUADS_AT_GW1, season="2025-26")
+        client = self._client()
+
+        provenance = await self._lookup(client)
+
+        assert provenance.available, provenance.problem
+        assert client.get_entry_picks.await_count == 3
+        assert json.loads(self._path().read_text(encoding="utf-8"))["season"] == SEASON
+
+    @pytest.mark.parametrize("contents", [
+        "not json",
+        "[]",
+        json.dumps({"season": SEASON, "gameweek": 2, "squads": {"1": ALICE, "2": BOB, "3": CAM}}),
+        json.dumps({"season": SEASON, "gameweek": 1, "squads": {}}),
+        json.dumps({"season": SEASON, "gameweek": 1, "squads": ["1", ALICE]}),
+        json.dumps({"season": SEASON, "gameweek": 1, "squads": {"1": ALICE, "x": BOB, "3": CAM}}),
+        json.dumps({"season": SEASON, "gameweek": 1, "squads": {"1": ALICE, "2": None, "3": CAM}}),
+        # `isdigit()` passes a superscript two, which `int()` rejects.
+        json.dumps({"season": SEASON, "gameweek": 1, "squads": {"1": ALICE, "\u00b2": BOB, "3": CAM}}),
+    ])
+    async def test_a_corrupt_copy_is_no_copy_and_the_lookup_reads_the_squads(self, contents: str):
+        self._path().parent.mkdir(parents=True)
+        self._path().write_text(contents, encoding="utf-8")
+        client = self._client()
+
+        provenance = await self._lookup(client)
+
+        assert provenance.available, provenance.problem
+        assert client.get_entry_picks.await_count == 3
+        assert json.loads(self._path().read_text(encoding="utf-8"))["gameweek"] == 1
+
+    @pytest.mark.parametrize("change", ["a manager missing", "a manager the league does not have"])
+    async def test_a_copy_of_other_managers_than_the_leagues_is_no_copy(self, change: str):
+        squads = (
+            {e: entry for e, entry in self.LOST.SQUADS_AT_GW1.items() if entry != CAM}
+            if change == "a manager missing" else {**self.LOST.SQUADS_AT_GW1, 12: 999}
+        )
+        self._keep(squads)
+        client = self._client()
+
+        provenance = await self._lookup(client)
+
+        assert provenance.available, provenance.problem
+        assert client.get_entry_picks.await_count == 3
+
+    async def test_a_refusal_the_copy_is_not_to_blame_for_leaves_it(self):
+        """The waiver window: FPL's ownership list is ahead of the transaction log,
+        which says nothing about squads locked since GW1."""
+        await self._lookup(self._client())
+        lagging, caught_up = self._client(owners={**self.LOST.OWNERS, 2: ALICE}), self._client()
+
+        assert not (await self._lookup(lagging)).available
+        assert self._path().exists()
+        assert (await self._lookup(caught_up)).available
+        caught_up.get_entry_picks.assert_not_awaited()
+
+    async def test_a_copy_that_does_not_fit_the_moves_undone_is_refused_and_dropped(self):
+        """The copy is the squads, not the set rebuilt from them, so the undone
+        moves are checked against it on every run: here Bob's GW1 waiver pickup
+        (10) is missing from his squad, as in a copy kept before the deadline.
+        The next lookup reads the squads again rather than refusing on the copy."""
+        squads = {**self.LOST.SQUADS_AT_GW1, 5: BOB}
+        del squads[10]
+        self._keep(squads)
+        refused_client, next_client = self._client(), self._client()
+
+        refused = await self._lookup(refused_client)
+
+        assert not refused.available
+        assert "brought in a player his entry's squad did not have" in (refused.problem or "")
+        refused_client.get_entry_picks.assert_not_awaited()
+        assert not self._path().exists()
+        assert (await self._lookup(next_client)).available
+        assert next_client.get_entry_picks.await_count == 3
+
+    async def test_squads_read_that_do_not_fit_are_refused_and_not_kept(self):
+        squads = {ALICE: [1, 6, 7], BOB: [2, 8, 5], CAM: [3, 4, 11]}
+
+        refused = await self._lookup(self._client(squads={1: squads}))
+
+        assert refused.misfit_drafts == {DRAFT}
+        assert not self._path().exists()
+
+    async def test_the_latest_draft_is_kept_too_once_its_own_gameweek_has_started(self):
+        """A redraft for GW19 held with its picks lost as well: a lookup of GW4
+        rebuilds both, the GW1 draft in force and the GW19 one the whole history
+        runs from, and keeps the GW19 squads only once GW19 is under way."""
+        drafts = [_draft_row(DRAFT, 1, DRAFTED_AT), _draft_row(REDRAFT, 19, REDRAFTED_AT)]
+        at_gw19 = {entry: [e for e, owner in self.LOST.OWNERS.items() if owner == entry] for entry in (ALICE, BOB, CAM)}
+        squads = {1: self.SQUADS, 19: at_gw19}
+
+        before = await self._lookup(self._client(squads=squads, game={"current_event": 18}), drafts=drafts)
+        assert before.available, before.problem
+        assert before.rebuilt_drafts == {DRAFT, REDRAFT}
+        assert self._path(DRAFT).exists() and not self._path(REDRAFT).exists()
+
+        await self._lookup(self._client(squads=squads, game={"current_event": 19}), drafts=drafts)
+        assert self._path(REDRAFT).exists()
+        last = self._client(squads=squads, game={"current_event": 19})
+        assert (await self._lookup(last, drafts=drafts)).available
+        last.get_entry_picks.assert_not_awaited()
+
+    async def test_the_feeds_picks_win_over_a_kept_copy(self):
+        await self._lookup(self._client())
+        client = self._client(choices=FIRST_DRAFT)
+
+        provenance = await self._lookup(client)
+
+        assert provenance.draft is not None and provenance.draft.rounds_known is True
+        client.get_entry_picks.assert_not_awaited()
+
+    async def test_a_snapshot_wins_over_a_kept_copy(self):
+        await self._lookup(self._client())
+        _saved(_draft_row(DRAFT, 1, DRAFTED_AT), FIRST_DRAFT)
+
+        provenance = await self._lookup(self._client())
+
+        assert provenance.draft is not None and provenance.draft.rounds_known is True
+        pick = _histories(provenance)[1].latest.pick
+        assert pick is not None and (pick.round, pick.pick) == (1, 1)
+
+    async def test_a_copy_that_cannot_be_written_costs_the_next_lookup_its_reads_and_nothing_else(self):
+        with patch("fpl_cli.services.draft_rebuild_cache.atomic_write_text", side_effect=OSError("read-only")):
+            provenance = await self._lookup(self._client())
+
+        assert provenance.available, provenance.problem
+        assert not self._path().exists()
+
+    async def test_reading_the_logs_says_which_squads_came_from_the_copy(self):
+        await self._lookup(self._client())
+
+        logs = await read_draft_logs(
+            self._client(), LEAGUE, drafts=[_draft_row(DRAFT, 1, DRAFTED_AT)], transactions=self.LOST.TXNS,
+            season=SEASON, entry_ids=[ALICE, BOB, CAM], gameweek=4,
+        )
+
+        assert logs.draft_squads == {DRAFT: self.LOST.SQUADS_AT_GW1}
+        assert logs.kept_squads == {DRAFT}

@@ -9089,6 +9089,7 @@ class TestCollectorDraftAcquisitions:
             "league_entries": [{"id": 10, "entry_id": 1, "player_first_name": "A", "player_last_name": "B"}],
         })
         client.get_bootstrap_static = AsyncMock(return_value={"elements": draft_players})
+        client.get_game_state = AsyncMock(return_value={"current_event": 5, "next_event": 6})
         client.get_league_transactions = AsyncMock(return_value={"transactions": transactions or []})
         held = owners if owners is not None else {900 + i: 1 for i in range(1, 16)}
         client.get_draft_choices = AsyncMock(return_value={
@@ -9332,6 +9333,22 @@ class TestCollectorDraftAcquisitions:
         assert fifth["acquisition"] is not None
         assert (fifth["acquisition"]["round_unknown"], fifth["acquisition"]["round"]) == (False, 5)
         assert "draft_provenance_notice" in before
+
+    async def test_a_later_recap_rebuilds_from_the_kept_squads_without_reading_them(self):
+        """#472: the GW1 squads are read once, and every recap after rebuilds from that copy."""
+        clients = [self._feed_without_the_picks() for _ in range(2)]
+        for client in clients:
+            client.get_entry_picks = self._picks_by_gameweek()
+
+        for client in clients:
+            data = await self._collect(client)
+            assert "draft_provenance_problem" not in data
+            assert "not in which round" in data["draft_provenance_notice"]
+
+        reads_at_the_draft = [
+            sum(1 for call in client.get_entry_picks.await_args_list if call.args[1] == 1) for client in clients
+        ]
+        assert reads_at_the_draft == [1, 0]
 
     async def test_a_squad_the_replay_puts_elsewhere_labels_nobody(self):
         """P16 is in the fetched squad but, by the history, nobody's."""
