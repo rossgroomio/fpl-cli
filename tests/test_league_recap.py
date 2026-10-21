@@ -8160,8 +8160,34 @@ class TestStandingsMarginLines:
         managers[1]["gw_points"] = 29
         assert (
             "Lowest gameweek score: 29 pts, shared by Ann Moss, Bea Gale - level with each other, "
-            "each 6 pts behind the next-lowest score, 35 pts (Cy Hart)"
+            "each 6 pts behind the next-lowest score, 35 pts (Cy Hart), so Cy Hart avoided last place on the week by 6 pts"
         ) in self._text(managers)
+
+    def test_who_avoided_last_place_is_stated_by_name_and_as_the_weeks(self):
+        """PR #487: with the bottom gap stated, the editorial told the
+        next-lowest manager's escape and gave it to the manager who finished
+        last ("He escaped the bottom spot"), or set it against the foot of the
+        table where that manager was bottom of the league. The escape is
+        stated by name and scoped to the week."""
+        managers = [
+            _make_manager(name="Ann Moss", entry_id=1, gw_points=30, overall_rank=6),
+            _make_manager(name="Bea Gale", entry_id=2, gw_points=31, overall_rank=8),
+            _make_manager(name="Cy Hart", entry_id=3, gw_points=65, overall_rank=1),
+        ]
+        assert (
+            "Lowest gameweek score: 30 pts, Ann Moss alone - 1 pt behind the next-lowest score, 31 pts (Bea Gale), "
+            "so Bea Gale avoided last place on the week by 1 pt"
+        ) in self._text(managers)
+
+    def test_a_shared_next_lowest_each_avoided_last_place(self):
+        managers = _reported_table()
+        managers[2]["gw_points"] = 33
+        assert "33 pts (Bea Gale, Cy Hart), so Bea Gale, Cy Hart each avoided last place on the week by 4 pts" in (
+            self._text(managers)
+        )
+
+    def test_the_highest_line_states_no_escape(self):
+        assert "avoided" not in self._text(_reported_table()).split("Lowest gameweek score")[0]
 
     def test_a_one_point_margin(self):
         managers = [
