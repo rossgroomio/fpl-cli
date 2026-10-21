@@ -1272,6 +1272,23 @@ def points_label(points: int) -> str:
     return f"{points} pt" if points == 1 else f"{points} pts"
 
 
+def competition_rank(value: int, values: Iterable[int]) -> int:
+    """`value`'s rank among `values` when higher is better: one more than the
+    number above it, so level values share a rank and the next one down skips
+    it (1, 2, 2, 4).
+
+    The one definition the recap's own ranks are counted with (#486): the GW
+    Rank column and the report's GW Standings block through
+    `gameweek_rank()`, and the editorial checks' readings of a gameweek
+    placing and a season total, so a change to how a tie or a missing value
+    ranks reaches all of them at once. League positions -- Pos, Prev and the
+    ledger's `gw_rank` -- come from `derive_point_in_time_positions()`
+    (`_league_recap_data.py`), the same competition ranking over a sorted
+    walk, and a change here does not reach them.
+    """
+    return 1 + sum(other > value for other in values)
+
+
 def gameweek_rank(manager: RecapManagerEntry, managers: Sequence[RecapManagerEntry]) -> int:
     """A manager's placing on this gameweek's points: one more than the
     number who scored more, so level scores share a rank (#483).
@@ -1281,7 +1298,7 @@ def gameweek_rank(manager: RecapManagerEntry, managers: Sequence[RecapManagerEnt
     on league position would hand the editorial a placing the prompt's tie
     rules say it may not claim, and a reader would see one in the report.
     """
-    return 1 + sum(other["gw_points"] > manager["gw_points"] for other in managers)
+    return competition_rank(manager["gw_points"], (other["gw_points"] for other in managers))
 
 
 def place_label(rank: int) -> str:

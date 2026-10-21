@@ -1,8 +1,9 @@
-"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390).
+"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486).
 
 The prompt states every rule these read, and the model has broken each of
 them anyway: a manager named as beaten in a waiver race they won, a
-manager's whole-gameweek net pinned on one transfer, a tie nobody shared.
+manager's whole-gameweek net pinned on one transfer, a tie nobody shared, a
+league position given as a gameweek finish.
 Where the claim is about known strings -- managers, players, figures, ranks
 -- it can be read back mechanically instead of trusting a rule the model
 has already ignored once.
@@ -23,22 +24,24 @@ its JSON warning opens with, what the retry is told, and the checker itself.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     RecapContestedClaim,
     RecapManagerEntry,
+    competition_rank,
     contested_draft_claims,
     draft_transaction_kind_label,
     draft_transaction_kind_nets,
     format_contested_claim,
     format_move_counts,
+    gameweek_rank,
     place_label,
     points_label,
 )
-from fpl_cli.utils.text import ORDINAL_WORDS
+from fpl_cli.utils.text import ORDINAL_WORDS, join_and
 
 # The JSON warning code each check raises when a claim it caught survives
 # the retry. Stable for scripts, like every code on that channel.
@@ -46,6 +49,7 @@ RECAP_WARNING_CONTESTED_MISATTRIBUTION = "synthesis_contested_misattribution"
 RECAP_WARNING_NET_MISATTRIBUTION = "synthesis_net_misattribution"
 RECAP_WARNING_KIND_NET_MISATTRIBUTION = "synthesis_kind_net_misattribution"
 RECAP_WARNING_UNSUPPORTED_TIE = "synthesis_unsupported_tie"
+RECAP_WARNING_WRONG_PLACING = "synthesis_wrong_gameweek_placing"
 RECAP_WARNING_CONTESTED_ROLL_CALL = "synthesis_contested_roll_call"
 
 
@@ -569,6 +573,53 @@ def _words_after(text: str, start: int, count: int) -> str:
     return " ".join(text[start:_window_end(text, start, count)].split())
 
 
+def _manager_aliases(names: RecapNames) -> dict[str, str]:
+    """Every string a check reads as a manager, mapped to their name: the
+    full name, and a first or last name no other manager or player shares."""
+    return {
+        alias: name
+        for alias, (name, is_manager) in _mention_aliases(names.managers, set(names.players)).items()
+        if is_manager
+    }
+
+
+@dataclass(frozen=True)
+class _ReadClause:
+    """One clause of an editorial, with every name in it, the managers among
+    them as (start, end, name), and its antecedent: the one manager the
+    nearest earlier clause of the paragraph to name anyone named, or None
+    when that clause named two (the next "he" could be either's) or none
+    has."""
+
+    text: str
+    mentions: list[re.Match[str]]
+    named: list[tuple[int, int, str]]
+    antecedent: str | None
+
+    @property
+    def manager(self) -> str | None:
+        """The one manager the clause is about: the one it names, or its
+        antecedent when it names none. None when it names two."""
+        if not self.named:
+            return self.antecedent
+        distinct = {name for *_, name in self.named}
+        return next(iter(distinct)) if len(distinct) == 1 else None
+
+
+def _read_clauses(summary: str, names: RecapNames, aliases: Mapping[str, str]) -> Iterator[_ReadClause]:
+    """Every clause of `summary`, line by line, read for its names. The one
+    place a check carries a manager from one clause to a pronoun in the next."""
+    for paragraph in summary.splitlines():
+        antecedent: str | None = None
+        for clause in _clauses(paragraph):
+            mentions = names.find(clause)
+            named = [(m.start(), m.end(), aliases[m.group(0)]) for m in mentions if m.group(0) in aliases]
+            read = _ReadClause(clause, mentions, named, antecedent)
+            yield read
+            if named:
+                antecedent = read.manager
+
+
 # =============================================================================
 # Net figures (#359)
 # =============================================================================
@@ -1069,50 +1120,40 @@ def check_kind_net_scopes(summary: str, managers: Sequence[RecapManagerEntry], n
     mixed = {line.manager: line for line in _mover_lines(managers) if len(line.kinds) > 1}
     if not mixed:
         return []
-    aliases = {
-        alias: name
-        for alias, (name, is_manager) in _mention_aliases(names.managers, set(names.players)).items()
-        if is_manager
-    }
 
     problems: list[str] = []
-    for paragraph in summary.splitlines():
-        carried: str | None = None
-        for clause in _clauses(paragraph):
-            named = {aliases[m.group(0)] for m in names.find(clause) if m.group(0) in aliases}
-            if named:
-                # Two managers named: the next clause's "his" could be either's.
-                carried = next(iter(named)) if len(named) == 1 else None
-            manager = carried
-            line = mixed.get(manager or "")
-            if line is None:
+    for read in _read_clauses(summary, names, _manager_aliases(names)):
+        clause = read.text
+        manager = read.manager
+        line = mixed.get(manager or "")
+        if line is None:
+            continue
+        kinds = line.kinds
+        kind_nets = dict(line.kind_nets)
+        scopes = _kind_scopes(clause)
+        figures = _clause_figures(clause)
+        for start, end, text in figures:
+            found = _figure_scope(clause, start, end, scopes, figures)
+            kind = found[0].kind if found else None
+            if found is None or kind not in kinds:
                 continue
-            kinds = line.kinds
-            kind_nets = dict(line.kind_nets)
-            scopes = _kind_scopes(clause)
-            figures = _clause_figures(clause)
-            for start, end, text in figures:
-                found = _figure_scope(clause, start, end, scopes, figures)
-                kind = found[0].kind if found else None
-                if found is None or kind not in kinds:
-                    continue
-                quoted = found[1]
-                own = kinds[kind]
-                own_net = kind_nets[kind]
-                value = _signed_value(text)
-                signed = text[0] in _SIGNS
-                allowed = {own_net, *(move.net for move in own)}
-                if value in allowed if signed else abs(value) in {abs(figure) for figure in allowed}:
-                    continue
-                fact = line.misplaced_kind(value, kind, signed=signed)
-                if fact is None:
-                    continue
-                problem = (
-                    f'the editorial says "{" ".join(_plain(quoted).split())}" of {manager}, but {fact}, '
-                    f"not the {kind}s' own net of {own_net:+d}"
-                )
-                if problem not in problems:
-                    problems.append(problem)
+            quoted = found[1]
+            own = kinds[kind]
+            own_net = kind_nets[kind]
+            value = _signed_value(text)
+            signed = text[0] in _SIGNS
+            allowed = {own_net, *(move.net for move in own)}
+            if value in allowed if signed else abs(value) in {abs(figure) for figure in allowed}:
+                continue
+            fact = line.misplaced_kind(value, kind, signed=signed)
+            if fact is None:
+                continue
+            problem = (
+                f'the editorial says "{" ".join(_plain(quoted).split())}" of {manager}, but {fact}, '
+                f"not the {kind}s' own net of {own_net:+d}"
+            )
+            if problem not in problems:
+                problems.append(problem)
     return problems
 
 
@@ -1171,11 +1212,6 @@ _TIE_WINDOW_WORDS = 6
 _TIE_NEGATION_WORDS = 5
 
 
-def _competition_ranks(values: Sequence[tuple[str, int]]) -> list[tuple[str, int]]:
-    """Each name's rank when higher is better, level values sharing one."""
-    return [(name, 1 + sum(other > value for _, other in values)) for name, value in values]
-
-
 def _rank_holders(ranks: Sequence[tuple[str, int]], rank: int | str) -> tuple[int, list[str]]:
     """The rank `rank` names ("top", "bottom" or a number) and who holds it."""
     values = [value for _, value in ranks]
@@ -1208,17 +1244,18 @@ def check_tie_claims(summary: str, managers: Sequence[RecapManagerEntry], names:
     """
     if len(managers) < 2:
         return []
-    gameweek = _competition_ranks([(m["manager_name"], m["gw_points"]) for m in managers])
+    # Both rankings come from the one definition the prompt's GW Rank column
+    # is counted with (#486), so a tie means the same thing on either side.
+    gameweek = [(m["manager_name"], gameweek_rank(m, managers)) for m in managers]
     points = {m["manager_name"]: m["gw_points"] for m in managers}
+    totals = [(m["manager_name"], m.get("total_points") or 0) for m in managers if "total_points" in m]
     # The table's Pos column first -- the one a "nobody is 8th" is read off --
     # then its Prev column and the ranks its Total column implies.
     tables = [
         ranks for ranks in (
             [(m["manager_name"], m.get("overall_rank") or 0) for m in managers if m.get("overall_rank")],
             [(m["manager_name"], m.get("previous_rank") or 0) for m in managers if m.get("previous_rank")],
-            _competition_ranks([
-                (m["manager_name"], m.get("total_points") or 0) for m in managers if "total_points" in m
-            ]),
+            [(name, competition_rank(total, (other for _, other in totals))) for name, total in totals],
         ) if ranks
     ]
     # Each says why the tie does not hold in its reading, or None when it does
@@ -1288,6 +1325,378 @@ def check_tie_claims(summary: str, managers: Sequence[RecapManagerEntry], names:
             if fact is None:
                 continue
             problem = f'the editorial says "{match.group(0)}", but {fact}'
+            if problem not in problems:
+                problems.append(problem)
+    return problems
+
+
+# =============================================================================
+# Gameweek placings (#486)
+# =============================================================================
+
+_RANK_WORDS = r"last|bottom|top|\d{1,2}(?:st|nd|rd|th)|" + "|".join(_ORDINAL_NUMBERS)
+# A placing: an ordinal ("seventh", "7th"), "last", "bottom" or "top", after a
+# tie word ("joint-seventh") or "rock-" if any, and before the "-best" or
+# "-highest" that ranks a score ("third-best score") or the noun a placing
+# takes ("eighth place", "a second-place finish"). A rank glued to another
+# word by a hyphen ("first-round", "second-last", "last-placed") is not one.
+_PLACING_RE = re.compile(
+    rf"(?<![\w-])(?:(?:joint|equal|tied)[-\s]+(?:for\s+)?)?(?:rock-)?(?P<rank>{_RANK_WORDS})"
+    r"(?:(?P<best>[-\s]+(?:best|highest))(?:[-\s]+(?:score|week|gameweek|return|tally))?"
+    r"|[-\s]+(?:place|spot|position)(?:[-\s]+finish)?)?(?![\w-])",
+    re.IGNORECASE,
+)
+# What may follow a placing for it to be one: the clause's end, a bracket or
+# a dash, or a word that places it ("eighth on 31", "third for the week",
+# "last in the gameweek", "seventh this week"). Anything else counts or names
+# something: "third win", "first time", "last week", "top scorer", "second
+# and third".
+_PLACING_FOLLOWS_RE = re.compile(
+    r"\s*(?:$|[,.;:!?()–—]|-\s|(?:in|for|on|with|of|at|this|after|among)(?!\w))", re.IGNORECASE,
+)
+# What before a rank makes it no placing: another rank it is counted from or
+# listed with ("second last", "second and third"), "at" ("at last") or "next
+# to" ("next to last").
+_NOT_A_PLACING_BEFORE_RE = re.compile(
+    rf"(?<!\w)(?:(?:{_RANK_WORDS})\s*(?:,|and|&|or|-)?|at(?:\s+the)?|next(?:[-\s]+to)?)\s*$", re.IGNORECASE,
+)
+# A placing is read inside its own stretch of the clause, between the
+# commas, dashes and conjunctions either side, so "Alice won the week, and
+# Bob finished eighth in the table" keeps the week away from Bob's eighth.
+_PLACING_STRETCH_BREAK_RE = re.compile(
+    r"[,;:–—]|\s-\s|\s(?:and|but|while|whereas|though|although)\s", re.IGNORECASE,
+)
+# The week named as a placing's scope after it ("third on the week", "last
+# in the gameweek", "bottom of the GW charts") or as its owner before it
+# ("this week's third-best") makes it the week's. "This week" alone only
+# dates it ("still top this week" may be the table), a plural is a span
+# ("two gameweeks on top"), and a numbered one ("in GW5 too") may be another
+# week than the one recapped.
+_PLACING_WEEK = r"(?:the|this)\s+(?:(?:game)?week|gw)"
+_PLACING_WEEK_AFTER_RE = re.compile(
+    rf"(?<!\w)(?:on|for|in|of)\s+{_PLACING_WEEK}(?:['’]s)?(?![\w'’-])(?!\s+(?:before|after|prior))",
+    re.IGNORECASE,
+)
+_PLACING_WEEK_BEFORE_RE = re.compile(rf"(?<!\w){_PLACING_WEEK}['’]s(?!\w)", re.IGNORECASE)
+# Any word for the table or a season, for holding a place in it, or for a
+# span longer than the week makes a placing the league's or something else's
+# -- "went into this gameweek sat top", "kept top spot this week", "her
+# second-best score this campaign", "the second-best of his career" -- so it
+# is left alone. So is a placing a move lands on or counts from ("up to 4th",
+# "from 9th to 5th", "into 7th", "second from the bottom").
+_PLACING_TABLE_RE = re.compile(
+    r"(?<!\w)(?:table|league|standings|overall|season\w*|totals?|summit|ladder"
+    r"|stay\w*|sits?|sitting|sat|kept|keeps?|keeping|holds?|held|holding|leads?|leading|leader"
+    r"|career|years?|campaign|months?|run|ever|all-time|history|record|since|weeks|gameweeks)(?!\w)",
+    re.IGNORECASE,
+)
+_PLACING_MOVE_RE = re.compile(r"(?<!\w)(?:to|into|from)\s+(?:the\s+)?$", re.IGNORECASE)
+# A move up or down the table does the same ("slipped two places, 3rd in a
+# week when 45 got you up two places"), unless the week is named straight
+# after the placing: "rocketed up five places to snatch second on the week"
+# ranks the week.
+_PLACING_MOVE_WORDS_RE = re.compile(
+    r"(?<!\w)(?:places|positions|climb\w*|rose|ris(?:e|es|en|ing)|jump\w*|leap\w*|surg\w*|soar\w*|rocket\w*"
+    r"|slip\w*|slid\w*|slump\w*|drop\w*|fell|fall\w*|tumbl\w*|plummet\w*|sank|sink\w*|sunk|mov(?:e|ed|es|ing)"
+    r"|(?:up|down)\s+(?:a|one|two|three|four|five|six|seven|eight|nine|ten|\d+))(?!\w)",
+    re.IGNORECASE,
+)
+# Words before a placing, in its own stretch, that say it did not happen,
+# nearly did, or belongs to someone the manager beat or escaped: "would have
+# been second", "a point off top", "one better than last", and "avoided last
+# place on the week" -- the prompt's own words for the manager one score
+# above the lowest (#487). "Could" hedges only with "have": "could only
+# manage eighth" is a finish, and so is "no better than eighth".
+_PLACING_HEDGE_RE = re.compile(
+    r"(?<!\w)(?:would|might|should|if|unless|near|nearly|almost|close|within|off|outside|short"
+    r"|avoid\w*|escap\w*|dodg\w*|evad\w*|miss\w*|surviv\w*|spar\w*|clear|above|ahead|beat\w*|outscor\w*"
+    r"|over|instead|rather|could(?=(?:\s+\w+)?\s+have(?!\w))"
+    r"|(?<!no better )(?<!nothing better )(?<!no higher )than)(?!\w)|could['’]ve|['’]d(?!\w)",
+    re.IGNORECASE,
+)
+_PLACING_HEDGE_WORDS = 5
+_PLACING_NEGATION_RE = re.compile(rf"{_NEGATION_RE.pattern}|(?<!\w)no\s+longer(?!\w)", re.IGNORECASE)
+# A placing nobody is named before goes back to an earlier clause's manager
+# through any pronoun, the object ("it only bought him a second-place
+# finish") as much as the subject; a pronoun between a name and the placing,
+# in a clause naming two managers, could be either's.
+_PRONOUN_RE = re.compile(r"(?<!\w)(?:he|him|his|she|her|they|them|their)(?!\w)", re.IGNORECASE)
+# A person between the manager (named, or the pronoun for them) and the
+# placing is whose placing it is: "Ann's brother finished last", "Ann watched
+# a rival take top spot", "Her rival took third".
+_PLACING_OTHER_PERSON_RE = re.compile(
+    r"(?<!\w)(?:rivals?|brothers?|sisters?|mates?|friends?|partners?|wife|husband|dad|father|mum|mother|sons?"
+    r"|daughters?|colleagues?|boss|winners?|losers?|runners?-up|managers?|opponents?|neighbours?|everyone"
+    r"|everybody|someone|somebody|nobody|anyone|anybody|others|man|woman|guy|bloke)(?!\w)",
+    re.IGNORECASE,
+)
+# A relative pronoun opens a clause with its own subject, which is the
+# manager's only when it follows the name ("Bob, who finished eighth"): "Bob
+# beat only the manager who came last" puts nobody's placing on Bob.
+_RELATIVE_RE = re.compile(r"(?<!\w)(?:who|whom|whose|which)(?!\w)", re.IGNORECASE)
+# A finishing verb straight before a placing makes it the manager's finish
+# ("finished eighth", "came in last", "good for eighth"), which the clause's
+# own gameweek score makes the week's ("scored 31 and finished eighth").
+_FINISH_BEFORE_RE = re.compile(
+    r"(?<!\w)(?:finish(?:ed|es|ing)?|came|comes?|coming|placed|end(?:ed|s|ing)?(?:\s+up)?|good\s+for"
+    r"|enough\s+for)\s+(?:in\s+)?$",
+    re.IGNORECASE,
+)
+# A figure where it stands: never signed, a decimal, part of a word ("GW31")
+# or a percentage, nor a gap or a count of places ("31 points behind", "3
+# places").
+_FIGURE_RE = re.compile(r"(?<![\w.£+−–-])\d+(?![\w.%])")
+_NOT_A_SCORE_AFTER_RE = re.compile(
+    r"\s*(?:-?\s*(?:pts?|points?))?\s*(?:off|behind|clear|adrift|ahead|back|short|more|fewer|less|better"
+    r"|worse|from|places?|spots?|positions?|net|overall|total|in\s+total)(?!\w)",
+    re.IGNORECASE,
+)
+# A figure attached to a placing: straight after it ("eighth on 31",
+# "seventh with just 31 points", "eighth (31)") or straight before it,
+# joined by "for" ("scored 35 for 6th place").
+_FIGURE_AFTER_PLACING_RE = re.compile(
+    r"\s*,?\s*(?:(?:on|with)\s+(?:(?:a|an|just|only|mere|paltry|measly)\s+)*|\(\s*)(?P<figure>\d+)(?![\w.%])",
+    re.IGNORECASE,
+)
+_FIGURE_BEFORE_PLACING_RE = re.compile(
+    r"(?<![\w.£+−–-])(?P<figure>\d+)(?:\s*(?:pts?|points?)|-point\w*)?\s+for\s+(?:an?\s+)?$", re.IGNORECASE,
+)
+# A word for the table or for holding a place before a placing gives way to
+# a score attached to the placing and the week named straight after it:
+# "sits 5th on 39 for the week" ranks the week. The week alone does not
+# ("kept top spot for the week"), nor the week said of something else
+# further on ("stays top with the captaincy call of the week").
+_PLACING_WEEK_AFTER_SCORE_RE = re.compile(
+    rf"(?:\s*(?:pts?|points?))?\s+{_PLACING_WEEK_AFTER_RE.pattern}", re.IGNORECASE,
+)
+
+
+def _placing_stretch(clause: str, start: int, end: int) -> tuple[int, int]:
+    """Where the stretch of `clause` holding `start`-`end` begins and ends."""
+    lo = max((m.end() for m in _PLACING_STRETCH_BREAK_RE.finditer(clause, 0, start)), default=0)
+    following = _PLACING_STRETCH_BREAK_RE.search(clause, end)
+    return lo, following.start() if following else len(clause)
+
+
+def _states(text: str, value: int) -> bool:
+    """Whether `text` states `value` as a figure of its own, not a gap."""
+    return any(
+        int(m.group(0)) == value and not _NOT_A_SCORE_AFTER_RE.match(text, m.end())
+        for m in _FIGURE_RE.finditer(text)
+    )
+
+
+def _placing_negated(text: str, start: int, stretch_start: int, finished: bool) -> bool:
+    """Whether a negation in the words before the placing at `start` is
+    said of it.
+
+    A negation reaches past a stretch break ("wasn't, as some feared,
+    last"), but one with a verb of its own before that break, when a
+    finishing verb leads into the placing (`finished`), is that verb's: in
+    "didn't escape, finishing 15th" it is the escape that did not happen.
+    One with nothing of its own before the break ("didn't, in the end,
+    finish last") still reaches the placing, as one in its own stretch
+    does ("didn't finish last").
+    """
+    for negation in _PLACING_NEGATION_RE.finditer(text, _window_start(text, start, _PLACING_HEDGE_WORDS), start):
+        if finished and negation.end() <= stretch_start:
+            closed = _PLACING_STRETCH_BREAK_RE.search(text, negation.end(), stretch_start)
+            if closed and _WORD_RE.search(text, negation.end(), closed.start()):
+                continue
+        return True
+    return False
+
+
+def _placing_subject(clause: _ReadClause, start: int, stretch_start: int) -> tuple[str, int] | None:
+    """Who the placing at `start` is said of, and where the name that says
+    so ends (0 for one carried from an earlier clause), or None when the
+    clause cannot say.
+
+    It is the manager named nearest before it; where the clause names two or
+    more before it, only the one its own stretch names ("Alice won the week,
+    and Bob was third on the week"). A placing nobody is named before goes
+    to the clause's antecedent when a pronoun before it points back ("He
+    finished eighth on 31", "it left him eighth on 31"). A pronoun between the name and the
+    placing in a clause naming two managers could be either's, so it says
+    neither.
+    """
+    text = clause.text
+    before = [mention for mention in clause.named if mention[1] <= start]
+    if not before:
+        if clause.antecedent is not None and _PRONOUN_RE.search(text[:start]):
+            return clause.antecedent, 0
+        return None
+    if len({who for *_, who in before}) > 1:
+        before = [mention for mention in before if mention[0] >= stretch_start]
+        if len({who for *_, who in before}) != 1:
+            return None
+    _, end, name = before[-1]
+    if len({who for *_, who in clause.named}) > 1 and _PRONOUN_RE.search(text[end:start]):
+        return None
+    return name, end
+
+
+def check_gameweek_placings(
+    summary: str, managers: Sequence[RecapManagerEntry], names: RecapNames,
+) -> list[str]:
+    """Every placing on the week the editorial gives a manager whose
+    gameweek score does not earn it (#486).
+
+    The GW Standings table runs in league order, and the editorial read a
+    manager's last-row Pos beside their GW Pts of 31 as "finished eighth on
+    31" for a manager seventh on the week (#483). The table now carries a GW
+    Rank column and the prompt a rule tying each placing to its column, and
+    the week's runner-up was still called "third on the week". Every manager's
+    gameweek placing is known -- `gameweek_rank()`, the GW Rank column's own
+    -- so the claim is checkable.
+
+    A placing is an ordinal ("seventh", "7th", "third-best"), "last", "bottom"
+    or "top" standing where a placing does ("finished eighth on 31", "third
+    for the week", "a second-place finish in the week"), never one that
+    counts ("his third win", "last week", "second and third"). It is read as
+    the week's when its own stretch of the clause says so -- the week named
+    as its scope after it ("on the week", "in the gameweek") or its owner
+    before it ("this week's third-best") -- or when the manager's gameweek
+    score is attached to it ("eighth on 31", "35 for 6th place") or a
+    finishing verb leads into it in a clause that gives that score and names
+    nobody else ("scored 31 and finished eighth"): the #483 shape, which the
+    prompt forbids whatever the placing was meant as. A score clause that
+    also gives the manager's season total is about the table. A stretch with
+    any word for the table, a season, holding a place or a span longer than
+    the week ("in the league", "kept top spot", "this campaign") is left
+    alone, unless the word comes before the placing and its score and the
+    week straight after it ("sits 5th on 39 for the week"). So is a placing a move lands
+    on or counts from ("up to 4th", "second from the bottom") and one beside
+    a move up or down the table, unless the week is named straight after it
+    ("rocketed up five places to snatch second on the week"). So is a
+    placing that is hedged, negated or escaped ("would have been second",
+    "avoided last place on the week"), though a negation on a verb of its
+    own does not reach past a finishing verb ("didn't escape, finishing
+    15th"), and one said near a player, another subject in its own stretch
+    or another person ("his captain", "her rival", "the manager who came
+    last"), and one in a "respectively" list. Whose it is comes from `_placing_subject()`. "Last" and "bottom"
+    hold for every manager on the week's lowest score and "top" for every one
+    on its highest; a numbered placing is the manager's gameweek rank, level
+    scores sharing one, and a "-best" is also allowed its rank among the
+    distinct scores ("the second-best score" after a shared top one). Returns
+    one line per wrong placing, in the order the editorial gives them.
+    """
+    if len(managers) < 2:
+        return []
+    # Keyed as the names are read: stripped, as `_mention_aliases` keys them.
+    by_name = {m["manager_name"].strip(): m for m in managers}
+    ranks = {name: gameweek_rank(m, managers) for name, m in by_name.items()}
+    scores = sorted({m["gw_points"] for m in managers}, reverse=True)
+    bottom_of_table = max((m.get("overall_rank") or 0 for m in managers), default=0)
+    # In a league's first gameweek every total is that week's score, so a
+    # figure that is both is the score; any other week it could be either.
+    totals_are_scores = all(m.get("total_points") == m["gw_points"] for m in managers)
+
+    def is_score(figure: int, manager: RecapManagerEntry) -> bool:
+        return figure == manager["gw_points"] and (totals_are_scores or figure != manager.get("total_points"))
+
+    def holders(score: int) -> str:
+        return join_and(sorted(name for name, m in by_name.items() if m["gw_points"] == score))
+
+    def fact(name: str, word: str, claimed: int | None) -> str:
+        manager = by_name[name]
+        rank = ranks[name]
+        level = sorted(other for other, r in ranks.items() if r == rank and other != name)
+        said = f"{name}'s {points_label(manager['gw_points'])} was {place_label(rank)} on the week"
+        if level:
+            said += f", level with {join_and(level)}"
+        if word in ("last", "bottom"):
+            said += f"; the lowest gameweek score was {points_label(scores[-1])}, held by {holders(scores[-1])}"
+            if manager.get("overall_rank") == bottom_of_table:
+                said += f", and {name} is bottom of the table"
+        elif word == "top":
+            said += f"; the highest gameweek score was {points_label(scores[0])}, held by {holders(scores[0])}"
+            if manager.get("overall_rank") == 1:
+                said += f", and {name} is top of the table"
+        elif claimed is not None and manager.get("overall_rank") == claimed:
+            said += f"; {place_label(claimed)} is {name}'s place in the table"
+        return said
+
+    aliases = _manager_aliases(names)
+    problems: list[str] = []
+    for clause in _read_clauses(summary, names, aliases):
+        text = clause.text
+        if "respectively" in text.lower():
+            continue
+        first_player = min(
+            (m.start() for m in clause.mentions if m.group(0) in names.players and m.group(0) not in aliases),
+            default=len(text),
+        )
+        for match in _PLACING_RE.finditer(text):
+            start, end = match.span()
+            if not _PLACING_FOLLOWS_RE.match(text, end) or _NOT_A_PLACING_BEFORE_RE.search(text[:start]):
+                continue
+            lo, hi = _placing_stretch(text, start, end)
+            before, after = text[lo:start], text[end:hi]
+            figure_after = _FIGURE_AFTER_PLACING_RE.match(text, end, hi)
+            week_after_score = bool(figure_after and _PLACING_WEEK_AFTER_SCORE_RE.match(text, figure_after.end(), hi))
+            if (
+                (_PLACING_TABLE_RE.search(before) and not week_after_score)
+                or _PLACING_TABLE_RE.search(after)
+                or _PLACING_MOVE_RE.search(before)
+            ):
+                continue
+            # The week named straight after the placing is its scope.
+            scoped = bool(_PLACING_WEEK_AFTER_RE.match(after.lstrip()))
+            if not scoped and (_PLACING_MOVE_WORDS_RE.search(before) or _PLACING_MOVE_WORDS_RE.search(after)):
+                continue
+            # A hedge is read in the placing's own stretch; a negation, as the
+            # tie check reads one, across the words before it in the clause
+            # (`_placing_negated()`).
+            if _PLACING_HEDGE_RE.search(_words_before(before, len(before), _PLACING_HEDGE_WORDS)) or _placing_negated(
+                text, start, lo, bool(_FINISH_BEFORE_RE.search(before)),
+            ):
+                continue
+            subject = _placing_subject(clause, start, lo)
+            if subject is None or first_player < start:
+                continue
+            name, name_end = subject
+            # Another subject is looked for in the placing's own stretch: in
+            # "made no moves and submitted no claims, finishing 6th" the
+            # placing is the manager's.
+            window = text[max(lo, _window_start(text, start, _TIE_SUBJECT_WORDS_BEFORE)):start]
+            if _TIE_OTHER_SUBJECT_RE.search(window) or _PLACING_OTHER_PERSON_RE.search(text[name_end:start]):
+                continue
+            relatives = list(_RELATIVE_RE.finditer(text, name_end, start))
+            if relatives and (name_end == 0 or text[name_end:relatives[-1].start()].strip(" ,")):
+                continue
+            manager = by_name[name]
+            if scoped or _PLACING_WEEK_AFTER_RE.search(after) or _PLACING_WEEK_BEFORE_RE.search(before):
+                reading = "for the week"
+            else:
+                total = manager.get("total_points")
+                if total is not None and not totals_are_scores and _states(text, total):
+                    continue
+                attached = _FIGURE_AFTER_PLACING_RE.match(text, end) or _FIGURE_BEFORE_PLACING_RE.search(text[:start])
+                if attached and is_score(int(attached.group("figure")), manager) and not (
+                    _NOT_A_SCORE_AFTER_RE.match(text, attached.end("figure"))
+                ):
+                    reading = "beside their gameweek score"
+                elif (
+                    _FINISH_BEFORE_RE.search(before)
+                    and {who for *_, who in clause.named} <= {name}
+                    and not (_PLACING_TABLE_RE.search(text) or _PLACING_MOVE_WORDS_RE.search(text))
+                    and is_score(manager["gw_points"], manager)
+                    and _states(text, manager["gw_points"])
+                ):
+                    reading = "beside their gameweek score"
+                else:
+                    continue
+            word = match.group("rank").lower()
+            best = bool(match.group("best"))
+            claimed = None if word in ("last", "bottom", "top") else _ORDINAL_NUMBERS.get(word) or int(word[:-2])
+            if claimed is None:
+                holds = manager["gw_points"] == (scores[0] if word == "top" else scores[-1])
+            else:
+                holds = ranks[name] == claimed or (best and scores.index(manager["gw_points"]) + 1 == claimed)
+            if holds:
+                continue
+            problem = f'the editorial places {name} "{match.group(0)}" {reading}, but {fact(name, word, claimed)}'
             if problem not in problems:
                 problems.append(problem)
     return problems
@@ -1365,6 +1774,16 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
             "Standings section lists it as shared."
         ),
         run=lambda summary, data, names: check_tie_claims(summary, data["managers"], names),
+    ),
+    EditorialCheck(
+        code=RECAP_WARNING_WRONG_PLACING,
+        lead="The editorial gives a manager a placing on the week their gameweek score does not earn",
+        retry_instruction=(
+            "Take a manager's placing for the week only from the GW Standings section's GW Rank column "
+            "and their place in the league only from its Pos column, and say which one a placing is; "
+            "never set a league position beside a gameweek score as that score's finish."
+        ),
+        run=lambda summary, data, names: check_gameweek_placings(summary, data["managers"], names),
     ),
     EditorialCheck(
         code=RECAP_WARNING_CONTESTED_ROLL_CALL,
