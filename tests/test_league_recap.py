@@ -4549,6 +4549,38 @@ class TestFormatStandingsBlock:
         assert "Higher" in lines[0]
         assert "Lower" in lines[1]
 
+    def test_level_gw_points_share_a_rank(self):
+        """Issue #483: the row number is the gameweek placing, so two managers
+        level on points share it rather than being numbered apart on league
+        position, and the next score down skips the rank they took."""
+        managers = [
+            _make_manager(name="Lower", gw_points=70, overall_rank=5, previous_rank=5),
+            _make_manager(name="Higher", gw_points=70, overall_rank=2, previous_rank=2),
+            _make_manager(name="Last", gw_points=40, overall_rank=1, previous_rank=1),
+        ]
+        ranks = [line.split(".")[0].strip() for line in _format_standings_block(managers).splitlines()]
+        assert ranks == ["1", "1", "3"]
+
+    def test_rank_matches_the_prompt_tables_gw_rank(self):
+        """Issue #483: the saved report and the prompt state one gameweek
+        placing per manager, so a "joint-top for the week" the editorial reads
+        off the prompt is what a reader finds in the report."""
+        managers = [
+            _make_manager(name="Ann", entry_id=1, gw_points=45, overall_rank=3, previous_rank=3, total_points=300),
+            _make_manager(name="Bea", entry_id=2, gw_points=45, overall_rank=1, previous_rank=1, total_points=380),
+            _make_manager(name="Cy", entry_id=3, gw_points=31, overall_rank=2, previous_rank=2, total_points=340),
+        ]
+        report = {
+            line.split()[1]: line.split(".")[0].strip()
+            for line in _format_standings_block(managers).splitlines()
+        }
+        prompt = {
+            cells[3]: cells[5]
+            for line in format_recap_standings_context(_make_recap_data(managers=managers)).splitlines()
+            if line.startswith("| ") and (cells := [c.strip() for c in line.split("|")])[1].isdigit()
+        }
+        assert report == prompt == {"Ann": "1", "Bea": "1", "Cy": "3"}
+
     def test_no_pipe_characters(self):
         managers = [_make_manager(name="Solo", gw_points=50)]
         assert "|" not in _format_standings_block(managers)

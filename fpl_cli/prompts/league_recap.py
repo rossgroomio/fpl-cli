@@ -16,6 +16,7 @@ from fpl_cli.cli._league_recap_types import (
     draft_transaction_kind_nets,
     format_contested_claim,
     format_move_counts,
+    gameweek_rank,
     place_label,
     points_label,
     recap_title,
@@ -376,11 +377,9 @@ def format_recap_standings_context(data: LeagueRecapData) -> str:
         chip = m.get("active_chip") if is_classic else None
         chip_tag = f" [{chip}]" if chip else ""
         total = m.get("total_points", "?")
-        # Competition ranking on the gameweek's points, so level scores share
-        # a rank: the placing the table's league order never shows (#483).
-        gw_rank = 1 + sum(other["gw_points"] > m["gw_points"] for other in managers)
         lines.append(
-            f"| {curr} | {prev} | {name}{chip_tag}{movement} | {m['gw_points']} | {gw_rank} | {total} |"
+            f"| {curr} | {prev} | {name}{chip_tag}{movement} | {m['gw_points']} "
+            f"| {gameweek_rank(m, managers)} | {total} |"
         )
     return "\n".join(lines)
 

@@ -1272,6 +1272,18 @@ def points_label(points: int) -> str:
     return f"{points} pt" if points == 1 else f"{points} pts"
 
 
+def gameweek_rank(manager: RecapManagerEntry, managers: Sequence[RecapManagerEntry]) -> int:
+    """A manager's placing on this gameweek's points: one more than the
+    number who scored more, so level scores share a rank (#483).
+
+    The one definition every recap surface reads: the report's GW Standings
+    block, the prompt's GW Rank column and the tie check. Numbering ties apart
+    on league position would hand the editorial a placing the prompt's tie
+    rules say it may not claim, and a reader would see one in the report.
+    """
+    return 1 + sum(other["gw_points"] > manager["gw_points"] for other in managers)
+
+
 def place_label(rank: int) -> str:
     """A league position as the table reads it: "1st", "7th", "12th"."""
     return f"{rank}{ordinal_suffix(rank)}"
