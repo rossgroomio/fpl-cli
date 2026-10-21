@@ -8110,6 +8110,75 @@ class TestStandingsTieLines:
         assert "League positions shared" not in self._text(managers)
 
 
+class TestStandingsMarginLines:
+    """Issue #484: the table is in league order, so the week's runner-up sat
+    four rows above a winner who had climbed four places, and the editorial
+    wrote "won by four clear points" for an 84-81 week. Each extreme states
+    its gap to the nearest score, so a margin is quoted rather than counted."""
+
+    def _text(self, managers: list[RecapManagerEntry]) -> str:
+        return format_recap_standings_context(_make_recap_data(managers=managers))
+
+    def test_the_winners_margin_names_the_runner_up(self):
+        rows = [
+            ("Ann Moss", 81, 1, 1), ("Bea Gale", 73, 2, 2), ("Cy Hart", 68, 3, 3),
+            ("Dee Ford", 70, 4, 4), ("Eli Ray", 84, 5, 9), ("Fay Lund", 50, 6, 5),
+        ]
+        managers = [
+            _make_manager(name=name, entry_id=i, gw_points=pts, overall_rank=rank, previous_rank=prev)
+            for i, (name, pts, rank, prev) in enumerate(rows, start=1)
+        ]
+        text = self._text(managers)
+        assert (
+            "Highest gameweek score: 84 pts, Eli Ray alone - 3 pts clear of the next-best score, 81 pts (Ann Moss)"
+        ) in text
+        assert (
+            "Lowest gameweek score: 50 pts, Fay Lund alone - 18 pts behind the next-lowest score, 68 pts (Cy Hart)"
+        ) in text
+        assert "Eli Ray (↑4)" in text
+
+    def test_a_shared_next_score_names_everyone_on_it(self):
+        text = self._text(_reported_table())
+        assert "58 pts, Fay Lund alone - 15 pts clear of the next-best score, 43 pts (Dee Ford, Eli Ray)" in text
+        assert "29 pts, Ann Moss alone - 4 pts behind the next-lowest score, 33 pts (Bea Gale)" in text
+
+    def test_a_shared_extreme_still_states_its_gap(self):
+        managers = _reported_table()
+        managers[1]["gw_points"] = 29
+        assert (
+            "Lowest gameweek score: 29 pts, shared by Ann Moss, Bea Gale - 6 pts behind the next-lowest score, "
+            "35 pts (Cy Hart)"
+        ) in self._text(managers)
+
+    def test_a_one_point_margin(self):
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=61, overall_rank=1),
+            _make_manager(name="Bob", entry_id=2, gw_points=60, overall_rank=2),
+        ]
+        text = self._text(managers)
+        assert "61 pts, Alice alone - 1 pt clear of the next-best score, 60 pts (Bob)" in text
+        assert "60 pts, Bob alone - 1 pt behind the next-lowest score, 61 pts (Alice)" in text
+
+    def test_no_gap_when_every_score_is_level(self):
+        managers = [
+            _make_manager(name="Alice", entry_id=1, gw_points=55, overall_rank=1),
+            _make_manager(name="Bob", entry_id=2, gw_points=55, overall_rank=2),
+        ]
+        text = self._text(managers)
+        assert "Highest gameweek score: 55 pts, shared by Alice, Bob\n" in text
+        assert "clear of" not in text
+        assert "behind the next-lowest" not in text
+
+    def test_system_prompt_quotes_a_gameweek_margin_only_as_stated(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert (
+            "A gap between two managers' gameweek scores (\"won by three\", \"four points clear\", "
+            "\"nine adrift at the bottom\") is quoted only as the GW Standings section states it"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "Never work a gap out of the GW Pts column yourself" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+
 class TestEditorialChecks:
     """One entry point keyed by warning code, so the command reports each
     check on its own channel and the retry is told only about what failed."""

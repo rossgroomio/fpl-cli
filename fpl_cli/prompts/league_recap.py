@@ -64,6 +64,7 @@ The editorial is pasted into the league's WhatsApp group and read on phones. Sho
 - A claim that a manager "topped the table", "was previously top", "led before this gameweek", or "fell from the top/first place" must match the "Previous gameweek's leader" statement at the top of the GW Standings section exactly - never infer the previous leader yourself from the size of a fall, the Prev column, or anything else. If that statement names no leader, make no such claim about anyone
 - "Joint", "tied", "level", "shared", "equal" and every other tie word may only be used where the data states the tie. The GW Standings section names the gameweek's highest and lowest scores, says whether each was one manager's alone, and lists every gameweek score and every league position (Pos, and Prev where any is shared) more than one manager holds, plus any season totals that are level but placed apart by the league's tie-break: a score or position it does not list as shared belonged to one manager, so it is "the lowest", never "the joint-lowest". A tie on season totals in the table's Pos column is not a tie on gameweek scores, and a tie on gameweek scores is not one in the table. Managers level on points but placed apart are "level on points", never "joint" in position. The same goes for superlatives: "the highest" or "the lowest" score of the week belongs only to the manager(s) that section names for it
 - A placing ("finished seventh", "came last", "second-best week") is either for the week or in the league, and the sentence says which. Take a gameweek placing from the GW Standings section's GW Rank column and a league placing from its Pos column, never one from the other: the table is in league order, so the last row is the league's bottom manager, not the week's, and a Pos never sits beside a gameweek score as that score's finish
+- A gap between two managers' gameweek scores ("won by three", "four points clear", "nine adrift at the bottom") is quoted only as the GW Standings section states it: the highest score's margin over the next-best and the lowest score's gap to the next-lowest. Never work a gap out of the GW Pts column yourself - for any other pair, give both scores and leave the subtraction out
 - A League History entry keeps its meaning when you use it, in your own sentence: a count stated over a span (e.g. "3 in the last 11 (GW1-GW11). Of the rest, 8 were not recorded.") stays a count over a span with its unrecorded gameweeks mentioned, never simplified to "in a row" or "consecutive" unless the section itself says so. The figures, the span and the qualifier are the facts; the sentence around them is yours
 - A League History season-count line (e.g. "4 gameweek wins this season") is optional colour in the Season Fines mould: use one when it sharpens something that happened this gameweek ("Bob's fourth gameweek win of the season"), or - when the section carries the season's full counts, at the halfway boundary and the finale - to ground a season retrospective. Keep the count exact, and carry its qualifier for gameweeks that could not be judged, in your own words, or leave the line out, and never derive or extrapolate a season total yourself from the weekly sections
 - A manager's FPL seasons before this one - how many they have played, how they finished last season, their best season, whether they are "returning", a "veteran" or a "newcomer", "entering their Nth season" - may be described only when the "## Prior Seasons" section is present and says so of that manager, with its season names, points, ranks, percentages and counts kept exact. That record is FPL-wide, never this league's: write "their 11th season of FPL", never "their 11th season in this league", "a founder member" or "back for another year in this league" - the section cannot say when anyone joined this league, and neither can you. A manager it lists under "No prior FPL seasons on record" is in their first recorded season and has no past to describe; one it lists under "could not be fetched" gets no claim about their past in either direction. Never derive a trajectory the section does not state ("improving", "declining", "off the pace they set last year") - one gameweek's points against a full season's total is no comparison at all. Without a "## Prior Seasons" section, mention nobody's earlier seasons
@@ -393,18 +394,34 @@ def _standings_tie_lines(managers: Sequence[RecapManagerEntry]) -> list[str]:
     the week". So the extremes are named with whether each was one manager's
     alone, and every shared score and position is listed, which gives the
     tie rule a line to hold "joint" to -- the same enumerate-and-lock shape
-    as the previous-leader statement above them.
+    as the previous-leader statement above them. Each extreme also states its
+    gap to the nearest score, which the margin rule quotes instead of
+    subtracting (#484).
     """
     by_points: dict[int, list[str]] = {}
     for m in sorted(managers, key=lambda m: m["manager_name"]):
         by_points.setdefault(m["gw_points"], []).append(m["manager_name"])
 
-    def extreme(label: str, points: int) -> str:
-        holders = by_points[points]
-        who = f"{holders[0]} alone" if len(holders) == 1 else f"shared by {', '.join(holders)}"
-        return f"{label} gameweek score: {points_label(points)}, {who}"
+    def scored(points: int) -> str:
+        return ", ".join(by_points[points])
 
-    lines = [extreme("Highest", max(by_points)), extreme("Lowest", min(by_points))]
+    def extreme(label: str, points: int, nearest: int | None, gap: str) -> str:
+        who = f"{scored(points)} alone" if len(by_points[points]) == 1 else f"shared by {scored(points)}"
+        line = f"{label} gameweek score: {points_label(points)}, {who}"
+        if nearest is None:
+            return line
+        return f"{line} - {points_label(abs(points - nearest))} {gap}, {points_label(nearest)} ({scored(nearest)})"
+
+    # The table is in league order, so the week's runner-up is rarely the
+    # winner's neighbour: the editorial found it by scanning GW Pts and wrote
+    # "won by four clear points" for a three-point win (#484). Each extreme
+    # carries its gap to the nearest score, stated rather than subtracted.
+    scores = sorted(by_points, reverse=True)
+    distinct = len(scores) > 1
+    lines = [
+        extreme("Highest", scores[0], scores[1] if distinct else None, "clear of the next-best score"),
+        extreme("Lowest", scores[-1], scores[-2] if distinct else None, "behind the next-lowest score"),
+    ]
     shared_scores = [
         f"{points_label(points)} ({', '.join(names)})"
         for points, names in sorted(by_points.items(), reverse=True) if len(names) > 1
