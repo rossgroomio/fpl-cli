@@ -8142,12 +8142,25 @@ class TestStandingsMarginLines:
         assert "58 pts, Fay Lund alone - 15 pts clear of the next-best score, 43 pts (Dee Ford, Eli Ray)" in text
         assert "29 pts, Ann Moss alone - 4 pts behind the next-lowest score, 33 pts (Bea Gale)" in text
 
-    def test_a_shared_extreme_still_states_its_gap(self):
+    def test_a_shared_extreme_gives_each_holder_the_gap_not_one_over_another(self):
+        """PR #487 review: "shared by A, B - 10 pts clear" read as A's margin
+        and invited "A won by ten" over a manager level with them."""
+        managers = [
+            _make_manager(name="Ann Moss", entry_id=1, gw_points=80, overall_rank=1),
+            _make_manager(name="Bea Gale", entry_id=2, gw_points=80, overall_rank=2),
+            _make_manager(name="Cy Hart", entry_id=3, gw_points=70, overall_rank=3),
+        ]
+        assert (
+            "Highest gameweek score: 80 pts, shared by Ann Moss, Bea Gale - level with each other, "
+            "each 10 pts clear of the next-best score, 70 pts (Cy Hart)"
+        ) in self._text(managers)
+
+    def test_a_shared_lowest_gives_each_holder_the_gap(self):
         managers = _reported_table()
         managers[1]["gw_points"] = 29
         assert (
-            "Lowest gameweek score: 29 pts, shared by Ann Moss, Bea Gale - 6 pts behind the next-lowest score, "
-            "35 pts (Cy Hart)"
+            "Lowest gameweek score: 29 pts, shared by Ann Moss, Bea Gale - level with each other, "
+            "each 6 pts behind the next-lowest score, 35 pts (Cy Hart)"
         ) in self._text(managers)
 
     def test_a_one_point_margin(self):
@@ -8172,11 +8185,30 @@ class TestStandingsMarginLines:
     def test_system_prompt_quotes_a_gameweek_margin_only_as_stated(self):
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
 
-        assert (
-            "A gap between two managers' gameweek scores (\"won by three\", \"four points clear\", "
-            "\"nine adrift at the bottom\") is quoted only as the GW Standings section states it"
-        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert "Never work a gap out of the GW Pts column yourself" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_the_rule_names_the_gaps_by_the_words_the_section_uses(self):
+        """PR #487 review: the rule points at the section's two gaps, so
+        rewording one without the other would leave it pointing at nothing."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        rule = next(line for line in RECAP_SYNTHESIS_SYSTEM_PROMPT.splitlines() if "Never work a gap out" in line)
+        text = self._text(_reported_table())
+        for gap in ("the next-best", "the next-lowest"):
+            assert gap in rule
+            assert f"{gap} score" in text
+
+    def test_the_rule_gives_no_figure_a_gameweek_could_echo(self):
+        """PR #487 review: examples carrying the A/B gameweek's own margins
+        ("won by three") left reading the gap and echoing the example
+        indistinguishable. Placeholders cannot be right by coincidence."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        rule = next(line for line in RECAP_SYNTHESIS_SYSTEM_PROMPT.splitlines() if "Never work a gap out" in line)
+        examples = re.findall(r'"([^"]+)"', rule)
+        assert examples
+        number_words = r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
+        assert not [e for e in examples if re.search(rf"\d|\b(?:{number_words})\b", e, re.IGNORECASE)]
 
 
 class TestEditorialChecks:
