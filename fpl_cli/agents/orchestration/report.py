@@ -15,6 +15,7 @@ from fpl_cli.cli._helpers import performer_score, rec_in_options, waiver_superse
 from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
     draft_transaction_kind_label,
+    gameweek_rank,
     recap_title,
     standout_blanks_heading,
     standout_players_lines,
@@ -718,7 +719,8 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
 
     Sort order: gw_points desc, tie-break by overall_rank asc (managers with
     no derivable position, e.g. an unreconstructable draft replay per R10,
-    sort last). Each row: GW rank, manager (+ chip), GW points, (ordinal
+    sort last). Each row: GW rank (`gameweek_rank`, so level scores share one,
+    the same rank the prompt's table states -- #483), manager (+ chip), GW points, (ordinal
     league pos[ arrow], total) -- either half of that pair is named
     "unavailable" by R10 rather than rendered blank or zero when it could not
     be derived.
@@ -740,7 +742,7 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
     rank_width = max(2, len(str(len(sorted_managers))))
 
     lines = []
-    for idx, m in enumerate(sorted_managers, start=1):
+    for m in sorted_managers:
         overall_rank = m.get("overall_rank")
         previous_rank = m.get("previous_rank")
         total_points = m.get("total_points")
@@ -763,7 +765,7 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
         total_str = str(total_points) if total_points is not None else TOTAL_UNAVAILABLE
         context = f"({position_str}{arrow}, {total_str})"
         lines.append(
-            f"{idx:>{rank_width}}.  "
+            f"{gameweek_rank(m, managers):>{rank_width}}.  "
             f"{display_name(m):<{name_width}}  "
             f"{m['gw_points']:>{pts_width}}   "
             f"{context}"

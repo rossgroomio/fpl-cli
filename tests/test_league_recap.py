@@ -3563,6 +3563,40 @@ class TestPromptFormatting:
         text = format_recap_standings_context(_make_recap_data(managers=managers))
         assert text.index("Alice") < text.index("Ghost")
 
+    def test_standings_context_states_each_managers_gameweek_rank(self):
+        """Issue #483: the table is in league order, so its last row sat Pos 8
+        beside a GW Pts of 31 and the editorial wrote "finished eighth on 31"
+        for a manager seventh on the week. GW Rank states the week's placing,
+        level scores sharing one, so it is read rather than counted."""
+        rows = [
+            ("Ann", 39, 1, 382), ("Bea", 30, 2, 330), ("Cy", 45, 3, 300),
+            ("Dee", 45, 4, 280), ("Eli", 31, 5, 252),
+        ]
+        managers = [
+            _make_manager(name=name, entry_id=i, gw_points=pts, overall_rank=rank, previous_rank=rank,
+                          total_points=total)
+            for i, (name, pts, rank, total) in enumerate(rows, start=1)
+        ]
+        text = format_recap_standings_context(_make_recap_data(managers=managers))
+        assert "| Pos | Prev | Manager | GW Pts | GW Rank | Total |" in text
+        assert "| 5 | 5 | Eli | 31 | 4 | 252 |" in text
+        assert "| 2 | 2 | Bea | 30 | 5 | 330 |" in text
+        assert "| 3 | 3 | Cy | 45 | 1 | 300 |" in text
+        assert "| 4 | 4 | Dee | 45 | 1 | 280 |" in text
+        assert "| 1 | 1 | Ann | 39 | 3 | 382 |" in text
+        assert "a gameweek placing is read from GW Rank, never from Pos" in text
+        assert text.index("Columns: Pos is the league position") < text.index("| Pos |")
+
+    def test_system_prompt_ties_each_placing_to_its_column(self):
+        """Issue #483: a placing names whether it is for the week or in the
+        league, and comes from the matching column."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert (
+            "Take a gameweek placing from the GW Standings section's GW Rank column and a league "
+            "placing from its Pos column, never one from the other"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
     def test_standings_context_shows_chip_for_classic(self):
         managers = [
             _make_manager(name="Alice", entry_id=1, gw_points=80, total_points=500, overall_rank=1, active_chip="WC"),
@@ -4514,6 +4548,37 @@ class TestFormatStandingsBlock:
         lines = block.splitlines()
         assert "Higher" in lines[0]
         assert "Lower" in lines[1]
+
+    def test_level_gw_points_share_a_rank(self):
+        """Issue #483: the row number is the gameweek placing, so two managers
+        level on points share it rather than being numbered apart on league
+        position, and the next score down skips the rank they took."""
+        managers = [
+            _make_manager(name="Lower", gw_points=70, overall_rank=5, previous_rank=5),
+            _make_manager(name="Higher", gw_points=70, overall_rank=2, previous_rank=2),
+            _make_manager(name="Last", gw_points=40, overall_rank=1, previous_rank=1),
+        ]
+        ranks = [line.split(".")[0].strip() for line in _format_standings_block(managers).splitlines()]
+        assert ranks == ["1", "1", "3"]
+
+    def test_rank_matches_the_prompt_tables_gw_rank(self):
+        """Issue #483: the saved report and the prompt state one gameweek
+        placing per manager, so a "joint-top for the week" the editorial reads
+        off the prompt is what a reader finds in the report."""
+        managers = [
+            _make_manager(name="Ann Lee", entry_id=1, gw_points=45, overall_rank=3, previous_rank=3, total_points=300),
+            _make_manager(name="Bea Gale", entry_id=2, gw_points=45, overall_rank=1, previous_rank=1, total_points=380),
+            _make_manager(name="Cy Hart", entry_id=3, gw_points=31, overall_rank=2, previous_rank=2, total_points=340),
+        ]
+        assert _format_standings_block(managers).splitlines() == [
+            " 1.  Bea Gale   45   (1st, 380)",
+            " 1.  Ann Lee    45   (3rd, 300)",
+            " 3.  Cy Hart    31   (2nd, 340)",
+        ]
+        prompt = format_recap_standings_context(_make_recap_data(managers=managers))
+        assert "| 1 | 1 | Bea Gale | 45 | 1 | 380 |" in prompt
+        assert "| 3 | 3 | Ann Lee | 45 | 1 | 300 |" in prompt
+        assert "| 2 | 2 | Cy Hart | 31 | 3 | 340 |" in prompt
 
     def test_no_pipe_characters(self):
         managers = [_make_manager(name="Solo", gw_points=50)]
