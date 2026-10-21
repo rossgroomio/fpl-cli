@@ -1415,6 +1415,7 @@ _PLACING_HEDGE_RE = re.compile(
     re.IGNORECASE,
 )
 _PLACING_HEDGE_WORDS = 5
+_PLACING_NEGATION_RE = re.compile(rf"{_NEGATION_RE.pattern}|(?<!\w)no\s+longer(?!\w)", re.IGNORECASE)
 # A placing nobody is named before goes back to an earlier clause's manager
 # through any pronoun, the object ("it only bought him a second-place
 # finish") as much as the subject; a pronoun between a name and the placing,
@@ -1460,6 +1461,14 @@ _FIGURE_AFTER_PLACING_RE = re.compile(
 _FIGURE_BEFORE_PLACING_RE = re.compile(
     r"(?<![\w.£+−–-])(?P<figure>\d+)(?:\s*(?:pts?|points?)|-point\w*)?\s+for\s+(?:an?\s+)?$", re.IGNORECASE,
 )
+# A word for the table or for holding a place before a placing gives way to
+# a score attached to the placing and the week named straight after it:
+# "sits 5th on 39 for the week" ranks the week. The week alone does not
+# ("kept top spot for the week"), nor the week said of something else
+# further on ("stays top with the captaincy call of the week").
+_PLACING_WEEK_AFTER_SCORE_RE = re.compile(
+    rf"(?:\s*(?:pts?|points?))?\s+{_PLACING_WEEK_AFTER_RE.pattern}", re.IGNORECASE,
+)
 
 
 def _placing_stretch(clause: str, start: int, end: int) -> tuple[int, int]:
@@ -1475,6 +1484,27 @@ def _states(text: str, value: int) -> bool:
         int(m.group(0)) == value and not _NOT_A_SCORE_AFTER_RE.match(text, m.end())
         for m in _FIGURE_RE.finditer(text)
     )
+
+
+def _placing_negated(text: str, start: int, stretch_start: int, finished: bool) -> bool:
+    """Whether a negation in the words before the placing at `start` is
+    said of it.
+
+    A negation reaches past a stretch break ("wasn't, as some feared,
+    last"), but one with a verb of its own before that break, when a
+    finishing verb leads into the placing (`finished`), is that verb's: in
+    "didn't escape, finishing 15th" it is the escape that did not happen.
+    One with nothing of its own before the break ("didn't, in the end,
+    finish last") still reaches the placing, as one in its own stretch
+    does ("didn't finish last").
+    """
+    for negation in _PLACING_NEGATION_RE.finditer(text, _window_start(text, start, _PLACING_HEDGE_WORDS), start):
+        if finished and negation.end() <= stretch_start:
+            closed = _PLACING_STRETCH_BREAK_RE.search(text, negation.end(), stretch_start)
+            if closed and _WORD_RE.search(text, negation.end(), closed.start()):
+                continue
+        return True
+    return False
 
 
 def _placing_subject(clause: _ReadClause, start: int, stretch_start: int) -> tuple[str, int] | None:
@@ -1534,14 +1564,17 @@ def check_gameweek_placings(
     also gives the manager's season total is about the table. A stretch with
     any word for the table, a season, holding a place or a span longer than
     the week ("in the league", "kept top spot", "this campaign") is left
-    alone, as is a placing a move lands on or counts from ("up to 4th",
-    "second from the bottom") and one beside a move up or down the table,
-    unless the week is named straight after it ("rocketed up five places to
-    snatch second on the week"). So is a placing that is hedged, negated or
-    escaped ("would have been second", "avoided last place on the week"), one
-    said near a player, another subject or another person ("his captain",
-    "her rival", "the manager who came last"), and one in a "respectively"
-    list. Whose it is comes from `_placing_subject()`. "Last" and "bottom"
+    alone, unless the word comes before the placing and its score and the
+    week straight after it ("sits 5th on 39 for the week"). So is a placing a move lands
+    on or counts from ("up to 4th", "second from the bottom") and one beside
+    a move up or down the table, unless the week is named straight after it
+    ("rocketed up five places to snatch second on the week"). So is a
+    placing that is hedged, negated or escaped ("would have been second",
+    "avoided last place on the week"), though a negation on a verb of its
+    own does not reach past a finishing verb ("didn't escape, finishing
+    15th"), and one said near a player, another subject in its own stretch
+    or another person ("his captain", "her rival", "the manager who came
+    last"), and one in a "respectively" list. Whose it is comes from `_placing_subject()`. "Last" and "bottom"
     hold for every manager on the week's lowest score and "top" for every one
     on its highest; a numbered placing is the manager's gameweek rank, level
     scores sharing one, and a "-best" is also allowed its rank among the
@@ -1600,7 +1633,13 @@ def check_gameweek_placings(
                 continue
             lo, hi = _placing_stretch(text, start, end)
             before, after = text[lo:start], text[end:hi]
-            if _PLACING_TABLE_RE.search(before) or _PLACING_TABLE_RE.search(after) or _PLACING_MOVE_RE.search(before):
+            figure_after = _FIGURE_AFTER_PLACING_RE.match(text, end, hi)
+            week_after_score = bool(figure_after and _PLACING_WEEK_AFTER_SCORE_RE.match(text, figure_after.end(), hi))
+            if (
+                (_PLACING_TABLE_RE.search(before) and not week_after_score)
+                or _PLACING_TABLE_RE.search(after)
+                or _PLACING_MOVE_RE.search(before)
+            ):
                 continue
             # The week named straight after the placing is its scope.
             scoped = bool(_PLACING_WEEK_AFTER_RE.match(after.lstrip()))
@@ -1608,19 +1647,19 @@ def check_gameweek_placings(
                 continue
             # A hedge is read in the placing's own stretch; a negation, as the
             # tie check reads one, across the words before it in the clause
-            # ("wasn't, as some feared, last").
-            negated = _words_before(text, start, _PLACING_HEDGE_WORDS)
-            if (
-                _PLACING_HEDGE_RE.search(_words_before(before, len(before), _PLACING_HEDGE_WORDS))
-                or _NEGATION_RE.search(negated)
-                or "no longer" in negated.lower()
+            # (`_placing_negated()`).
+            if _PLACING_HEDGE_RE.search(_words_before(before, len(before), _PLACING_HEDGE_WORDS)) or _placing_negated(
+                text, start, lo, bool(_FINISH_BEFORE_RE.search(before)),
             ):
                 continue
             subject = _placing_subject(clause, start, lo)
             if subject is None or first_player < start:
                 continue
             name, name_end = subject
-            window = text[_window_start(text, start, _TIE_SUBJECT_WORDS_BEFORE):start]
+            # Another subject is looked for in the placing's own stretch: in
+            # "made no moves and submitted no claims, finishing 6th" the
+            # placing is the manager's.
+            window = text[max(lo, _window_start(text, start, _TIE_SUBJECT_WORDS_BEFORE)):start]
             if _TIE_OTHER_SUBJECT_RE.search(window) or _PLACING_OTHER_PERSON_RE.search(text[name_end:start]):
                 continue
             relatives = list(_RELATIVE_RE.finditer(text, name_end, start))

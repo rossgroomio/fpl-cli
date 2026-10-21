@@ -8140,6 +8140,19 @@ class TestGameweekPlacingCheck:
         ("Hal Penn could only manage eighth on 31.", "Hal Penn"),
         ("Hal Penn could do no better than eighth on the week with 31.", "Hal Penn"),
         ("Gus Peel beat Dee Ford, and Hal Penn finished eighth on 31.", "Hal Penn"),
+        # The drafts replay: a holding verb before the placing gives way to
+        # the week named after it, another subject counts only in the
+        # placing's own stretch, and a negation on another verb does not
+        # reach past the finishing verb.
+        ("Fay Lund sits 6th on 50 for the week.", "Fay Lund"),
+        ("Fay Lund made no moves and submitted no claims, finishing 6th on 50 for the week.", "Fay Lund"),
+        (
+            "Fay Lund made no moves and submitted no claims, finished 6th on 50, and was the only manager who sat"
+            " the waiver wire out entirely.",
+            "Fay Lund",
+        ),
+        ("Hal Penn didn't escape, finishing 8th on 31 with his Wildcard.", "Hal Penn"),
+        ("Gus Peel fell two places to 7th, and Hal Penn finished 8th on 31 after his Wildcard.", "Hal Penn"),
     ])
     def test_a_placing_the_week_does_not_bear_out_is_caught(self, summary, placed):
         problems = self._check(summary)
@@ -8207,6 +8220,16 @@ class TestGameweekPlacingCheck:
         "Ann Moss had a shocker. Her rival took third on the week.",
         "Ann Moss's brother finished last on the week.",
         "Ann Moss watched a rival take top spot on the week.",
+        # The drafts replay: a score left beside a league position is the
+        # table's, whatever moves the clause counts first, and a negation
+        # with nothing of its own before the break still reaches the placing.
+        "Hal Penn's three moves netted +0 overall, and his 31 left him 8th.",
+        "Hal Penn wasn't, as some feared, last.",
+        "Hal Penn didn't, in the end, finish last on the week.",
+        # A holding word gives way only to a score and the week straight
+        # after the placing, not the week alone or said of something else.
+        "Ann Moss kept top spot for the week.",
+        "Ann Moss stays top with the captaincy call of the week.",
     ])
     def test_a_placing_the_check_cannot_pin_to_the_week_is_left_alone(self, summary):
         managers = _placings_table()
