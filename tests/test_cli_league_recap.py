@@ -1996,6 +1996,61 @@ class TestNetAndTieClaims:
         assert "(2 transfers, -4 hit, net -6 overall after the hit)" in user_prompt
 
 
+class TestGameweekPlacingClaims:
+    """#486: the editorial gave a manager their league position as their
+    gameweek finish, "finished eighth on 31" for a manager seventh on the
+    week (#483). Checked like the other claims: one retry told the manager's
+    placing on the week, then a warning if the retry still gets it wrong."""
+
+    # Bob is second in the table and last of three on the week.
+    _WRONG = "Bob finished second on 29."
+    _RIGHT = "Bob finished third on the week with 29, and is second in the table."
+
+    def _data(self) -> LeagueRecapData:
+        return _recap_data(
+            gameweek=5,
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=30, overall_rank=1, previous_rank=1, total_points=300),
+                _manager(name="Bob", entry_id=2, gross_points=29, overall_rank=2, previous_rank=2, total_points=290),
+                _manager(name="Cam", entry_id=3, gross_points=43, overall_rank=3, previous_rank=3, total_points=280),
+            ],
+            cohort=_cohort((1, "Alice", 1, 30, 300), (2, "Bob", 2, 29, 290), (3, "Cam", 3, 43, 280)),
+        )
+
+    def _invoke(self, args: list[str], *replies: str):
+        stub, provider = _queued_provider(*replies)
+        with provider:
+            result = _invoke_recap(self._data(), ["--summarise", *args])
+        return stub, result
+
+    def test_the_retry_is_told_the_placing_and_a_clean_retry_ships(self):
+        stub, result = self._invoke(["--format", "json"], self._WRONG, self._RIGHT)
+
+        assert result.exit_code == 0, result.stderr
+        first, retry = stub.prompts
+        corrections = retry[len(first):]
+        assert "Bob's 29 pts was 3rd on the week; 2nd is Bob's place in the table" in corrections
+        assert "GW Rank column" in corrections
+        envelope = json.loads(result.stdout)
+        assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
+        assert not [w for w in envelope["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
+
+    def test_a_placing_that_survives_the_retry_gets_a_warning(self, tmp_path: Path):
+        _, result = self._invoke(
+            ["--format", "json", "--save", "--output", str(tmp_path)], self._WRONG, self._WRONG,
+        )
+
+        assert result.exit_code == 0, result.stderr
+        warnings = {w["code"]: w["message"] for w in json.loads(result.stdout)["metadata"]["warnings"]}
+        assert warnings["synthesis_wrong_gameweek_placing"].startswith(
+            "The editorial gives a manager a placing on the week their gameweek score does not earn. "
+            'The editorial places Bob "second" beside their gameweek score'
+        )
+        report = next(tmp_path.rglob("gw5-league-recap.md")).read_text(encoding="utf-8")
+        assert report.index("> [!WARNING]") < report.index(self._WRONG)
+        assert '> - the editorial places Bob "second" beside their gameweek score' in report
+
+
 class TestKindScopedNets:
     """#390: a draft editorial said of a manager who made one waiver (-1) and
     one free-agent pickup (+4) that "his waiver moves netted +3 overall", the

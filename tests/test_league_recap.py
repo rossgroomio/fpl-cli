@@ -59,11 +59,13 @@ from fpl_cli.cli._league_recap_types import (
     RecapManagerPlayer,
     RecapPriorSeason,
     RecapTransfer,
+    competition_rank,
     contested_draft_claims,
     draft_transaction_kind_counts,
     format_contested_claim,
     format_move_counts,
     format_prior_seasons_line,
+    gameweek_rank,
     standout_blanks_heading,
     standout_players_lines,
     summarise_prior_seasons,
@@ -92,9 +94,11 @@ from fpl_cli.prompts.league_recap_checks import (
     RECAP_WARNING_KIND_NET_MISATTRIBUTION,
     RECAP_WARNING_NET_MISATTRIBUTION,
     RECAP_WARNING_UNSUPPORTED_TIE,
+    RECAP_WARNING_WRONG_PLACING,
     RecapNames,
     check_contested_attributions,
     check_contested_roll_calls,
+    check_gameweek_placings,
     check_kind_net_scopes,
     check_net_attributions,
     check_recap_editorial,
@@ -8047,6 +8051,185 @@ class TestTieClaimCheck:
         assert self._check("The joint-lowest score of the week.", _reported_table()[:1]) == []
 
 
+class TestCompetitionRank:
+    """Issue #486: one definition of a recap rank, read by the GW Rank column,
+    the report's standings block, the tie check and the placing check."""
+
+    def test_level_values_share_a_rank_and_the_next_one_down_skips_it(self):
+        values = [70, 62, 62, 50]
+        assert [competition_rank(value, values) for value in values] == [1, 2, 2, 4]
+
+    def test_the_gameweek_rank_is_the_competition_rank_of_the_week_s_scores(self):
+        managers = _placings_table()
+        scores = [m["gw_points"] for m in managers]
+        assert [gameweek_rank(m, managers) for m in managers] == [
+            competition_rank(m["gw_points"], scores) for m in managers
+        ]
+
+
+def _placings_table() -> list[RecapManagerEntry]:
+    """#483's shape, in league order: the last row (Hal Penn, 8th) scored 31,
+    seventh on the week and one clear of Gus Peel's 30, and the week's
+    runner-up (Bea Gale, 62) is third in the table, the placing the editorial
+    gave her on the week. The week's top scorer (Cy Hart, 70) is second."""
+    rows = [
+        ("Ann Moss", 39, 382), ("Cy Hart", 70, 340), ("Bea Gale", 62, 330), ("Dee Ford", 45, 290),
+        ("Eli Ray", 41, 280), ("Fay Lund", 50, 270), ("Gus Peel", 30, 256), ("Hal Penn", 31, 252),
+    ]
+    return [
+        _make_manager(
+            name=name, entry_id=pos, gw_points=pts, overall_rank=pos, previous_rank=pos, total_points=total,
+        )
+        for pos, (name, pts, total) in enumerate(rows, start=1)
+    ]
+
+
+class TestGameweekPlacingCheck:
+    """Issue #486: the editorial called a manager seventh on the week "eighth
+    on 31", their league position (#483), and with the prompt's table
+    carrying a GW Rank column it still called the week's runner-up "third on
+    the week" (#488). Every manager's gameweek placing is known, so a placing
+    said of the week is checked against it."""
+
+    def _check(self, summary: str, managers: list[RecapManagerEntry] | None = None) -> list[str]:
+        managers = managers or _placings_table()
+        return check_gameweek_placings(summary, managers, RecapNames.of(managers))
+
+    def test_a_league_position_beside_a_gameweek_score_is_caught(self):
+        assert self._check("Hal Penn finished eighth on 31.") == [
+            'the editorial places Hal Penn "eighth" beside their gameweek score, but Hal Penn\'s 31 pts was '
+            "7th on the week; 8th is Hal Penn's place in the table"
+        ]
+
+    def test_the_week_s_runner_up_called_third_is_caught(self):
+        assert self._check("Cy Hart won the week, and Bea Gale was third on the week with 62.") == [
+            'the editorial places Bea Gale "third" for the week, but Bea Gale\'s 62 pts was 2nd on the week; '
+            "3rd is Bea Gale's place in the table"
+        ]
+
+    def test_last_and_top_name_who_holds_the_week_s_extreme(self):
+        assert self._check("Ann Moss came last on the week with 39.") == [
+            'the editorial places Ann Moss "last" for the week, but Ann Moss\'s 39 pts was 6th on the week; '
+            "the lowest gameweek score was 30 pts, Gus Peel's"
+        ]
+        assert self._check("Ann Moss was top of the gameweek.") == [
+            'the editorial places Ann Moss "top" for the week, but Ann Moss\'s 39 pts was 6th on the week; '
+            "the highest gameweek score was 70 pts, Cy Hart's, and Ann Moss is top of the table"
+        ]
+
+    @pytest.mark.parametrize(("summary", "placed"), [
+        ("Bea Gale's 62 was the third-best score of the week.", "Bea Gale"),
+        ("Fay Lund took a second-place finish in the week.", "Fay Lund"),
+        ("Dee Ford put up 45 points - fifth in the gameweek.", "Dee Ford"),
+        # "This week" only dates a placing, but the score beside it is the week's.
+        ("Hal Penn finished eighth this week on 31.", "Hal Penn"),
+        ("Bea Gale's 62 was this week's third-best.", "Bea Gale"),
+        ("Ann Moss was rock-bottom of the gameweek.", "Ann Moss"),
+        ("Hal Penn finished joint-last on 31.", "Hal Penn"),
+        ("Eli Ray took 8th place for the week with 41.", "Eli Ray"),
+        # The week named straight after the placing outweighs a move up the
+        # table in the same breath: said of the week's top scorer, whose
+        # league position it was.
+        ("Cy Hart rocketed up five places to snatch second on the week with 70.", "Cy Hart"),
+        # A pronoun goes to the one manager the clause before it named.
+        ("Ann Moss had a shocker. She finished seventh on the week.", "Ann Moss"),
+        ("Ann Moss had a shocker; her 39 was only seventh-best.", "Ann Moss"),
+    ])
+    def test_a_placing_the_week_does_not_bear_out_is_caught(self, summary, placed):
+        problems = self._check(summary)
+        assert len(problems) == 1
+        assert problems[0].startswith(f"the editorial places {placed} ")
+
+    @pytest.mark.parametrize("summary", [
+        # True on the week, or the table's.
+        "Hal Penn was seventh for the week on 31, one point clear of last, and eighth in the league.",
+        "Bea Gale was second on the week with 62.",
+        "Gus Peel finished last on the week with 30.",
+        "Cy Hart was top of the gameweek on 70.",
+        "Hal Penn finished eighth in the table.",
+        "Ann Moss is still first overall on 382.",
+        "Ann Moss went into this gameweek sat top of the pile.",
+        "Ann Moss kept top spot this week.",
+        "Ann Moss is still top this week.",
+        # A numbered gameweek may be another than the one recapped.
+        "Hal Penn came last in GW5 too.",
+        "Hal Penn slipped to eighth on 31.",
+        "Bea Gale climbed from 6th to 3rd with 62.",
+        # Escaped, hedged or negated, #487's own words for the manager one
+        # score above the lowest among them.
+        "Hal Penn avoided last place on the week by 1 pt.",
+        "Ann Moss would have been second on the week with a better captain.",
+        "Hal Penn didn't finish last on the week.",
+        "Hal Penn wasn't, as some feared, last on the week.",
+        "Hal Penn's 31 left him one better than last on the week.",
+        # Not a placing where it stands.
+        "Ann Moss's third win of the season came last week.",
+        "Hal Penn picked up his second last-place fine of the season.",
+        "Hal Penn finished second last on the week.",
+        "Ann Moss won at last, with 39.",
+        "Cy Hart's 70 was the top score of the week.",
+        "Hal Penn has spent two gameweeks on top.",
+        "Ann Moss and Bea Gale finished second and third on the week respectively.",
+        # Not the manager's placing, or nobody the clause can name.
+        "Hal Penn beat only the manager who came last on the week.",
+        "Ann Moss's captain was the third-best on the week.",
+        "Ann Moss's Haaland blanked, and she finished seventh on the week.",
+        "Cy Hart outscored Bea Gale, finishing third on the week.",
+        "Ann Moss and Bea Gale both struggled. She finished seventh on the week.",
+        # Nothing says it is the week's: no week word, and no score of hers.
+        "Ann Moss came last.",
+        "Hal Penn finished eighth, 31 points behind Cy Hart.",
+    ])
+    def test_a_placing_the_check_cannot_pin_to_the_week_is_left_alone(self, summary):
+        managers = _placings_table()
+        managers[0]["squad"] = [_make_squad_player(name="Haaland")]
+        assert self._check(summary, managers) == []
+
+    def test_last_holds_for_every_manager_level_on_the_lowest_score(self):
+        managers = _placings_table()
+        managers[7]["gw_points"] = 30
+        assert self._check("Hal Penn finished last on the week, level with Gus Peel.", managers) == []
+
+    def test_a_numbered_placing_is_the_rank_level_scores_share(self):
+        managers = _placings_table()
+        managers[5]["gw_points"] = 62
+        assert self._check("Fay Lund was second on the week with 62.", managers) == []
+        assert self._check("Fay Lund was third on the week with 62.", managers) == [
+            'the editorial places Fay Lund "third" for the week, but Fay Lund\'s 62 pts was 2nd on the week, '
+            "level with Bea Gale"
+        ]
+
+    def test_a_best_may_also_count_the_distinct_scores_above_it(self):
+        """After a shared top score the next one is "the second-best score",
+        whatever rank its manager holds."""
+        managers = _placings_table()
+        managers[2]["gw_points"] = 70
+        assert self._check("Fay Lund's 50 was the second-best score of the week.", managers) == []
+        assert len(self._check("Fay Lund finished second on the week with 50.", managers)) == 1
+
+    def test_a_figure_that_is_also_the_season_total_is_no_gameweek_score(self):
+        """A draft head-to-head table counts league points, which can match a
+        gameweek score, so the figure says neither."""
+        managers = _placings_table()
+        managers[7]["total_points"] = 31
+        assert self._check("Hal Penn finished eighth on 31.", managers) == []
+
+    def test_a_lone_manager_has_nothing_to_place(self):
+        assert self._check("Ann Moss finished eighth on 39.", _placings_table()[:1]) == []
+
+    def test_the_registry_runs_it_and_the_retry_names_both_columns(self):
+        data = _make_recap_data(managers=_placings_table())
+        found = check_recap_editorial("Hal Penn finished eighth on 31.", data)
+        assert list(found) == [RECAP_WARNING_WRONG_PLACING]
+        prompt = get_recap_editorial_retry_prompt("ORIGINAL", found)
+        assert "only from the GW Standings section's GW Rank column" in prompt
+        assert "never set a league position beside a gameweek score" in prompt
+        assert editorial_warning_message(RECAP_WARNING_WRONG_PLACING, found[RECAP_WARNING_WRONG_PLACING]).startswith(
+            "The editorial gives a manager a placing on the week their gameweek score does not earn. "
+            'The editorial places Hal Penn "eighth"'
+        )
+
+
 class TestStandingsTieLines:
     """Issue #359: the prompt states which scores and positions are shared,
     so the tie rule has a line to hold "joint" to."""
@@ -8258,7 +8441,7 @@ class TestEditorialChecks:
         assert sorted(codes) == sorted({
             RECAP_WARNING_CONTESTED_MISATTRIBUTION, RECAP_WARNING_NET_MISATTRIBUTION,
             RECAP_WARNING_KIND_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE,
-            RECAP_WARNING_CONTESTED_ROLL_CALL,
+            RECAP_WARNING_WRONG_PLACING, RECAP_WARNING_CONTESTED_ROLL_CALL,
         })
         assert all(check.lead and check.retry_instruction for check in EDITORIAL_CHECKS)
 

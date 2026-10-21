@@ -1272,6 +1272,19 @@ def points_label(points: int) -> str:
     return f"{points} pt" if points == 1 else f"{points} pts"
 
 
+def competition_rank(value: int, values: Iterable[int]) -> int:
+    """`value`'s rank among `values` when higher is better: one more than the
+    number above it, so level values share a rank and the next one down skips
+    it (1, 2, 2, 4).
+
+    The one definition every recap rank is counted with (#486): the GW Rank
+    column and the report's GW Standings block through `gameweek_rank()`, and
+    the editorial checks' readings of a gameweek placing and a season total.
+    A change to how a tie or a missing value ranks is made here, once.
+    """
+    return 1 + sum(other > value for other in values)
+
+
 def gameweek_rank(manager: RecapManagerEntry, managers: Sequence[RecapManagerEntry]) -> int:
     """A manager's placing on this gameweek's points: one more than the
     number who scored more, so level scores share a rank (#483).
@@ -1281,7 +1294,7 @@ def gameweek_rank(manager: RecapManagerEntry, managers: Sequence[RecapManagerEnt
     on league position would hand the editorial a placing the prompt's tie
     rules say it may not claim, and a reader would see one in the report.
     """
-    return 1 + sum(other["gw_points"] > manager["gw_points"] for other in managers)
+    return competition_rank(manager["gw_points"], (other["gw_points"] for other in managers))
 
 
 def place_label(rank: int) -> str:
