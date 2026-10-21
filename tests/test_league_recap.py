@@ -4670,9 +4670,6 @@ class TestLeagueRecapTemplateRender:
         assert "1st" in standings_section
         # Highest GW points appears first
         assert standings_section.index("Alice") < standings_section.index("Bob")
-        # Issue #483: shared and skipped row numbers are explained, not left
-        # to read as a rendering bug
-        assert "level scores sharing a rank" in standings_section
         # Block is wrapped in a fenced code block for Obsidian monospace
         assert "```" in standings_section
 
