@@ -1277,10 +1277,14 @@ def competition_rank(value: int, values: Iterable[int]) -> int:
     number above it, so level values share a rank and the next one down skips
     it (1, 2, 2, 4).
 
-    The one definition every recap rank is counted with (#486): the GW Rank
-    column and the report's GW Standings block through `gameweek_rank()`, and
-    the editorial checks' readings of a gameweek placing and a season total.
-    A change to how a tie or a missing value ranks is made here, once.
+    The one definition the recap's own ranks are counted with (#486): the GW
+    Rank column and the report's GW Standings block through
+    `gameweek_rank()`, and the editorial checks' readings of a gameweek
+    placing and a season total, so a change to how a tie or a missing value
+    ranks reaches all of them at once. League positions -- Pos, Prev and the
+    ledger's `gw_rank` -- come from `derive_point_in_time_positions()`
+    (`_league_recap_data.py`), the same competition ranking over a sorted
+    walk, and a change here does not reach them.
     """
     return 1 + sum(other > value for other in values)
 

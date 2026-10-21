@@ -65,7 +65,6 @@ from fpl_cli.cli._league_recap_types import (
     format_contested_claim,
     format_move_counts,
     format_prior_seasons_line,
-    gameweek_rank,
     standout_blanks_heading,
     standout_players_lines,
     summarise_prior_seasons,
@@ -8059,13 +8058,6 @@ class TestCompetitionRank:
         values = [70, 62, 62, 50]
         assert [competition_rank(value, values) for value in values] == [1, 2, 2, 4]
 
-    def test_the_gameweek_rank_is_the_competition_rank_of_the_week_s_scores(self):
-        managers = _placings_table()
-        scores = [m["gw_points"] for m in managers]
-        assert [gameweek_rank(m, managers) for m in managers] == [
-            competition_rank(m["gw_points"], scores) for m in managers
-        ]
-
 
 def _placings_table() -> list[RecapManagerEntry]:
     """#483's shape, in league order: the last row (Hal Penn, 8th) scored 31,
@@ -8110,11 +8102,11 @@ class TestGameweekPlacingCheck:
     def test_last_and_top_name_who_holds_the_week_s_extreme(self):
         assert self._check("Ann Moss came last on the week with 39.") == [
             'the editorial places Ann Moss "last" for the week, but Ann Moss\'s 39 pts was 6th on the week; '
-            "the lowest gameweek score was 30 pts, Gus Peel's"
+            "the lowest gameweek score was 30 pts, held by Gus Peel"
         ]
         assert self._check("Ann Moss was top of the gameweek.") == [
             'the editorial places Ann Moss "top" for the week, but Ann Moss\'s 39 pts was 6th on the week; '
-            "the highest gameweek score was 70 pts, Cy Hart's, and Ann Moss is top of the table"
+            "the highest gameweek score was 70 pts, held by Cy Hart, and Ann Moss is top of the table"
         ]
 
     @pytest.mark.parametrize(("summary", "placed"), [
@@ -8131,9 +8123,23 @@ class TestGameweekPlacingCheck:
         # table in the same breath: said of the week's top scorer, whose
         # league position it was.
         ("Cy Hart rocketed up five places to snatch second on the week with 70.", "Cy Hart"),
-        # A pronoun goes to the one manager the clause before it named.
+        # A pronoun goes to the one manager the clause before it named, the
+        # object as much as the subject.
         ("Ann Moss had a shocker. She finished seventh on the week.", "Ann Moss"),
-        ("Ann Moss had a shocker; her 39 was only seventh-best.", "Ann Moss"),
+        ("Ann Moss had a shocker; her 39 was only seventh-best on the week.", "Ann Moss"),
+        ("Ann Moss had a shocker. It only bought her a seventh-place finish in the week.", "Ann Moss"),
+        # PR #489 review: a finishing verb and the manager's own score in the
+        # clause are #483's shape, whatever comma or "and" sits between them.
+        ("Hal Penn scored 31 and finished eighth.", "Hal Penn"),
+        ("Hal Penn scored 31, finishing eighth.", "Hal Penn"),
+        ("Hal Penn managed just 31, good for eighth.", "Hal Penn"),
+        ("With 31 points, Hal Penn finished eighth.", "Hal Penn"),
+        ("Dee Ford scored 45 for 5th place.", "Dee Ford"),
+        # ...and "could" hedges only with "have", "no better than" is a finish,
+        # and a hedge in another stretch of the clause is not this one's.
+        ("Hal Penn could only manage eighth on 31.", "Hal Penn"),
+        ("Hal Penn could do no better than eighth on the week with 31.", "Hal Penn"),
+        ("Gus Peel beat Dee Ford, and Hal Penn finished eighth on 31.", "Hal Penn"),
     ])
     def test_a_placing_the_week_does_not_bear_out_is_caught(self, summary, placed):
         problems = self._check(summary)
@@ -8159,6 +8165,7 @@ class TestGameweekPlacingCheck:
         # score above the lowest among them.
         "Hal Penn avoided last place on the week by 1 pt.",
         "Ann Moss would have been second on the week with a better captain.",
+        "Ann Moss could have been second on the week.",
         "Hal Penn didn't finish last on the week.",
         "Hal Penn wasn't, as some feared, last on the week.",
         "Hal Penn's 31 left him one better than last on the week.",
@@ -8179,6 +8186,27 @@ class TestGameweekPlacingCheck:
         # Nothing says it is the week's: no week word, and no score of hers.
         "Ann Moss came last.",
         "Hal Penn finished eighth, 31 points behind Cy Hart.",
+        "Bea Gale's 62 was the third-best.",
+        # PR #489 review: a league position near a score it is not attached
+        # to, and a clause that gives the season total, are the table's.
+        "Hal Penn (8th) scored 31.",
+        "Cy Hart (2nd) hit 70 and took the week.",
+        "Hal Penn remains eighth after a 31-point week.",
+        "Hal Penn's 31 left him eighth on 252.",
+        "Hal Penn scored 31 and finished eighth on 252.",
+        # ...a placing counted from the other end...
+        "Hal Penn was second from the bottom on the week.",
+        "Ann Moss was third from the bottom on the week.",
+        # ...a "-best" over a span longer than the week...
+        "Dee Ford's 45 was her second-best score this campaign.",
+        "Dee Ford's 45 was her second-best score in six weeks.",
+        "Dee Ford's 45 was her second-best of the year.",
+        "Cy Hart's 70 was the second-best score of his career.",
+        # ...and another person's placing.
+        "Ann Moss, who finished sixth on the week, was beaten by the week's winner, who took top spot on the week.",
+        "Ann Moss had a shocker. Her rival took third on the week.",
+        "Ann Moss's brother finished last on the week.",
+        "Ann Moss watched a rival take top spot on the week.",
     ])
     def test_a_placing_the_check_cannot_pin_to_the_week_is_left_alone(self, summary):
         managers = _placings_table()
@@ -8207,12 +8235,34 @@ class TestGameweekPlacingCheck:
         assert self._check("Fay Lund's 50 was the second-best score of the week.", managers) == []
         assert len(self._check("Fay Lund finished second on the week with 50.", managers)) == 1
 
+    def test_a_shared_extreme_names_everyone_who_held_it(self):
+        managers = _placings_table()
+        managers[7]["gw_points"] = 30
+        assert self._check("Ann Moss came last on the week with 39.", managers) == [
+            'the editorial places Ann Moss "last" for the week, but Ann Moss\'s 39 pts was 6th on the week; '
+            "the lowest gameweek score was 30 pts, held by Gus Peel and Hal Penn"
+        ]
+
+    def test_a_name_the_data_pads_is_read_as_the_editorial_writes_it(self):
+        """PR #489 review: the names are read stripped, so a padded one from
+        the API raised a KeyError, which turned every check off for the run."""
+        managers = _placings_table()
+        managers[7]["manager_name"] = "Hal Penn "
+        assert len(self._check("Hal Penn finished eighth on 31.", managers)) == 1
+
     def test_a_figure_that_is_also_the_season_total_is_no_gameweek_score(self):
         """A draft head-to-head table counts league points, which can match a
         gameweek score, so the figure says neither."""
         managers = _placings_table()
         managers[7]["total_points"] = 31
         assert self._check("Hal Penn finished eighth on 31.", managers) == []
+
+    def test_in_a_league_s_first_gameweek_every_total_is_that_week_s_score(self):
+        """PR #489 review: there the figure is both, so it is the score."""
+        managers = _placings_table()
+        for manager in managers:
+            manager["total_points"] = manager["gw_points"]
+        assert len(self._check("Hal Penn finished eighth on 31.", managers)) == 1
 
     def test_a_lone_manager_has_nothing_to_place(self):
         assert self._check("Ann Moss finished eighth on 39.", _placings_table()[:1]) == []
