@@ -35,7 +35,6 @@ from fpl_cli.cli._league_recap_types import (
     draft_transaction_kind_nets,
     format_contested_claim,
     format_move_counts,
-    gameweek_rank,
     place_label,
     points_label,
 )
@@ -1209,7 +1208,7 @@ def check_tie_claims(summary: str, managers: Sequence[RecapManagerEntry], names:
     """
     if len(managers) < 2:
         return []
-    gameweek = [(m["manager_name"], gameweek_rank(m, managers)) for m in managers]
+    gameweek = _competition_ranks([(m["manager_name"], m["gw_points"]) for m in managers])
     points = {m["manager_name"]: m["gw_points"] for m in managers}
     # The table's Pos column first -- the one a "nobody is 8th" is read off --
     # then its Prev column and the ranks its Total column implies.

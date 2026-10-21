@@ -4566,20 +4566,19 @@ class TestFormatStandingsBlock:
         placing per manager, so a "joint-top for the week" the editorial reads
         off the prompt is what a reader finds in the report."""
         managers = [
-            _make_manager(name="Ann", entry_id=1, gw_points=45, overall_rank=3, previous_rank=3, total_points=300),
-            _make_manager(name="Bea", entry_id=2, gw_points=45, overall_rank=1, previous_rank=1, total_points=380),
-            _make_manager(name="Cy", entry_id=3, gw_points=31, overall_rank=2, previous_rank=2, total_points=340),
+            _make_manager(name="Ann Lee", entry_id=1, gw_points=45, overall_rank=3, previous_rank=3, total_points=300),
+            _make_manager(name="Bea Gale", entry_id=2, gw_points=45, overall_rank=1, previous_rank=1, total_points=380),
+            _make_manager(name="Cy Hart", entry_id=3, gw_points=31, overall_rank=2, previous_rank=2, total_points=340),
         ]
-        report = {
-            line.split()[1]: line.split(".")[0].strip()
-            for line in _format_standings_block(managers).splitlines()
-        }
-        prompt = {
-            cells[3]: cells[5]
-            for line in format_recap_standings_context(_make_recap_data(managers=managers)).splitlines()
-            if line.startswith("| ") and (cells := [c.strip() for c in line.split("|")])[1].isdigit()
-        }
-        assert report == prompt == {"Ann": "1", "Bea": "1", "Cy": "3"}
+        assert _format_standings_block(managers).splitlines() == [
+            " 1.  Bea Gale   45   (1st, 380)",
+            " 1.  Ann Lee    45   (3rd, 300)",
+            " 3.  Cy Hart    31   (2nd, 340)",
+        ]
+        prompt = format_recap_standings_context(_make_recap_data(managers=managers))
+        assert "| 1 | 1 | Bea Gale | 45 | 1 | 380 |" in prompt
+        assert "| 3 | 3 | Ann Lee | 45 | 1 | 300 |" in prompt
+        assert "| 2 | 2 | Cy Hart | 31 | 3 | 340 |" in prompt
 
     def test_no_pipe_characters(self):
         managers = [_make_manager(name="Solo", gw_points=50)]
@@ -4671,6 +4670,9 @@ class TestLeagueRecapTemplateRender:
         assert "1st" in standings_section
         # Highest GW points appears first
         assert standings_section.index("Alice") < standings_section.index("Bob")
+        # Issue #483: shared and skipped row numbers are explained, not left
+        # to read as a rendering bug
+        assert "level scores sharing a rank" in standings_section
         # Block is wrapped in a fenced code block for Obsidian monospace
         assert "```" in standings_section
 

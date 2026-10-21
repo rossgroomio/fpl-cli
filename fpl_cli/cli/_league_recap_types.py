@@ -1276,8 +1276,8 @@ def gameweek_rank(manager: RecapManagerEntry, managers: Sequence[RecapManagerEnt
     """A manager's placing on this gameweek's points: one more than the
     number who scored more, so level scores share a rank (#483).
 
-    The one definition every recap surface reads: the report's GW Standings
-    block, the prompt's GW Rank column and the tie check. Numbering ties apart
+    The one definition both recap tables read: the report's GW Standings
+    block and the prompt's GW Rank column. Numbering ties apart
     on league position would hand the editorial a placing the prompt's tie
     rules say it may not claim, and a reader would see one in the report.
     """
