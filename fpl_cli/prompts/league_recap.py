@@ -429,7 +429,8 @@ def _standings_tie_lines(managers: Sequence[RecapManagerEntry]) -> list[str]:
         # once gave the escape to the manager who finished last ("He escaped
         # the bottom spot") and once called it "clear of the foot of the
         # table" for a manager bottom of the league (#487). So it is stated,
-        # by name and as the week's.
+        # by name and as the week's, and `check_escape_claims()` holds the
+        # editorial to it (#488).
         escaped = f"{scored(nearest)} each" if len(by_points[nearest]) > 1 else scored(nearest)
         return f"{line}, so {escaped} avoided last place on the week by {margin}"
 

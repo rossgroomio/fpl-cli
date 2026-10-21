@@ -1,9 +1,10 @@
-"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486).
+"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486, #488).
 
 The prompt states every rule these read, and the model has broken each of
 them anyway: a manager named as beaten in a waiver race they won, a
 manager's whole-gameweek net pinned on one transfer, a tie nobody shared, a
-league position given as a gameweek finish.
+league position given as a gameweek finish, the week's narrow escape from
+last place handed to the manager who finished there.
 Where the claim is about known strings -- managers, players, figures, ranks
 -- it can be read back mechanically instead of trusting a rule the model
 has already ignored once.
@@ -50,6 +51,7 @@ RECAP_WARNING_NET_MISATTRIBUTION = "synthesis_net_misattribution"
 RECAP_WARNING_KIND_NET_MISATTRIBUTION = "synthesis_kind_net_misattribution"
 RECAP_WARNING_UNSUPPORTED_TIE = "synthesis_unsupported_tie"
 RECAP_WARNING_WRONG_PLACING = "synthesis_wrong_gameweek_placing"
+RECAP_WARNING_ESCAPE_MISATTRIBUTION = "synthesis_escape_misattribution"
 RECAP_WARNING_CONTESTED_ROLL_CALL = "synthesis_contested_roll_call"
 
 
@@ -1471,8 +1473,9 @@ _PLACING_WEEK_AFTER_SCORE_RE = re.compile(
 )
 
 
-def _placing_stretch(clause: str, start: int, end: int) -> tuple[int, int]:
-    """Where the stretch of `clause` holding `start`-`end` begins and ends."""
+def _claim_stretch(clause: str, start: int, end: int) -> tuple[int, int]:
+    """Where the stretch of `clause` holding `start`-`end` begins and ends:
+    the placing, or the escape from last place, that the checks below read."""
     lo = max((m.end() for m in _PLACING_STRETCH_BREAK_RE.finditer(clause, 0, start)), default=0)
     following = _PLACING_STRETCH_BREAK_RE.search(clause, end)
     return lo, following.start() if following else len(clause)
@@ -1486,14 +1489,15 @@ def _states(text: str, value: int) -> bool:
     )
 
 
-def _placing_negated(text: str, start: int, stretch_start: int, finished: bool) -> bool:
-    """Whether a negation in the words before the placing at `start` is
-    said of it.
+def _claim_negated(text: str, start: int, stretch_start: int, finished: bool) -> bool:
+    """Whether a negation in the words before the claim at `start` -- a
+    placing, or an escape from last place -- is said of it.
 
     A negation reaches past a stretch break ("wasn't, as some feared,
     last"), but one with a verb of its own before that break, when a
-    finishing verb leads into the placing (`finished`), is that verb's: in
-    "didn't escape, finishing 15th" it is the escape that did not happen.
+    finishing verb or an escape leads into the claim (`finished`), is that
+    verb's: in "didn't escape, finishing 15th" it is the escape that did not
+    happen.
     One with nothing of its own before the break ("didn't, in the end,
     finish last") still reaches the placing, as one in its own stretch
     does ("didn't finish last").
@@ -1507,18 +1511,20 @@ def _placing_negated(text: str, start: int, stretch_start: int, finished: bool) 
     return False
 
 
-def _placing_subject(clause: _ReadClause, start: int, stretch_start: int) -> tuple[str, int] | None:
-    """Who the placing at `start` is said of, and where the name that says
-    so ends (0 for one carried from an earlier clause), or None when the
-    clause cannot say.
+def _claim_subject(clause: _ReadClause, start: int, stretch_start: int) -> tuple[str, int] | None:
+    """Who the claim at `start` -- a placing, or an escape from last place --
+    is said of, and where the name that says so ends (0 for one carried from
+    an earlier clause), or None when the clause cannot say. The one reading
+    of a claim's subject, so the placing and escape checks carry a pronoun
+    the same way (#488).
 
     It is the manager named nearest before it; where the clause names two or
     more before it, only the one its own stretch names ("Alice won the week,
-    and Bob was third on the week"). A placing nobody is named before goes
-    to the clause's antecedent when a pronoun before it points back ("He
-    finished eighth on 31", "it left him eighth on 31"). A pronoun between the name and the
-    placing in a clause naming two managers could be either's, so it says
-    neither.
+    and Bob was third on the week"). A claim nobody is named before goes to
+    the clause's antecedent when a pronoun before it points back ("He
+    finished eighth on 31", "it left him eighth on 31", "He escaped the
+    wooden spoon"). A pronoun between the name and the claim in a clause
+    naming two managers could be either's, so it says neither.
     """
     text = clause.text
     before = [mention for mention in clause.named if mention[1] <= start]
@@ -1574,7 +1580,7 @@ def check_gameweek_placings(
     own does not reach past a finishing verb ("didn't escape, finishing
     15th"), and one said near a player, another subject in its own stretch
     or another person ("his captain", "her rival", "the manager who came
-    last"), and one in a "respectively" list. Whose it is comes from `_placing_subject()`. "Last" and "bottom"
+    last"), and one in a "respectively" list. Whose it is comes from `_claim_subject()`. "Last" and "bottom"
     hold for every manager on the week's lowest score and "top" for every one
     on its highest; a numbered placing is the manager's gameweek rank, level
     scores sharing one, and a "-best" is also allowed its rank among the
@@ -1631,7 +1637,7 @@ def check_gameweek_placings(
             start, end = match.span()
             if not _PLACING_FOLLOWS_RE.match(text, end) or _NOT_A_PLACING_BEFORE_RE.search(text[:start]):
                 continue
-            lo, hi = _placing_stretch(text, start, end)
+            lo, hi = _claim_stretch(text, start, end)
             before, after = text[lo:start], text[end:hi]
             figure_after = _FIGURE_AFTER_PLACING_RE.match(text, end, hi)
             week_after_score = bool(figure_after and _PLACING_WEEK_AFTER_SCORE_RE.match(text, figure_after.end(), hi))
@@ -1647,12 +1653,12 @@ def check_gameweek_placings(
                 continue
             # A hedge is read in the placing's own stretch; a negation, as the
             # tie check reads one, across the words before it in the clause
-            # (`_placing_negated()`).
-            if _PLACING_HEDGE_RE.search(_words_before(before, len(before), _PLACING_HEDGE_WORDS)) or _placing_negated(
+            # (`_claim_negated()`).
+            if _PLACING_HEDGE_RE.search(_words_before(before, len(before), _PLACING_HEDGE_WORDS)) or _claim_negated(
                 text, start, lo, bool(_FINISH_BEFORE_RE.search(before)),
             ):
                 continue
-            subject = _placing_subject(clause, start, lo)
+            subject = _claim_subject(clause, start, lo)
             if subject is None or first_player < start:
                 continue
             name, name_end = subject
@@ -1697,6 +1703,238 @@ def check_gameweek_placings(
             if holds:
                 continue
             problem = f'the editorial places {name} "{match.group(0)}" {reading}, but {fact(name, word, claimed)}'
+            if problem not in problems:
+                problems.append(problem)
+    return problems
+
+
+# =============================================================================
+# Escapes from last place (#488)
+# =============================================================================
+
+# The words that say a manager got away from somewhere: "escaped", "avoided",
+# "dodged", "survived", "was spared", "missed" ("missed the dreaded last
+# place") and "clear of" ("a point clear of the foot of the table"), the noun
+# as well as the verb ("a narrow escape from the bottom"). "Missed out" says
+# the manager went without something, so it is none of them.
+_ESCAPE_CUE_RE = re.compile(
+    r"(?<!\w)(?:(?P<miss>miss(?:es|ed|ing)?(?!\w)(?!\s+out(?!\w)))|escap(?:e|es|ed|ing)|avoid(?:s|ed|ing)?"
+    r"|dodg(?:e|es|ed|ing)|evad(?:e|es|ed|ing)|surviv(?:e|es|ed|ing)|sidestep(?:s|ped|ping)?"
+    r"|swerv(?:e|es|ed|ing)|spared|clear\s+of)(?!\w)",
+    re.IGNORECASE,
+)
+# An escape word after "missed" says the escape is what was missed: "missed
+# the bottom-of-the-week dodge", "missed avoiding it".
+_ESCAPE_WORD_RE = re.compile(
+    r"(?<!\w)(?:escap(?:e|es|ed|ing)|avoid(?:s|ed|ing|ance)?|dodg(?:e|es|ed|ing)|evad(?:e|es|ed|ing)"
+    r"|surviv(?:e|es|ed|ing|al)|sidestep(?:s|ped|ping)?|swerv(?:e|es|ed|ing)|spar(?:e|es|ed|ing)"
+    r"|repriev(?:e|es|ed))(?!\w)",
+    re.IGNORECASE,
+)
+# Where the manager got away from: last place, the bottom, the wooden spoon,
+# the worst week or the lowest score, the foot of the table or the basement,
+# with the scope named straight after it ("on the week", "of the table") so
+# the quote carries it. A bare "last", "bottom", "foot" or "basement" can
+# modify something else, so what follows one must end the phrase or carry it
+# on ("by a point", "this week", "again"): "last week", "the bottom half",
+# "the bottom corner", "a foot injury" and "second-last" are none of them.
+_ESCAPE_SCOPE = r"\s+(?:of|on|in|for)\s+the\s+(?:week|gameweek|gw|table|league|standings|pile)(?![\w-])"
+_ESCAPE_TARGET_RE = re.compile(
+    r"(?<![\w-])(?:rock[-\s]+)?(?:"
+    r"(?:(?:last|bottom)[-\s]+(?:place|spot|position|slot|rung)(?:[-\s]+(?:finish|fine))?|wooden[-\s]+spoon"
+    rf"|(?:worst|lowest)[-\s]+(?:week|gameweek|gw|score|return|tally|total))(?:{_ESCAPE_SCOPE})?(?![\w-])"
+    rf"|(?:last|bottom|foot|basement)(?:{_ESCAPE_SCOPE}"
+    r"|(?=\s*(?:$|[,.;:!?()'‘’\"“”–—]|-\s|(?:by|on|in|for|of|with|at|this|again|too|and|but|while|as|despite"
+    r"|though|although|thanks|courtesy|after|when|because|so|just|only|narrowly|comfortably|once|yet)(?!\w)))))",
+    re.IGNORECASE,
+)
+# What may sit between an escape and where it was from: the furniture of the
+# phrase ("the dreaded", "the dubious honour of", "finishing in"), never a
+# word that names or counts anything else. "Survived a red card to finish
+# bottom" is no escape from the bottom.
+_ESCAPE_LINK_WORDS = frozenset({
+    "the", "a", "an", "his", "her", "their", "its", "this", "week's", "gameweek's", "weekly", "of", "from",
+    "being", "finishing", "coming", "ending", "up", "in", "on", "at", "outright", "sole", "lonely", "dreaded",
+    "dubious", "unwanted", "unenviable", "ignominious", "ignominy", "indignity", "shame", "honour", "honor",
+    "humiliation", "embarrassment", "spectre", "specter", "prospect", "threat", "fate",
+})
+_ESCAPE_LINK_MAX_WORDS = 6
+# Words before an escape, in its own stretch, that say it did not happen or
+# only nearly did: "would have escaped", "came close to avoiding", "a point
+# short of escaping", "no escape from", "needed one more to avoid". "Only
+# just escaped" and "enough to avoid" are escapes.
+_ESCAPE_HEDGE_RE = re.compile(
+    r"(?<!\w)(?:would|might|should|if|unless|nearly|almost|close\s+to|within|short\s+of|away\s+from|all\s+but"
+    r"|no|nothing|fail\w*|unable|tr(?:y|ies|ied|ying)|hop(?:e|es|ed|ing)|need\w*|bid|attempt\w*|chance|wish\w*"
+    r"|want\w*|aim\w*|look\w*|seem\w*|appear\w*|thought|could(?=(?:\s+\w+)?\s+have(?!\w)))(?!\w)"
+    r"|could['’]ve|['’]d(?!\w)",
+    re.IGNORECASE,
+)
+_ESCAPE_HEDGE_WORDS = 5
+# Whose last place an escape is from is read off the words that name where
+# from and the few after them: a word for the table makes it the table's
+# ("clear of the foot of the table", "avoided last place in the league"), a
+# word for the week the week's ("the worst week", "last place on the
+# week"). A table word further off is about something else: "escaped last
+# place despite sitting bottom of the table" is the week's escape. A verb
+# for holding a place straight before the escape makes it the table's too
+# ("stays clear of the bottom", "kept him clear of last place"), and so does
+# a copula before "clear of", which is then a state rather than what the
+# week's score did ("is comfortably clear of the bottom"). A span longer than
+# the week ("for the first time this season") or another week ("last week",
+# "in GW5") anywhere in the stretch is neither, so it is left alone.
+_ESCAPE_TABLE_RE = re.compile(
+    r"(?<!\w)(?:table|league|standings|overall|totals?|ladder|relegation|pile|foot|basement)(?!\w)", re.IGNORECASE,
+)
+_ESCAPE_HOLD_RE = re.compile(
+    r"(?<!\w)(?:stay\w*|sits?|sitting|sat|kept|keeps?|keeping|holds?|held|holding|remain\w*)(?:\s+\S+){0,2}\s*$",
+    re.IGNORECASE,
+)
+_ESCAPE_STATE_RE = re.compile(r"(?:(?<!\w)(?:is|are|was|were)|['’]s)(?:\s+\S+){0,2}\s*$", re.IGNORECASE)
+_ESCAPE_SCOPE_WORDS = 4
+_QUOTE_MARKS = ("'", "‘", "’", '"', "“", "”")
+_ESCAPE_WEEK_RE = re.compile(r"(?<!\w)(?:week|gameweek|gw|score)(?:['’]s)?(?!\w)", re.IGNORECASE)
+_ESCAPE_SPAN_RE = re.compile(
+    r"(?<!\w)(?:season\w*|campaign|weeks|gameweeks|since|run|record|history|ever|all-time|years?|months?|career"
+    r"|streak|(?:gw|gameweek)\s*\d+|(?:last|previous|prior|next)\s+(?:week|gameweek|gw)"
+    r"|(?:week|gameweek)\s+(?:before|ago|earlier))(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _escape_link(gap: str) -> bool:
+    """Whether `gap` joins an escape to where it was from."""
+    plain = _plain(gap)
+    if _KIND_LINK_BREAK_RE.search(plain):
+        return False
+    found = _LINK_WORD_RE.findall(plain.lower())
+    return len(found) <= _ESCAPE_LINK_MAX_WORDS and all(word in _ESCAPE_LINK_WORDS for word in found)
+
+
+def check_escape_claims(summary: str, managers: Sequence[RecapManagerEntry], names: RecapNames) -> list[str]:
+    """Every escape from last place the editorial gives a manager who
+    finished there (#488).
+
+    The GW Standings section names who avoided last place on the week and by
+    how much (#487), and the editorial tells that narrow escape in nearly
+    every run -- but it has handed it to the manager who finished last,
+    through a pronoun in the sentence after their fine ("He escaped the
+    wooden spoon by one cruel point over B"), and once set it against the
+    foot of the table for a manager bottom of the league. Every manager's
+    gameweek score and league position is known, so the claim is checkable,
+    which lets the prompt's margin rule tell the story without a clause
+    forcing names on every sentence that uses a gap.
+
+    An escape is a word that says the manager got away ("escaped",
+    "avoided", "dodged", "survived", "spared", "missed", "clear of") joined
+    by a few words of furniture to where from: last place, the bottom, the
+    wooden spoon, the worst week, the lowest score, the foot of the table.
+    Whose escape it is comes from `_claim_subject()`, as a placing's does: a
+    name before it, or a pronoun carried from the one manager the nearest
+    earlier clause of the paragraph named. It is the week's unless the words
+    naming where from, or the few after them, name the table, or a verb for
+    holding a place in it leads into the escape ("stays clear of"), and
+    then a problem when that manager's gameweek score was the week's lowest;
+    one that is the table's is a problem when the manager is bottom of the
+    table, and one that is both only when both hold. One that is hedged or
+    negated ("nearly escaped", "missed out on avoiding it", "no escape from
+    last place"), whose escape is what was missed ("missed the
+    bottom-of-the-week dodge"), said over a span longer than the week or of
+    another week ("for the first time this season", "last week", "in GW5"),
+    or said of another person, subject or player ("her rival", "his
+    captain"), or in a "respectively" list, is left alone. Returns one line
+    per wrong escape, in the order the editorial gives them, each saying who
+    finished last and who avoided it.
+    """
+    if len(managers) < 2:
+        return []
+    # Keyed as the names are read: stripped, as `_mention_aliases` keys them.
+    by_name = {m["manager_name"].strip(): m for m in managers}
+    scores = sorted({m["gw_points"] for m in by_name.values()})
+    lowest = scores[0]
+    ranks = [m.get("overall_rank") or 0 for m in by_name.values()]
+    # Bottom of the table is read only where every manager has a position.
+    bottom_of_table = max(ranks) if all(ranks) else None
+
+    def on(score: int) -> list[str]:
+        return sorted(name for name, m in by_name.items() if m["gw_points"] == score)
+
+    # Who avoided last place, as the GW Standings section's lowest line states it.
+    escaped = (
+        f"{join_and(on(scores[1]))} avoided last place on the week by {points_label(scores[1] - lowest)}"
+        if len(scores) > 1 else "every manager scored it, so nobody avoided last place on the week"
+    )
+
+    def week_fact(name: str) -> str:
+        level = [other for other in on(lowest) if other != name]
+        said = f"{name}'s {points_label(lowest)} was the lowest gameweek score"
+        return said + (f", level with {join_and(level)}" if level else "")
+
+    aliases = _manager_aliases(names)
+    problems: list[str] = []
+    for clause in _read_clauses(summary, names, aliases):
+        text = clause.text
+        if "respectively" in text.lower():
+            continue
+        for cue in _ESCAPE_CUE_RE.finditer(text):
+            target = _ESCAPE_TARGET_RE.search(text, cue.end())
+            if target is None or not _escape_link(text[cue.end():target.start()]):
+                continue
+            lo, hi = _claim_stretch(text, cue.start(), target.end())
+            stretch = text[lo:hi]
+            before = text[lo:cue.start()]
+            if (
+                _ESCAPE_SPAN_RE.search(stretch)
+                or (cue.group("miss") and _ESCAPE_WORD_RE.search(text, cue.end(), hi))
+                or _ESCAPE_HEDGE_RE.search(_words_before(before, len(before), _ESCAPE_HEDGE_WORDS))
+                or _claim_negated(text, cue.start(), lo, True)
+            ):
+                continue
+            subject = _claim_subject(clause, cue.start(), lo)
+            if subject is None:
+                continue
+            name, name_end = subject
+            # Another subject, person or player between the manager and the
+            # escape is whose it is: "his captain dodged", "her rival
+            # escaped", "Gus Peel's Salah missed the bottom corner".
+            window = text[max(lo, _window_start(text, cue.start(), _TIE_SUBJECT_WORDS_BEFORE)):cue.start()]
+            if (
+                _TIE_OTHER_SUBJECT_RE.search(window)
+                or _PLACING_OTHER_PERSON_RE.search(text[name_end:cue.start()])
+                or any(
+                    name_end <= m.start() < cue.start() and m.group(0) in names.players and m.group(0) not in aliases
+                    for m in clause.mentions
+                )
+            ):
+                continue
+            relatives = list(_RELATIVE_RE.finditer(text, name_end, cue.start()))
+            if relatives and (name_end == 0 or text[name_end:relatives[-1].start()].strip(" ,")):
+                continue
+            # Each reading the escape allows, and what contradicts it; one read
+            # both ways is wrong only when both are.
+            scope = text[cue.end():target.end()] + " " + _words_after(text[:hi], target.end(), _ESCAPE_SCOPE_WORDS)
+            table = bool(
+                _ESCAPE_TABLE_RE.search(scope)
+                or _ESCAPE_HOLD_RE.search(before)
+                or (cue.group(0).lower().startswith("clear") and _ESCAPE_STATE_RE.search(before))
+            )
+            readings: list[str | None] = []
+            if not table or _ESCAPE_WEEK_RE.search(scope):
+                readings.append(week_fact(name) if by_name[name]["gw_points"] == lowest else None)
+            if table:
+                bottom = bottom_of_table is not None and by_name[name].get("overall_rank") == bottom_of_table
+                readings.append(f"{name} is bottom of the table in {place_label(bottom_of_table or 0)}" if bottom else None)
+            if None in readings:
+                continue
+            said = "last place" if len(readings) > 1 else "the bottom of the table" if table else "last place on the week"
+            # A quote mark the phrase opened ("the dubious honour of 'worst
+            # week'") is closed in the quote.
+            end = target.end()
+            if text[end:end + 1] in _QUOTE_MARKS and any(mark in text[cue.end():target.start()] for mark in _QUOTE_MARKS):
+                end += 1
+            quoted = " ".join(_plain(text[cue.start():end]).split())
+            facts = ", and ".join(fact for fact in readings if fact)
+            problem = f'the editorial says {name} avoided {said} ("{quoted}"), but {facts}; {escaped}'
             if problem not in problems:
                 problems.append(problem)
     return problems
@@ -1784,6 +2022,17 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
             "never set a league position beside a gameweek score as that score's finish."
         ),
         run=lambda summary, data, names: check_gameweek_placings(summary, data["managers"], names),
+    ),
+    EditorialCheck(
+        code=RECAP_WARNING_ESCAPE_MISATTRIBUTION,
+        lead="The editorial says a manager avoided a last place they finished in",
+        retry_instruction=(
+            "Say a manager avoided, escaped or dodged last place only of the managers the GW Standings "
+            "section's lowest line says avoided it on the week, never of a manager on the lowest score, and "
+            "never as the table's for a manager bottom of it; name the manager who avoided it, never a "
+            "pronoun that could point back at the one who finished last."
+        ),
+        run=lambda summary, data, names: check_escape_claims(summary, data["managers"], names),
     ),
     EditorialCheck(
         code=RECAP_WARNING_CONTESTED_ROLL_CALL,
