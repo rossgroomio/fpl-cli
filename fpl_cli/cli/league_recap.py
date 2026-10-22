@@ -1003,8 +1003,8 @@ def _render_console_highlights(
     if fmt == "draft" and awards.get("most_contested"):
         console.print(f"[yellow]Most Contested:[/yellow] {awards['most_contested']['detail']}")
 
-    # Standout players (#455), the same sentences the report and the
-    # editorial get. Escaped: they carry manager names, which are
+    # Standout players (#455), the same sentences the editorial gets; the
+    # saved report leaves them out (#482). Escaped: they carry manager names, which are
     # user-supplied and can hold square brackets Rich would read as markup.
     standouts = data.get("standout_players")
     scorer_lines, blank_lines = standout_players_lines(standouts) if standouts else ([], [])

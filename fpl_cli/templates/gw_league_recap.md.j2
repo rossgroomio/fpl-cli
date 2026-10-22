@@ -100,31 +100,6 @@
 {{ standings_block }}
 ```
 
-{% if (standout_scorer_lines is defined and standout_scorer_lines) or (standout_blank_lines is defined and standout_blank_lines) %}
----
-
-# Standout Players
-
-*{{ standout_note }}*
-
-{% if standout_scorer_lines %}
-## Top Scorers
-
-{% for line in standout_scorer_lines %}
-- {{ line }}
-{% endfor %}
-
-{% endif %}
-{% if standout_blank_lines %}
-## {{ standout_blanks_heading }}
-
-{% for line in standout_blank_lines %}
-- {{ line }}
-{% endfor %}
-
-{% endif %}
-{% endif %}
-
 {% if (league_history_streak_lines is defined and league_history_streak_lines) or (league_history_season_count_lines is defined and league_history_season_count_lines) or (league_history_coverage_lines is defined and league_history_coverage_lines) %}
 ---
 
