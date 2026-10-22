@@ -7178,6 +7178,30 @@ class TestContestedAttributionCheck:
     def test_a_player_opening_the_next_clause_is_not_in_the_list(self, summary):
         assert self._check(summary) == []
 
+    @pytest.mark.parametrize("summary", [
+        # Issue #499: the manager before the cue is the previous verb's
+        # object, or a pronoun restarts the subject. Both sentences are true.
+        "Cam Hart still lost the Bogle race to Bob Gale and was beaten to Giles by Dan Ford.",
+        "Cam Hart had a busy week. He did lose the Bogle race to Bob Gale, though, and he also missed out on Giles,"
+        " who went to Dan Ford.",
+        "Cam Hart lost the Bogle race to Bob Gale, and was beaten to Giles.",
+        "Cam Hart lost to Bob Gale but beat Dan Ford to Giles.",
+        "Cam Hart lost the Bogle race to Bob Gale, and he, sadly, was beaten to Giles.",
+    ])
+    def test_a_verb_phrase_of_its_own_after_a_manager_is_not_read_as_theirs(self, summary):
+        assert self._check(summary) == []
+
+    @pytest.mark.parametrize(("summary", "beaten"), [
+        ("Bob Gale, though, was beaten to Giles.", "Bob Gale"),
+        # PR #500 review: a pronoun inside an aside on the manager is still
+        # about them.
+        ("Bob Gale, he of all people, was beaten to Giles.", "Bob Gale"),
+        ("Eve Ray, she of the quiet week, missed out on Giles.", "Eve Ray"),
+    ])
+    def test_an_aside_between_a_manager_and_the_cue_keeps_them_the_subject(self, summary, beaten):
+        problems = self._check(summary)
+        assert [p.split(", but")[0] for p in problems] == [f"the editorial says {beaten} was beaten to Giles"]
+
     def test_a_manager_closing_the_previous_clause_is_not_a_subject(self):
         # Two names either side of ", and" are two clauses, not a list, and a
         # singular "was" takes one subject however the names are joined.
@@ -7652,6 +7676,13 @@ class TestNetAttributionCheck:
         "Alice Lowe lost 6 net pts, her worst move being Gibbs-White in for Wirtz (-4).",
         "Alice Lowe took a hit to bring in Gibbs-White for Wirtz and ended -6 net after the hit.",
         "Gibbs-White for Wirtz (-4) dragged Alice Lowe down to -6 net.",
+        # Issue #499: "a -4 move" is the move's swing, not the slang for a
+        # hit, and the hit beside the figure may give its size.
+        "Alice Lowe swapped Wirtz for Gibbs-White, a -4 move, and netted -6 after a 4-point hit.",
+        "Alice Lowe swapped Wirtz for Gibbs-White, a -4 move, and netted -6.",
+        "Alice Lowe swapped Wirtz for Gibbs-White and netted -6 after a 4-point hit.",
+        "Alice Lowe swapped Wirtz for Gibbs-White and netted -6 after a -4 hit.",
+        "Alice Lowe swapped Wirtz for Gibbs-White and netted -6 after a four-point hit.",
     ])
     def test_a_figure_the_clause_gives_its_own_subject_passes(self, summary):
         assert self._check(summary) == []
@@ -7661,6 +7692,9 @@ class TestNetAttributionCheck:
         "Alice Lowe paid a hit to bring in Gibbs-White for Wirtz and watched it sink to -6 net.",
         # "A -4" is the hit in FPL slang, not the move's swing, even when they match.
         "Alice Lowe took a -4 to bring in Gibbs-White for Wirtz and watched it backfire to the tune of -6 net.",
+        # PR #500 review: and with a verb of paying before it, a noun for a
+        # move after it does not make it the move's.
+        "Alice Lowe took a -4 swap to bring in Gibbs-White for Wirtz and watched it backfire to the tune of -6 net.",
         # A figure ahead of everything leads into the move it names.
         "A -6 net swing on Gibbs-White for Wirtz sank Alice Lowe.",
     ])
@@ -8309,6 +8343,8 @@ class TestGameweekPlacingCheck:
         ),
         ("Hal Penn didn't escape, finishing 8th on 31 with his Wildcard.", "Hal Penn"),
         ("Gus Peel fell two places to 7th, and Hal Penn finished 8th on 31 after his Wildcard.", "Hal Penn"),
+        # Issue #499: "out of" leaves a placing only straight before it.
+        ("Hal Penn ran out of steam and finished last on the week.", "Hal Penn"),
     ])
     def test_a_placing_the_week_does_not_bear_out_is_caught(self, summary, placed):
         problems = self._check(summary)
@@ -8330,6 +8366,11 @@ class TestGameweekPlacingCheck:
         "Hal Penn came last in GW5 too.",
         "Hal Penn slipped to eighth on 31.",
         "Bea Gale climbed from 6th to 3rd with 62.",
+        # Issue #499: a placing a move leaves, true of the manager one score
+        # above the lowest.
+        "Hal Penn slipped out of last place on the week by a point.",
+        "Hal Penn climbed out of last place on the week.",
+        "Hal Penn crept out of the bottom spot on the week.",
         # Escaped, hedged or negated, #487's own words for the manager one
         # score above the lowest among them.
         "Hal Penn avoided last place on the week by 1 pt.",
@@ -8516,6 +8557,12 @@ class TestEscapeClaimCheck:
         # PR #490 A/B: the scope hyphenated into a compound reads as spaced.
         (f"{_FINE} He missed the bottom-of-the-week dishonour by a single point.", "Gus Peel"),
         ("Hal Penn dodged the bottom-of-the-table scrap by a point.", "Hal Penn"),
+        # PR #500 review: a "missed" further back than the escape, and a way
+        # out named further off than where from, are about something else.
+        ("Gus Peel missed a penalty yet escaped last place on the week.", "Gus Peel"),
+        ("Gus Peel missed the bus then escaped the wooden spoon.", "Gus Peel"),
+        (f"{_FINE} He missed the wooden spoon by a point in what felt like a real let-off.", "Gus Peel"),
+        (f"{_FINE} He missed last place by a point thanks to a late lifeline from Hal Penn.", "Gus Peel"),
     ])
     def test_an_escape_the_data_contradicts_is_caught(self, summary, escaped):
         problems = self._check(summary)
@@ -8527,6 +8574,15 @@ class TestEscapeClaimCheck:
         f"{_FINE} He missed out on avoiding it by a single point.",
         f"{_FINE} He missed the bottom-of-the-week dodge by the narrowest margin.",
         f"{_FINE} He missed his chance to escape last place.",
+        # Issue #499: the escape word after "missed" is what was missed, a
+        # gerund with no preposition before it as much as a noun.
+        f"{_FINE} He missed avoiding last place by a single point, as Hal Penn scored 31.",
+        f"{_FINE} He narrowly missed escaping the wooden spoon.",
+        f"{_FINE} He missed the escape from last place by a point.",
+        f"{_FINE} He missed out on the escape from last place.",
+        f"{_FINE} He missed last-place misery's get-out clause by a single point.",
+        f"{_FINE} He missed the wooden-spoon let-off by a point.",
+        f"{_FINE} He missed the last-place lifeline by a point.",
         # True: the GW Standings line's own words, and its manager named.
         "Hal Penn avoided last place on the week by 1 pt.",
         f"{_FINE} Hal Penn escaped the wooden spoon by one cruel point.",
