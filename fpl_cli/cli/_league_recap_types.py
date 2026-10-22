@@ -687,12 +687,12 @@ def format_standout_player(
 
 
 def standout_players_note(fpl_format: str, standouts: RecapStandoutPlayers | None = None) -> str:
-    """What the section's figures are, said once above it on the report and
-    in the prompt: the player's own points (classic's before captaincy, which
-    the Captains section owns), what a blank is, and, where a draft line says
-    how a player came to his manager (#458), what that is -- the latest way he
-    joined that squad as of the gameweek, so a pick the manager dropped and
-    signed again is the signing."""
+    """What the section's figures are, said once above it in the prompt: the
+    player's own points (classic's before captaincy, which the Captains
+    section owns), what a blank is, and, where a draft line says how a player
+    came to his manager (#458), what that is -- the latest way he joined that
+    squad as of the gameweek, so a pick the manager dropped and signed again
+    is the signing. The saved report has no such section (#482)."""
     captaincy = ", before any captaincy" if fpl_format == "classic" else ""
     note = (
         f"Each player's own points this gameweek{captaincy}, among the players in this league's "
