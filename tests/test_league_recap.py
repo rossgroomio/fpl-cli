@@ -8865,6 +8865,32 @@ class TestStandingsMarginLines:
         number_words = r"one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
         assert not [e for e in examples if re.search(rf"\d|\b(?:{number_words})\b", e, re.IGNORECASE)]
 
+    def test_the_section_states_no_gap_between_season_totals(self):
+        """Issue #493: an editorial put third place "50 points behind" a
+        leader 55 points clear, its own subtraction from the Total column.
+        The rule tells the model no line states a gap between totals, so one
+        that starts to has to come with a rule that quotes it."""
+        managers = [
+            _make_manager(name="Ann Moss", entry_id=1, gw_points=52, overall_rank=1, previous_rank=1, total_points=382),
+            _make_manager(name="Bea Gale", entry_id=2, gw_points=61, overall_rank=2, previous_rank=2, total_points=377),
+            _make_manager(name="Cy Hart", entry_id=3, gw_points=48, overall_rank=3, previous_rank=3, total_points=327),
+        ]
+        stated = [
+            line for line in self._text(managers).splitlines()
+            if not line.startswith("|") and re.search(r"\b(?:clear|behind|ahead|adrift|gap)\b", line)
+        ]
+        assert [line.split(":")[0] for line in stated] == ["Highest gameweek score", "Lowest gameweek score"]
+
+    def test_the_rule_names_the_totals_column_by_its_header(self):
+        """Issue #493: the rule points at the column a total gap would be
+        worked out of, so renaming the header would leave it pointing at
+        nothing."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        rule = next(line for line in RECAP_SYNTHESIS_SYSTEM_PROMPT.splitlines() if "Never work a gap out" in line)
+        assert "never work one out of the Total column" in rule
+        assert "| Total |" in self._text(_reported_table())
+
 
 class TestEditorialChecks:
     """One entry point keyed by warning code, so the command reports each
