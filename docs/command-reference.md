@@ -1225,10 +1225,13 @@ standings were cut short or a manager's picks could not be fetched, a line count
 it can see ("for 9 managers"). Where the cap cuts through players level on
 the last one's score, a closing line counts them ("2 more players also scored 9 points."); draft
 blanks are ordered by rank or average rather than counted level, so they never close on one. The
-same sentences print on the console under `Standout Players:`, in a `# Standout Players` section
-of the saved report after the standings, and, with `--summarise`, in a `## Standout Players`
-section of the editorial's prompt, which carries one line saying what the figures are and no rule
-of its own. Every line states this gameweek's facts only, so the system prompt needs no rule about
+same sentences print on the console under `Standout Players:` and, with `--summarise`, in a
+`## Standout Players` section of the editorial's prompt, which carries one line saying what the
+figures are and no rule of its own. The saved report never carries the section
+([#482](https://github.com/rossgroomio/fpl-cli/issues/482)): it is material for the editorial to
+weave into its prose, and the report is shared as it stands, so a second, ledger-shaped telling of
+the same week would only repeat it. Read the section back from the JSON rows or the prompt, never
+the report. Every line states this gameweek's facts only, so the system prompt needs no rule about
 the section. The command builds it for the gameweek it recaps, never for a backfill's replays, and as
 an addition nothing else reads: a squad row it cannot read skips the section with a note on stderr
 rather than costing the recap, the report or the ledger capture. Nothing of it reaches the ledger.

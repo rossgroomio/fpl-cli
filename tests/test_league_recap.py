@@ -9121,34 +9121,18 @@ class TestStandoutPlayersReport:
             "managers": managers, "awards": {}, "standout_players": _standouts(managers, fpl_format=fpl_format),
         }
 
-    async def test_the_section_follows_the_standings_with_both_lists(self, tmp_path: Path):
-        content = await self._render(tmp_path, self._data())
+    @pytest.mark.parametrize("fpl_format", ["classic", "draft"])
+    async def test_the_report_leaves_the_section_to_the_editorial(self, tmp_path: Path, fpl_format: str):
+        """#482: the prompt carries the section, the shared report never does."""
+        data = self._data(fpl_format)
+        content = await self._render(tmp_path, data)
 
-        assert content.index("# GW Standings") < content.index("# Standout Players")
-        section = content[content.index("# Standout Players"):]
-        assert "*Each player's own points this gameweek, before any captaincy," in section
-        assert (
-            "## Top Scorers\n\n"
-            "- Haaland (Manchester City) scored 17 points for Alice.\n"
-            "- Groß (Brighton) scored 13 points, but Bob left him on the bench.\n"
-        ) in section
-        assert (
-            "## Blanks that counted for the most managers\n\n"
-            "- Salah (Liverpool) managed 2 points for Alice and Bob.\n"
-        ) in section
-
-    async def test_a_draft_report_orders_blanks_by_draft_rank(self, tmp_path: Path):
-        content = await self._render(tmp_path, self._data("draft"))
-
-        section = content[content.index("# Standout Players"):]
-        assert "## Blanks among the best-ranked players, by FPL's pre-season player ranking" in section
-        assert "captaincy" not in section
-
-    async def test_no_section_without_the_data(self, tmp_path: Path):
-        data = self._data()
-        del data["standout_players"]
-
-        assert "Standout Players" not in await self._render(tmp_path, data)
+        assert "Standout Players" not in content
+        assert "Top Scorers" not in content
+        assert "Haaland" not in content
+        assert "# GW Standings" in content
+        # Rendering never strips the rows the JSON payload reads.
+        assert data["standout_players"]["top_scorers"]
 
 
 class TestCollectorsFindStandoutPlayers:
@@ -9690,26 +9674,6 @@ class TestStandoutAcquisitionNote:
         )
 
         assert "Standout" not in system and "provenance" not in system.lower()
-
-
-class TestStandoutAcquisitionReport:
-    async def test_the_report_carries_the_clause_and_the_note(self, tmp_path: Path):
-        managers = _standout_league(("Alice", [
-            _came_by(_standout_row("Haaland", 17, 1, club="Manchester City"), _acquired("trade", 7)),
-        ]))
-        data = {
-            "gameweek": 7, "league_name": "Test League", "fpl_format": "draft", "managers": managers,
-            "awards": {}, "standout_players": _standouts(managers, fpl_format="draft"),
-        }
-
-        agent = ReportAgent(config={"output_dir": str(tmp_path)})
-        result = await agent.run(context={"report_type": "league-recap", "gameweek": 7, "data": data})
-        assert result.data is not None
-        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
-
-        section = content[content.index("# Standout Players"):]
-        assert "- Haaland (Manchester City) scored 17 points for Alice, who acquired him in a GW7 trade." in section
-        assert "the latest way he joined that manager's squad as of this gameweek" in section
 
 
 _SEASON = "2026-27"

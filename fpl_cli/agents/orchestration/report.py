@@ -17,9 +17,6 @@ from fpl_cli.cli._league_recap_types import (
     draft_transaction_kind_label,
     gameweek_rank,
     recap_title,
-    standout_blanks_heading,
-    standout_players_lines,
-    standout_players_note,
 )
 from fpl_cli.paths import TEMPLATE_DIR
 from fpl_cli.prompts.league_recap_checks import split_recap_problems
@@ -691,14 +688,9 @@ class ReportAgent(Agent):
         data["synthesis_contradictions"], data["synthesis_brief_problems"] = split_recap_problems(
             data.get("synthesis_problems") or {},
         )
-        # Standout players (#455): the sentences the console and the
-        # editorial's prompt get, worked out here like the standings block so
-        # the template needs no knowledge of the section's shape.
-        if standouts := data.get("standout_players"):
-            fpl_format = data.get("fpl_format", "classic")
-            data["standout_scorer_lines"], data["standout_blank_lines"] = standout_players_lines(standouts)
-            data["standout_note"] = standout_players_note(fpl_format, standouts)
-            data["standout_blanks_heading"] = standout_blanks_heading(standouts)
+        # `standout_players` (#455) is in `data` but never rendered (#482):
+        # the editorial weaves it into its prose, and a second, ledger-shaped
+        # telling of the same week is not what the shared report should carry.
         return template.render(**data)
 
 

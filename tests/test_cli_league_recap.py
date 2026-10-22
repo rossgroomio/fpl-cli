@@ -7743,14 +7743,15 @@ class TestStandoutPlayersSurfaces:
         assert result.exit_code == 0, result.output
         assert "Blanks among the best-ranked players, by FPL's pre-season player ranking" in result.stdout.replace("\n", "")
 
-    def test_the_saved_report_carries_the_section(self, tmp_path: Path):
+    def test_the_saved_report_leaves_the_section_out(self, tmp_path: Path):
+        """#482: the editorial draws on it, so the shared report never repeats it."""
         result = _invoke_recap(self._data(), ["--save", "--output", str(tmp_path)])
 
         assert result.exit_code == 0, result.output
         content = _recap_report(tmp_path, 5)
-        assert "# Standout Players" in content
-        assert f"- {self._HAALAND}" in content
-        assert f"- {self._SALAH}" in content
+        assert "Standout Players" not in content
+        assert self._HAALAND not in content
+        assert "Standout Players:" in result.stdout
 
     def test_the_editorial_prompt_carries_the_section(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
@@ -7956,7 +7957,7 @@ class TestStandoutAcquisitionSurfaces:
         assert salah["acquisition"] == self._PICKUP
         assert json.loads(result.stdout)["metadata"]["warnings"] == []
 
-    def test_the_console_the_report_and_the_prompt_say_it_in_the_same_words(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_the_console_and_the_prompt_say_it_in_the_same_words_and_the_report_not_at_all(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.chdir(tmp_path)
 
         result = self._run(self._data(), ["--save", "--output", str(tmp_path), "--dry-run"])
@@ -7964,9 +7965,10 @@ class TestStandoutAcquisitionSurfaces:
         assert result.exit_code == 0, result.output
         out = result.stdout.replace("\n", "")
         assert self._HAALAND in out and self._SALAH in out
+        # #482: the section is the editorial's material, never the shared report's.
         report = (tmp_path / season_label() / "gw5-league-recap-draft.md").read_text(encoding="utf-8")
-        assert f"- {self._HAALAND}" in report and f"- {self._SALAH}" in report
-        assert "the latest way he joined that manager's squad as of this gameweek" in report
+        assert self._HAALAND not in report and self._SALAH not in report
+        assert "the latest way he joined that manager's squad" not in report
         prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
         assert f"- {self._HAALAND}" in prompt and "the latest way he joined that manager's squad" in prompt
 
