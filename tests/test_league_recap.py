@@ -65,6 +65,7 @@ from fpl_cli.cli._league_recap_types import (
     format_contested_claim,
     format_move_counts,
     format_prior_seasons_line,
+    last_place_escape,
     standout_blanks_heading,
     standout_players_lines,
     summarise_prior_seasons,
@@ -8347,11 +8348,18 @@ class TestEscapeClaimCheck:
         ("Gus Peel avoided finishing last on the week by a point.", "Gus Peel"),
         ("Gus Peel's 30 was just enough to avoid last place.", "Gus Peel"),
         ("Gus Peel, who escaped last place by a point, can thank his bench.", "Gus Peel"),
-        ("Gus Peel had a shocker; he survived the worst week by a whisker all the same.", "Gus Peel"),
+        ("Gus Peel had a shocker; he survived last place by a whisker all the same.", "Gus Peel"),
         ("Gus Peel was spared the lowest score of the week.", "Gus Peel"),
         # The table's, for the manager bottom of it.
         ("Hal Penn avoided last place in the league.", "Hal Penn"),
-        ("Hal Penn stays clear of the bottom.", "Hal Penn"),
+        # PR #490 review: a pronoun goes to the first manager the sentence
+        # before named, the subject a reader takes it for, even where that
+        # sentence named two -- the shape the GW Standings line invites.
+        (f"{_FINE[:-1]}, a point behind Hal Penn. He escaped the wooden spoon by a point.", "Gus Peel"),
+        # ...and the passive, its manager after "by".
+        ("The wooden spoon was avoided by Gus Peel by a point.", "Gus Peel"),
+        (f"{_FINE} Last place was narrowly avoided by him.", "Gus Peel"),
+        ("Hal Penn sat out the drama. Gus Peel's 30 meant last place was avoided by him.", "Gus Peel"),
     ])
     def test_an_escape_the_data_contradicts_is_caught(self, summary, escaped):
         problems = self._check(summary)
@@ -8398,6 +8406,35 @@ class TestEscapeClaimCheck:
         "Gus Peel watched Hal Penn escape last place by a point.",
         "Gus Peel and Hal Penn both struggled. He escaped last place by a point.",
         "Gus Peel and Hal Penn escaped last place and the bottom half respectively.",
+        "Hal Penn pipped Gus Peel by a point. He escaped last place on the week.",
+        "Last place was not avoided by Gus Peel.",
+        # PR #490 review: the manager who finished last failing to escape, in
+        # words that are no hedge on a finite verb -- a base form, an
+        # infinitive nothing says was achieved, a gerund after a preposition.
+        "Gus Peel cannot escape last place.",
+        "Gus Peel struggled to avoid last place.",
+        "Gus Peel was powerless to avoid the wooden spoon.",
+        "Gus Peel fell a point shy of avoiding last place.",
+        "Gus Peel was a point from escaping the wooden spoon.",
+        "Gus Peel finished one point off avoiding last place.",
+        "Gus Peel had a point too few to avoid the wooden spoon.",
+        "Gus Peel found it impossible to avoid last place.",
+        "Gus Peel could hardly avoid the wooden spoon.",
+        "Did Gus Peel escape the wooden spoon? He did not.",
+        # ...a holding verb or a copula lets the escape be the week's, true
+        # of the manager bottom of the table who avoided last place on it...
+        "Hal Penn stays clear of the bottom.",
+        "Hal Penn is a point clear of the wooden spoon.",
+        "Hal Penn held on to avoid the wooden spoon by a point.",
+        "Hal Penn's narrow cushion clear of the wooden spoon was just one point.",
+        "Hal Penn escaped the wooden spoon by a single league point.",
+        # ..."last" and "bottom" before "of", and surviving the worst week...
+        "Gus Peel missed the last of Haaland's points.",
+        "Gus Peel avoided the bottom of the barrel with his captain.",
+        "Gus Peel survived the worst week of his FPL life.",
+        # ...and an escape from an earlier week.
+        "Gus Peel took the fine a week after he escaped the wooden spoon.",
+        "Gus Peel took the fine, a week after escaping the wooden spoon.",
     ])
     def test_an_escape_the_check_cannot_pin_to_the_wrong_manager_is_left_alone(self, summary):
         assert self._check(summary) == []
@@ -8427,8 +8464,28 @@ class TestEscapeClaimCheck:
         managers = _placings_table()
         managers[4]["gw_points"] = 31
         assert self._check("Gus Peel dodged the wooden spoon.", managers)[0].endswith(
-            "; Eli Ray and Hal Penn avoided last place on the week by 1 pt"
+            "; Eli Ray, Hal Penn each avoided last place on the week by 1 pt"
         )
+
+    def test_the_retry_is_told_the_escape_in_the_prompt_s_own_words(self):
+        """PR #490 review: the GW Standings line and the check each wrote the
+        escape by hand, and a shared next score already read differently."""
+        managers = _placings_table()
+        managers[4]["gw_points"] = 31
+        line = last_place_escape(managers)
+        assert line == "Eli Ray, Hal Penn each avoided last place on the week by 1 pt"
+        assert f"so {line}" in format_recap_standings_context(_make_recap_data(managers=managers))
+        assert self._check("Gus Peel dodged the wooden spoon.", managers)[0].endswith(f"; {line}")
+
+    def test_a_display_name_two_managers_share_hides_neither_score(self):
+        """PR #490 review: scores read off the name-keyed rows dropped one of
+        two managers sharing a name, and the retry was told a false lowest."""
+        managers = [
+            _make_manager(name="Ann Moss", entry_id=1, gw_points=30, overall_rank=1),
+            _make_manager(name="Ann Moss", entry_id=2, gw_points=40, overall_rank=2),
+            _make_manager(name="Hal Penn", entry_id=3, gw_points=35, overall_rank=3),
+        ]
+        assert self._check("Hal Penn dodged the wooden spoon.", managers) == []
 
     def test_with_every_score_level_nobody_avoided_last_place(self):
         managers = _placings_table()
@@ -8453,7 +8510,7 @@ class TestEscapeClaimCheck:
         prompt = get_recap_editorial_retry_prompt("ORIGINAL", found)
         assert "Your previous draft contradicted the data it was given" in prompt
         assert "Hal Penn avoided last place on the week by 1 pt" in prompt
-        assert "never of a manager on the lowest score" in prompt
+        assert "only if their gameweek score was above the lowest" in prompt
         message = editorial_warning_message(
             RECAP_WARNING_ESCAPE_MISATTRIBUTION, found[RECAP_WARNING_ESCAPE_MISATTRIBUTION],
         )

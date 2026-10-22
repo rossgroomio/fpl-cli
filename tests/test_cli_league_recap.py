@@ -2086,7 +2086,7 @@ class TestEscapeClaims:
         first, retry = stub.prompts
         corrections = retry[len(first):]
         assert "Bob's 29 pts was the lowest gameweek score; Alice avoided last place on the week by 1 pt" in corrections
-        assert "never of a manager on the lowest score" in corrections
+        assert "only if their gameweek score was above the lowest" in corrections
         envelope = json.loads(result.stdout)
         assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
         assert not [w for w in envelope["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
