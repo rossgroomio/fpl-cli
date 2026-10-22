@@ -8068,6 +8068,54 @@ class TestTieClaimCheck:
 
         assert len(problems) == 1
 
+    @pytest.mark.parametrize("summary", [
+        "Fay Lund's 58 was the joint-highest score of the season.",
+        "Fay Lund hit 58, the joint-highest score of the season.",
+        "Fay Lund's 58 points is now the joint-highest score of the season.",
+        "The joint-highest score of the season is 58, and it is Fay Lund's.",
+    ])
+    def test_a_shared_season_record_never_answers_for_another_score(self, summary):
+        """PR #495 A/B: a 72 scored twice let "65 was the joint-highest score
+        of the season" pass, the season superlative #494 is about."""
+        managers = _reported_table()
+        shared = RecapSeasonRecord(points=72, scores=[("Eli Ray", 2), ("Bea Gale", 4)])
+
+        problems = check_tie_claims(summary, managers, RecapNames.of(managers), season_records={"top": shared})
+
+        assert problems == [
+            'the editorial says "joint-highest", but no reading holds: the highest gameweek score, '
+            "58 pts, was Fay Lund's alone; 1st place in the table is Dee Ford's alone; the season's "
+            "highest gameweek score is 72 pts, not 58 pts"
+        ]
+
+    @pytest.mark.parametrize("summary", [
+        "Eli Ray's 72 was the joint-highest score of the season.",
+        "Eli Ray's 72 in GW2 was the joint-highest score of the season.",
+        "Eli Ray holds the joint-highest score of the season.",
+        "The joint-highest score of the season is 72.",
+        # A figure the tie is not said of.
+        "Fay Lund's 58, short of the joint-highest score of the season, won the week.",
+        "Fay Lund's 58 fell 14 short of the joint-highest score of the season.",
+        "Bea Gale's score in gameweek 4 was the joint-highest of the season.",
+    ])
+    def test_a_shared_season_record_bears_out_its_own_score(self, summary):
+        managers = _reported_table()
+        shared = RecapSeasonRecord(points=72, scores=[("Eli Ray", 2), ("Bea Gale", 4)])
+
+        assert check_tie_claims(summary, managers, RecapNames.of(managers), season_records={"top": shared}) == []
+
+    def test_a_shared_season_low_never_answers_for_another_score(self):
+        managers = _reported_table()
+        shared = RecapSeasonRecord(points=21, scores=[("Cy Hart", 3), ("Ann Moss", 5)])
+
+        problems = check_tie_claims(
+            "Ann Moss's 29 was the joint-lowest score of the season.",
+            managers, RecapNames.of(managers), season_records={"bottom": shared},
+        )
+
+        assert len(problems) == 1
+        assert problems[0].endswith("the season's lowest gameweek score is 21 pts, not 29 pts")
+
     def test_the_registry_reads_the_records_off_the_recap_data(self):
         managers = _reported_table()
         data = _make_recap_data(managers=managers)

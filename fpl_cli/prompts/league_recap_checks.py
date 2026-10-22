@@ -1222,6 +1222,25 @@ _TIE_TABLE_RE = re.compile(
 # season") also reads against the season's record, which the League History
 # section states with every score that reached it (#494).
 _TIE_SEASON_RE = re.compile(r"(?<!\w)season\w*(?!\w)", re.IGNORECASE)
+# The figure a season tie is said of, attached to it the way a placing's
+# figure is: straight before it, joined by a copula or a comma ("Bob's 65
+# was the joint-highest score of the season", "hit 65, the joint-highest"),
+# or straight after it ("the joint-highest score of the season is 72"). A
+# figure further off makes some other comparison ("65, short of the
+# joint-highest score of the season"), and a gameweek's own number
+# ("gameweek 4 was the joint-highest") is no score.
+_TIE_FIGURE_BEFORE_RE = re.compile(
+    r"(?<![\w.£+−–-])(?P<figure>\d+)(?:\s*(?:pts?|points?))?"
+    r"(?:\s*,|\s+(?:was|is|were|are|as|makes?|made|marks?|marked|stands?|stood)(?:\s+(?:also|now|still))?)"
+    r"\s+(?:the\s+)?$",
+    re.IGNORECASE,
+)
+_TIE_FIGURE_AFTER_RE = re.compile(
+    r"(?:[\s-]+(?:gameweek\s+)?(?:scores?|totals?|tally|week|return))?(?:\s+(?:of|this|in)\s+(?:the\s+)?season\w*)?"
+    r"(?:\s*[,(]|\s+(?:on|at|with|of|is|was))\s*(?P<figure>\d+)(?![\w.%])",
+    re.IGNORECASE,
+)
+_GAMEWEEK_NUMBER_BEFORE_RE = re.compile(r"(?<!\w)(?:(?:game)?week|gw)\s*$", re.IGNORECASE)
 _TIE_WINDOW_WORDS = 6
 _TIE_NEGATION_WORDS = 5
 
@@ -1231,6 +1250,20 @@ def _rank_holders(ranks: Sequence[tuple[str, int]], rank: int | str) -> tuple[in
     values = [value for _, value in ranks]
     target = min(values) if rank == "top" else max(values) if rank == "bottom" else int(rank)
     return target, [name for name, value in ranks if value == target]
+
+
+def _tie_figures(clause: str, start: int, end: int) -> list[int]:
+    """The figures attached to the tie at `start`-`end` of `clause`
+    (`_TIE_FIGURE_BEFORE_RE`, `_TIE_FIGURE_AFTER_RE`), never a gameweek's own
+    number or a gap."""
+    figures: list[int] = []
+    before = _TIE_FIGURE_BEFORE_RE.search(clause, 0, start)
+    if before and not _GAMEWEEK_NUMBER_BEFORE_RE.search(clause, 0, before.start("figure")):
+        figures.append(int(before.group("figure")))
+    after = _TIE_FIGURE_AFTER_RE.match(clause, end)
+    if after and not _NOT_A_SCORE_AFTER_RE.match(clause, after.end("figure")):
+        figures.append(int(after.group("figure")))
+    return figures
 
 
 def check_tie_claims(
@@ -1266,8 +1299,9 @@ def check_tie_claims(
     gameweek score as the League History section states them (#494). A
     highest or lowest score said of the season ("the joint-highest score of
     the season") then has a third reading, the record, which holds where
-    more than one score reached it; the record only ever adds a reading, so
-    a tie the week or the table bears out still passes.
+    more than one score reached it and the tie is said of no other figure
+    (`_tie_figures`); the record only ever adds a reading, so a tie the week
+    or the table bears out still passes.
     """
     if len(managers) < 2:
         return []
@@ -1304,13 +1338,23 @@ def check_tie_claims(
 
     records = season_records or {}
 
-    def season_fact(rank: str) -> str | None:
+    def season_fact(rank: str, figures: Sequence[int]) -> str | None:
         record = records[rank]
-        if len(record["scores"]) != 1:
-            return None
-        name, week = record["scores"][0]
         which = "highest" if rank == "top" else "lowest"
-        return f"the season's {which} gameweek score, {points_label(record['points'])}, was {name}'s alone, in GW{week}"
+        if len(record["scores"]) == 1:
+            name, week = record["scores"][0]
+            return f"the season's {which} gameweek score, {points_label(record['points'])}, was {name}'s alone, in GW{week}"
+        # A shared record bears out a tie said of its own score, or of no
+        # figure at all, but not one said of a score that never reached it:
+        # "Bob's 65 was the joint-highest score of the season" beside a 72
+        # scored twice is the claim #494 exists to stop.
+        other = [figure for figure in figures if figure != record["points"]]
+        if not other:
+            return None
+        return (
+            f"the season's {which} gameweek score is {points_label(record['points'])}, "
+            f"not {join_and([points_label(figure) for figure in other])}"
+        )
 
     problems: list[str] = []
     for clause in _clauses(summary):
@@ -1353,7 +1397,10 @@ def check_tie_claims(
                 else:
                     about_table = True
             if isinstance(rank, str) and rank in records and about_week and _TIE_SEASON_RE.search(window):
-                readings = (gameweek_fact(rank), table_fact(rank), season_fact(rank))
+                readings = (
+                    gameweek_fact(rank), table_fact(rank),
+                    season_fact(rank, _tie_figures(clause, match.start(), match.end())),
+                )
                 fact = None if None in readings else "no reading holds: " + "; ".join(
                     reading for reading in readings if reading is not None
                 )
