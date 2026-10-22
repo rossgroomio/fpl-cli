@@ -7178,6 +7178,22 @@ class TestContestedAttributionCheck:
     def test_a_player_opening_the_next_clause_is_not_in_the_list(self, summary):
         assert self._check(summary) == []
 
+    @pytest.mark.parametrize("summary", [
+        # Issue #499: the manager before the cue is the previous verb's
+        # object, or a pronoun restarts the subject. Both sentences are true.
+        "Cam Hart still lost the Bogle race to Bob Gale and was beaten to Giles by Dan Ford.",
+        "Cam Hart had a busy week. He did lose the Bogle race to Bob Gale, though, and he also missed out on Giles,"
+        " who went to Dan Ford.",
+        "Cam Hart lost the Bogle race to Bob Gale, and was beaten to Giles.",
+        "Cam Hart lost to Bob Gale but beat Dan Ford to Giles.",
+    ])
+    def test_a_verb_phrase_of_its_own_after_a_manager_is_not_read_as_theirs(self, summary):
+        assert self._check(summary) == []
+
+    def test_an_aside_between_a_manager_and_the_cue_keeps_them_the_subject(self):
+        problems = self._check("Bob Gale, though, was beaten to Giles.")
+        assert [p.split(", but")[0] for p in problems] == ["the editorial says Bob Gale was beaten to Giles"]
+
     def test_a_manager_closing_the_previous_clause_is_not_a_subject(self):
         # Two names either side of ", and" are two clauses, not a list, and a
         # singular "was" takes one subject however the names are joined.
@@ -8309,6 +8325,8 @@ class TestGameweekPlacingCheck:
         ),
         ("Hal Penn didn't escape, finishing 8th on 31 with his Wildcard.", "Hal Penn"),
         ("Gus Peel fell two places to 7th, and Hal Penn finished 8th on 31 after his Wildcard.", "Hal Penn"),
+        # Issue #499: "out of" leaves a placing only straight before it.
+        ("Hal Penn ran out of steam and finished last on the week.", "Hal Penn"),
     ])
     def test_a_placing_the_week_does_not_bear_out_is_caught(self, summary, placed):
         problems = self._check(summary)
@@ -8330,6 +8348,11 @@ class TestGameweekPlacingCheck:
         "Hal Penn came last in GW5 too.",
         "Hal Penn slipped to eighth on 31.",
         "Bea Gale climbed from 6th to 3rd with 62.",
+        # Issue #499: a placing a move leaves, true of the manager one score
+        # above the lowest.
+        "Hal Penn slipped out of last place on the week by a point.",
+        "Hal Penn climbed out of last place on the week.",
+        "Hal Penn crept out of the bottom spot on the week.",
         # Escaped, hedged or negated, #487's own words for the manager one
         # score above the lowest among them.
         "Hal Penn avoided last place on the week by 1 pt.",
@@ -8527,6 +8550,15 @@ class TestEscapeClaimCheck:
         f"{_FINE} He missed out on avoiding it by a single point.",
         f"{_FINE} He missed the bottom-of-the-week dodge by the narrowest margin.",
         f"{_FINE} He missed his chance to escape last place.",
+        # Issue #499: the escape word after "missed" is what was missed, a
+        # gerund with no preposition before it as much as a noun.
+        f"{_FINE} He missed avoiding last place by a single point, as Hal Penn scored 31.",
+        f"{_FINE} He narrowly missed escaping the wooden spoon.",
+        f"{_FINE} He missed the escape from last place by a point.",
+        f"{_FINE} He missed out on the escape from last place.",
+        f"{_FINE} He missed last-place misery's get-out clause by a single point.",
+        f"{_FINE} He missed the wooden-spoon let-off by a point.",
+        f"{_FINE} He missed the last-place lifeline by a point.",
         # True: the GW Standings line's own words, and its manager named.
         "Hal Penn avoided last place on the week by 1 pt.",
         f"{_FINE} Hal Penn escaped the wooden spoon by one cruel point.",

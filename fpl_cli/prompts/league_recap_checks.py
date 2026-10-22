@@ -83,6 +83,12 @@ _AUXILIARY_RE = re.compile(
 )
 _BY_RE = re.compile(r"^\s*by\s*$", re.IGNORECASE)
 _NEGATION_RE = re.compile(r"(?<!\w)(?:not|never|nobody|no one)(?!\w)|n['’]t(?!\w)", re.IGNORECASE)
+# A conjunction or a subject pronoun between the manager and the cue opens a
+# verb phrase of its own, so that manager need not be its subject: in "Cam
+# lost the Bogle race to Bob and was beaten to Giles" Bob is the first verb's
+# object, and in "...to Bob, though, and he also missed out on Giles" the
+# pronoun restarts the subject (#499).
+_NEW_VERB_PHRASE_RE = re.compile(r"(?<!\w)(?:and|but|he|she|they)(?!\w)", re.IGNORECASE)
 # What may sit between a cue and the player it names: a race preposition, with
 # only the furniture of a race phrase before it ("to", "on", "the race for",
 # "to the punch on") and an optional "both" after. Anything else -- "3 points
@@ -324,7 +330,9 @@ def _read_claim(text: str, mentions: list[_Mention], i: int) -> _RaceClaim | Non
     The forms read: "Bob (was) beaten to / missed out on Isak (by Alice)",
     "Alice beat / pipped Bob to Isak", and "Bob was pipped / beat by Alice to
     Isak". The manager list before the cue is the subject; a negation there
-    ("was never beaten to") drops the clause.
+    ("was never beaten to") drops the clause, and so does a verb phrase of
+    its own ("lost to Bob and was beaten to", "and he missed out on"), whose
+    subject may be someone the clause named earlier.
     """
     gap = text[mentions[i].end:mentions[i + 1].start]
     cues = list(_CUE_RE.finditer(gap))
@@ -339,6 +347,7 @@ def _read_claim(text: str, mentions: list[_Mention], i: int) -> _RaceClaim | Non
         _CLAUSE_BREAK_RE.search(before)
         or len(before.split()) > _SUBJECT_CUE_MAX_WORDS
         or _NEGATION_RE.search(before)
+        or _NEW_VERB_PHRASE_RE.search(before)
     ):
         return None
     if _SINGULAR_AUXILIARY_RE.search(before):
@@ -403,8 +412,10 @@ def check_contested_attributions(
     settles ("Bob was beaten to Isak", "Alice beat Bob to Isak", "Bob was
     pipped by Alice to Isak", "Bob and Cam missed out on Isak and Wood
     respectively"). A clause it cannot pin to roles -- a negation, a
-    possessive, a points swing -- is left alone rather than guessed at, so
-    every problem returned is a sentence that said something the data
+    possessive, a points swing, a verb phrase that may not be the named
+    manager's ("lost to Bob and was beaten to Giles") -- is left alone
+    rather than guessed at, so every problem returned is a sentence that
+    said something the data
     contradicts. A list of managers against a list of players without
     "respectively" asserts every pairing, which is what the reader takes
     from it too. Two contested players can share a name; a claim holds when
@@ -1471,8 +1482,9 @@ _PLACING_WEEK_BEFORE_RE = re.compile(rf"(?<!\w){_PLACING_WEEK}['’]s(?!\w)", re
 # span longer than the week makes a placing the league's or something else's
 # -- "went into this gameweek sat top", "kept top spot this week", "her
 # second-best score this campaign", "the second-best of his career" -- so it
-# is left alone. So is a placing a move lands on or counts from ("up to 4th",
-# "from 9th to 5th", "into 7th", "second from the bottom").
+# is left alone. So is a placing a move lands on, counts from or leaves ("up
+# to 4th", "from 9th to 5th", "into 7th", "second from the bottom", "slipped
+# out of last place on the week", #499).
 _HOLDING_WORDS = r"stay\w*|sits?|sitting|sat|kept|keeps?|keeping|holds?|held|holding"
 _PLACING_TABLE_RE = re.compile(
     r"(?<!\w)(?:table|league|standings|overall|season\w*|totals?|summit|ladder"
@@ -1480,7 +1492,7 @@ _PLACING_TABLE_RE = re.compile(
     r"|career|years?|campaign|months?|run|ever|all-time|history|record|since|weeks|gameweeks)(?!\w)",
     re.IGNORECASE,
 )
-_PLACING_MOVE_RE = re.compile(r"(?<!\w)(?:to|into|from)\s+(?:the\s+)?$", re.IGNORECASE)
+_PLACING_MOVE_RE = re.compile(r"(?<!\w)(?:to|into|from|out\s+of)\s+(?:the\s+)?$", re.IGNORECASE)
 # A move up or down the table does the same ("slipped two places, 3rd in a
 # week when 45 got you up two places"), unless the week is named straight
 # after the placing: "rocketed up five places to snatch second on the week"
@@ -1664,7 +1676,8 @@ def check_gameweek_placings(
     the week ("in the league", "kept top spot", "this campaign") is left
     alone, unless the word comes before the placing and its score and the
     week straight after it ("sits 5th on 39 for the week"). So is a placing a move lands
-    on or counts from ("up to 4th", "second from the bottom") and one beside
+    on, counts from or leaves ("up to 4th", "second from the bottom", "climbed
+    out of last place") and one beside
     a move up or down the table, unless the week is named straight after it
     ("rocketed up five places to snatch second on the week"). So is a
     placing that is hedged, negated or escaped ("would have been second",
@@ -1819,9 +1832,11 @@ _ESCAPE_CUE_RE = re.compile(
     re.IGNORECASE,
 )
 # An escape word after "missed" says the escape is what was missed: "missed
-# the bottom-of-the-week dodge", "missed avoiding it".
+# the bottom-of-the-week dodge", "missed last-place misery's get-out clause".
 _ESCAPE_WORD_RE = re.compile(
-    rf"(?<!\w)(?:{_ESCAPE_STEMS}|avoidance|survival|spar(?:e|es|ed|ing)|repriev(?:e|es|ed))(?!\w)", re.IGNORECASE,
+    rf"(?<!\w)(?:{_ESCAPE_STEMS}|avoidance|survival|spar(?:e|es|ed|ing)|repriev(?:e|es|ed)"
+    r"|get[-\s]outs?|let[-\s]offs?|lifelines?)(?!\w)",
+    re.IGNORECASE,
 )
 # A base form says nothing happened ("cannot escape", "struggled to avoid",
 # "Did he escape?") unless the escape is the noun after a determiner ("a
@@ -1883,9 +1898,12 @@ _ESCAPE_AGENT_RE = re.compile(r"\s+by\s+", re.IGNORECASE)
 _OBJECT_PRONOUN_RE = re.compile(r"(?:him|her|them)(?!\w)", re.IGNORECASE)
 # Words before an escape, in its own stretch, that say it did not happen or
 # only nearly did: "would have escaped", "came close to avoiding", "no escape
-# from", "had escaped" (before this week). "Only just escaped" is an escape.
+# from", "had escaped" (before this week), and "missed avoiding last place",
+# where the escape is what was missed, as `_ESCAPE_WORD_RE` reads it from the
+# other side (#499). "Only just escaped" is an escape.
 _ESCAPE_HEDGE_RE = re.compile(
     r"(?<!\w)(?:would|might|should|if|unless|nearly|almost|close\s+to|within|short\s+of|away\s+from|all\s+but"
+    r"|miss(?:es|ed|ing)?"
     r"|no|nothing|cannot|fail\w*|unable|tr(?:y|ies|ied|ying)|hop(?:e|es|ed|ing)|need\w*|bid|attempt\w*|chance"
     r"|wish\w*|want\w*|aim\w*|look\w*|seem\w*|appear\w*|thought|could(?=(?:\s+\w+)?\s+have(?!\w))"
     r"|had(?=(?:\s+\w+ly)?\s*$))(?!\w)|could['’]ve|['’]d(?!\w)",
@@ -1999,7 +2017,8 @@ def check_escape_claims(summary: str, managers: Sequence[RecapManagerEntry], nam
     happened -- hedged, negated, a base form or a gerund after a preposition
     ("nearly escaped", "cannot escape", "struggled to avoid", "a point from
     escaping", "no escape from last place") -- is left alone, as is one whose
-    escape is what was missed ("missed the bottom-of-the-week dodge"), one
+    escape is what was missed ("missed the bottom-of-the-week dodge", "missed
+    avoiding last place"), one
     said over another week or a longer span ("last week", "in GW5", "for the
     first time this season"), a survival of the worst week (which reads as
     enduring it), one said of another person, subject or player ("her rival",
