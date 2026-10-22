@@ -1,6 +1,30 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.10.0] - 2026-10-22
+
+### Bug Fixes
+
+- fpl waivers keeps xG and fixtures in every score after GW5 (#473)
+- fpl waivers warns when the join misses a midfielder or forward (#479)
+- fpl league-recap --save exits 1 when the report cannot be written (#478)
+- league-recap no longer calls a league position a gameweek finish (#485)
+- league-recap no longer miscounts the gameweek winner's margin (#487)
+- league-recap's saved report no longer repeats Standout Players (#491)
+- league-recap's editorial knows the season's best and worst week (#495)
+- league-recap no longer works out gaps between season totals (#497)
+- league-recap stops flagging correct editorial sentences as wrong (#500)
+
+### Features
+
+- fpl player and stats say how a draft player came to his owner (#470)
+- league-recap checks the editorial's placings on the week (#489)
+- league-recap checks who the editorial says avoided last place (#490)
+
+### Performance
+
+- draft commands read a lost draft's squads once, not every run (#480)
+
 ## [2.9.0] - 2026-10-18
 
 ### Bug Fixes
