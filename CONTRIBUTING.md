@@ -153,9 +153,14 @@ is verified before it ships by an A/B in the fpl-workspace vault's harness
 the prompts differ only where intended, graded per format with draft as the gate, and the
 result is written into the PR body as numbers with no names. A change to an editorial
 check (`fpl_cli/prompts/league_recap_checks.py`) is verified by replaying the saved drafts
-corpus through both builds' checks, never by new model runs. The October 2026 prompt audit
-and its A/B record live in the private `fpl-cli-docs` repo under `docs/audits/`; re-run it
-at the next change of the default synthesis model.
+corpus through both builds' checks, never by new model runs. The harness's
+`triage.sh <base> <head>` says which of the two a change needs, or both, and names any
+check whose retry wording changed, which only fresh runs show the model reading; the
+corpus lives in the vault at `.claude/scripts/recap_ab/corpus/`, each round's drafts beside
+the recap data they were judged against, so a replay needs neither a model call nor the
+FPL API. The October 2026 prompt audit and its A/B record live in the private
+`fpl-cli-docs` repo under `docs/audits/`; re-run it at the next change of the default
+synthesis model.
 
 ## Agent sessions
 
