@@ -2629,6 +2629,7 @@ async def capture_recap_history(
     # never the recap).
     notes_pack = build_notes_pack(
         store, data["gameweek"], league_start_gameweek=start_gameweek,
+        use_net_points=use_net_points,
     )
 
     # Also built from the store rather than from `rows`: the season table is a

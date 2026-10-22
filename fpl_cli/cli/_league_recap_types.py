@@ -772,6 +772,16 @@ class RecapFineResult(TypedDict):
     players: NotRequired[list[RecapFinePlayer]]
 
 
+class RecapSeasonRecord(TypedDict):
+    """The league's highest or lowest gameweek score this season, as the
+    editorial's League History section states it (issue #494)."""
+
+    points: int
+    # (manager name, gameweek) for every score that reached it, in gameweek
+    # order: more than one is a shared record.
+    scores: list[tuple[str, int]]
+
+
 class RecapStandingsEntry(TypedDict):
     """One row of the league table, whether or not that manager was fetched.
 
@@ -900,6 +910,12 @@ class LeagueRecapData(TypedDict):
     # set-piece on the fines cadence, absent every other week.
     league_history_season_count_lines: NotRequired[list[str]]
     league_history_coverage_lines: NotRequired[list[str]]
+    # The season's highest and lowest gameweek score from the notes pack
+    # (issue #494), kept beside the managers so the tie check can read a tie
+    # the editorial's season-record line states. Absent when that section
+    # states none.
+    season_highest_score: NotRequired[RecapSeasonRecord]
+    season_lowest_score: NotRequired[RecapSeasonRecord]
     # Report-surfaced season fine tally (issue #136). All three are absent
     # together for a league with no fine rules configured and none ever
     # ruled, so the report omits the section rather than heading an empty

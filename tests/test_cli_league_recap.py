@@ -1996,6 +1996,65 @@ class TestNetAndTieClaims:
         assert "(2 transfers, -4 hit, net -6 overall after the hit)" in user_prompt
 
 
+class TestSeasonRecordTies:
+    """PR #495 review: the season-record line can state a shared record, so
+    an editorial quoting it ("the joint-highest score of the season") must
+    not be flagged as a tie the data does not show."""
+
+    _TIE = "Cam's 43 was the joint-highest score of the season."
+
+    def _invoke(self, cam_gw3: int, *replies: str):
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [
+                make_history_row(
+                    season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                    manager_key=key, manager_name=name, transfer_cost=0,
+                    gross_points=cam_gw3 if (key, gw) == (3, 3) else 30,
+                )
+                for key, name in ((1, "Alice"), (2, "Bob"), (3, "Cam"))
+            ])
+        data = _recap_data(
+            gameweek=5,
+            managers=[
+                _manager(
+                    name="Alice", entry_id=1, gross_points=30, overall_rank=1,
+                    previous_rank=1, total_points=300,
+                ),
+                _manager(
+                    name="Bob", entry_id=2, gross_points=29, overall_rank=2,
+                    previous_rank=2, total_points=290,
+                ),
+                _manager(
+                    name="Cam", entry_id=3, gross_points=43, overall_rank=3,
+                    previous_rank=3, total_points=280,
+                ),
+            ],
+            cohort=_cohort(
+                (1, "Alice", 1, 30, 300), (2, "Bob", 2, 29, 290), (3, "Cam", 3, 43, 280),
+            ),
+        )
+        stub, provider = _queued_provider(*replies)
+        with provider:
+            result = _invoke_recap(data, ["--summarise", "--format", "json"])
+        assert result.exit_code == 0, result.stderr
+        codes = [w["code"] for w in json.loads(result.stdout)["metadata"]["warnings"]]
+        return stub, codes
+
+    def test_a_record_scored_twice_bears_out_a_season_tie(self):
+        stub, codes = self._invoke(43, self._TIE)
+
+        assert len(stub.prompts) == 1
+        assert "synthesis_unsupported_tie" not in codes
+
+    def test_a_record_scored_once_does_not(self):
+        stub, codes = self._invoke(50, self._TIE, self._TIE)
+
+        assert len(stub.prompts) == 2
+        assert "the season's highest gameweek score, 50 pts, was Cam's alone, in GW3" in stub.prompts[1]
+        assert "synthesis_unsupported_tie" in codes
+
+
 class TestGameweekPlacingClaims:
     """#486: the editorial gave a manager their league position as their
     gameweek finish, "finished eighth on 31" for a manager seventh on the
@@ -4328,6 +4387,47 @@ class TestLeagueRecapJsonEnvelope:
             entry["manager_name"] == "Bob" and entry["surfaces"] == []
             for entry in pack["season_count_entries"]
         )
+
+    @pytest.mark.parametrize(("use_net_points", "points", "holder"), [(False, 80, "Alice"), (True, 75, "Bob")])
+    def test_season_records_serialize_scored_as_the_league_ranks_the_week(
+        self, use_net_points, points, holder,
+    ):
+        """Issue #494: the season's highest gameweek score reaches the
+        payload with its holders, scored the way the standings score the
+        week -- so the `use_net_points` setting has to reach the pack."""
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [
+                make_history_row(
+                    season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                    manager_key=key, manager_name=name, gross_points=50, transfer_cost=0,
+                )
+                for key, name in ((1, "Alice"), (2, "Bob"))
+            ])
+
+        result = _invoke_recap(
+            _recap_data(
+                gameweek=5,
+                managers=[
+                    _manager(name="Alice", entry_id=1, gross_points=80, transfer_cost=8, total_points=300),
+                    _manager(name="Bob", entry_id=2, gross_points=75, total_points=280, overall_rank=2),
+                ],
+                cohort=_cohort((1, "Alice", 1, 72, 300), (2, "Bob", 2, 75, 280)),
+            ),
+            ["--format", "json"],
+            settings={"fpl": {"classic_league_id": 42}, "use_net_points": use_net_points},
+        )
+
+        assert result.exit_code == 0, result.output
+        records = json.loads(result.stdout)["metadata"]["notes_pack"]["season_record_entries"]
+        highest = next(r for r in records if r["condition_key"] == "highest_gameweek_score")
+        assert highest["kind"] == "season_record"
+        assert highest["points"] == points
+        assert highest["holders"] == [
+            {"manager_key": 1 if holder == "Alice" else 2, "manager_name": holder, "gameweek": 5},
+        ]
+        assert highest["surfaces"] == ["prompt"]
+        assert highest["window"] == {"start_gameweek": 1, "end_gameweek": 5}
 
     def test_a_streak_entry_serializes_its_inapplicable_gameweeks_apart_from_held_ones(self):
         """Issue #358: a JSON consumer reading `held_count` as missing data

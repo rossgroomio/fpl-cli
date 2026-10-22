@@ -36,6 +36,7 @@ from fpl_cli.cli._json import (
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     PriorSeasonsSummary,
+    RecapSeasonRecord,
     RecapStandoutPlayers,
     standout_blanks_heading,
     standout_players_lines,
@@ -546,6 +547,20 @@ def league_recap_command(
                 collected_data["league_history_coverage_lines"] = [
                     entry.text for entry in notes_pack.coverage_entries
                 ]
+                # The season records the editorial is shown (issue #494),
+                # kept for the tie check, which reads a record scored more
+                # than once as the tie its line states.
+                for entry in notes_pack.season_record_entries:
+                    if entry.points is None:
+                        continue
+                    record = RecapSeasonRecord(
+                        points=entry.points,
+                        scores=[(holder.manager_name, holder.gameweek) for holder in entry.holders],
+                    )
+                    if entry.condition_key == "highest_gameweek_score":
+                        collected_data["season_highest_score"] = record
+                    else:
+                        collected_data["season_lowest_score"] = record
 
             # Prior seasons (issue #131): folded once and read by the report
             # and the editorial alike, so neither surface can describe a
@@ -905,6 +920,11 @@ def _serialize_notes_pack_entry(entry: NotesPackEntry) -> dict[str, Any]:
         "inapplicable_count": entry.inapplicable_count,
         "excess": entry.excess,
         "occurrences": entry.occurrences,
+        "points": entry.points,
+        "holders": [
+            {"manager_key": h.manager_key, "manager_name": h.manager_name, "gameweek": h.gameweek}
+            for h in entry.holders
+        ],
     }
 
 
@@ -925,6 +945,9 @@ def _serialize_notes_pack(pack: NotesPack) -> dict[str, Any]:
         # below-minimum streaks follow.
         "season_count_entries": [
             _serialize_notes_pack_entry(entry) for entry in pack.season_count_entries
+        ],
+        "season_record_entries": [
+            _serialize_notes_pack_entry(entry) for entry in pack.season_record_entries
         ],
         "coverage_entries": [_serialize_notes_pack_entry(entry) for entry in pack.coverage_entries],
         "entry_count": pack.entry_count,
