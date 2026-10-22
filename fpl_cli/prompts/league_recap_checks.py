@@ -678,23 +678,27 @@ _NET_OVERALL_RE = re.compile(
 )
 # ...and phrasing that does the same only beside the figure: the week ("ended
 # the week -6 net") and the hit ("-6 net after the hit", the roster line's own
-# words). Further off, the week is when something else happened ("-6 net,
-# the worst move of the week") and the hit is the one taken to make the move
-# ("paid a hit to bring in Gibbs-White for Wirtz"), which says nothing about
-# whose the figure is.
+# words), its size given or not ("-6 after a 4-point hit", #499). Further
+# off, the week is when something else happened ("-6 net, the worst move of
+# the week") and the hit is the one taken to make the move ("paid a hit to
+# bring in Gibbs-White for Wirtz"), which says nothing about whose the
+# figure is.
 _NET_BESIDE_RE = re.compile(
     r"(?<!\w)(?:week|gameweek|gw|post-hit|after hits"
-    r"|(?:after|once|with|including|net of|despite) (?:the|a|his|her|their) hit)(?!\w)",
+    r"|(?:after|once|with|including|net of|despite) (?:the|a|his|her|their)"
+    rf" (?:[{re.escape(_MINUS_SIGNS)}]?\d+[-\s]?(?:pts?|points?)?\s+)?hit)(?!\w)",
     re.IGNORECASE,
 )
 _NET_BESIDE_WORDS = 4
 # A signed figure standing on its own -- "went -4", "(+2)" -- read as a move's
 # swing. Never a hit ("-4 hit", "a -4-point hit") and never the slang for one
-# ("took a -4"), which says what the manager paid rather than what a move did.
+# ("took a -4"), which says what the manager paid rather than what a move did,
+# unless the noun after it makes it a move's ("a -4 move", #499).
 _SIGNED_FIGURE_RE = re.compile(
     rf"(?<![\w.])[{re.escape(_SIGNS)}]\d+(?![\w.])(?!\s*-?\s*(?:(?:pts?|points?)\s+)?hit(?!\w))",
 )
 _HIT_SLANG_BEFORE_RE = re.compile(r"(?<!\w)(?:a|an|took|take|takes|taking|paid|pay|pays|paying)\s*$", re.IGNORECASE)
+_MOVE_NOUN_AFTER_RE = re.compile(r"\s*(?:move|swap|switch|swing)(?!\w)", re.IGNORECASE)
 
 
 def _signed_value(text: str) -> int:
@@ -898,7 +902,9 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], 
         # A clause that gives the move its own swing has kept the two figures
         # apart, whatever else it says.
         if any(
-            _signed_value(m.group(0)) == move.net and not _HIT_SLANG_BEFORE_RE.search(clause[:m.start()])
+            _signed_value(m.group(0)) == move.net and (
+                not _HIT_SLANG_BEFORE_RE.search(clause[:m.start()]) or _MOVE_NOUN_AFTER_RE.match(clause, m.end())
+            )
             for m in _SIGNED_FIGURE_RE.finditer(clause)
         ):
             continue

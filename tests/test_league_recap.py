@@ -7668,6 +7668,12 @@ class TestNetAttributionCheck:
         "Alice Lowe lost 6 net pts, her worst move being Gibbs-White in for Wirtz (-4).",
         "Alice Lowe took a hit to bring in Gibbs-White for Wirtz and ended -6 net after the hit.",
         "Gibbs-White for Wirtz (-4) dragged Alice Lowe down to -6 net.",
+        # Issue #499: "a -4 move" is the move's swing, not the slang for a
+        # hit, and the hit beside the figure may give its size.
+        "Alice Lowe swapped Wirtz for Gibbs-White, a -4 move, and netted -6 after a 4-point hit.",
+        "Alice Lowe swapped Wirtz for Gibbs-White, a -4 move, and netted -6.",
+        "Alice Lowe swapped Wirtz for Gibbs-White and netted -6 after a 4-point hit.",
+        "Alice Lowe swapped Wirtz for Gibbs-White and netted -6 after a -4 hit.",
     ])
     def test_a_figure_the_clause_gives_its_own_subject_passes(self, summary):
         assert self._check(summary) == []
