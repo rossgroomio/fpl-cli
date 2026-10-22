@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8869,17 +8870,22 @@ class TestStandingsMarginLines:
         """Issue #493: an editorial put third place "50 points behind" a
         leader 55 points clear, its own subtraction from the Total column.
         The rule tells the model no line states a gap between totals, so one
-        that starts to has to come with a rule that quotes it."""
+        that starts to has to come with a rule that quotes it. A gap stated
+        in any words carries its figure, so the figures are what is looked
+        for (PR #497 review: a word list let "leads by 5" through)."""
         managers = [
             _make_manager(name="Ann Moss", entry_id=1, gw_points=52, overall_rank=1, previous_rank=1, total_points=382),
             _make_manager(name="Bea Gale", entry_id=2, gw_points=61, overall_rank=2, previous_rank=2, total_points=377),
             _make_manager(name="Cy Hart", entry_id=3, gw_points=48, overall_rank=3, previous_rank=3, total_points=327),
         ]
-        stated = [
-            line for line in self._text(managers).splitlines()
-            if not line.startswith("|") and re.search(r"\b(?:clear|behind|ahead|adrift|gap)\b", line)
-        ]
-        assert [line.split(":")[0] for line in stated] == ["Highest gameweek score", "Lowest gameweek score"]
+        gaps = {abs(a["total_points"] - b["total_points"]) for a, b in combinations(managers, 2)}
+        stated = {
+            int(figure)
+            for line in self._text(managers).splitlines() if not line.startswith("|")
+            for figure in re.findall(r"\d+", line)
+        }
+        assert gaps == {5, 50, 55}
+        assert not stated & gaps
 
     def test_the_rule_names_the_totals_column_by_its_header(self):
         """Issue #493: the rule points at the column a total gap would be
