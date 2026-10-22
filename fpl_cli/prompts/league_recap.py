@@ -60,7 +60,7 @@ The editorial is pasted into the league's WhatsApp group and read on phones. Sho
 
 <rules>
 - This is a recap, not a preview: no advice, no recommendations, and nothing about future gameweeks
-- Stick to what happened this gameweek. The only facts spanning more than this gameweek you may state are the ones a section hands you, with its counts, spans and qualifiers kept exactly as it states them: streaks and season counts from the "## League History" section, a manager's FPL seasons before this one as the "## Prior Seasons" rule below allows, season fine totals from the "## Season Fines" section, where this gameweek's fine sits in a manager's season from the "## Fines" section, and who led before this gameweek from the GW Standings section's previous-leader statement. A streak, trend, total or season-arc fact none of them states is not yours to mention, however obvious it looks. Beyond that statement, the Awards and GW Standings sections describe one gameweek and are never a source of history
+- Stick to what happened this gameweek. The only facts spanning more than this gameweek you may state are the ones a section hands you, with its counts, spans and qualifiers kept exactly as it states them: streaks, season counts and the season's highest and lowest gameweek scores from the "## League History" section, a manager's FPL seasons before this one as the "## Prior Seasons" rule below allows, season fine totals from the "## Season Fines" section, where this gameweek's fine sits in a manager's season from the "## Fines" section, and who led before this gameweek from the GW Standings section's previous-leader statement. A streak, trend, total or season-arc fact none of them states is not yours to mention, however obvious it looks. Beyond that statement, the Awards and GW Standings sections describe one gameweek and are never a source of history
 - Every League History entry is about one named manager only. Never combine two managers into a shared record, streak, or "club" - phrasing like "joined by X", "joins Y in that club", or "the two of them share" is forbidden unless a single League History entry explicitly names both managers together. Two managers who each had a one-off gameweek in a different week (e.g. one finished last in GW1, a different one finished last in GW2) do not form a joint record for either of them - each stays a separate, single-gameweek fact, and under the previous rule a single gameweek's worth of an event is not itself a reportable streak at all
 - A claim that a manager "topped the table", "was previously top", "led before this gameweek", or "fell from the top/first place" must match the "Previous gameweek's leader" statement at the top of the GW Standings section exactly - never infer the previous leader yourself from the size of a fall, the Prev column, or anything else. If that statement names no leader, make no such claim about anyone
 - "Joint", "tied", "level", "shared", "equal" and every other tie word may only be used where the data states the tie. The GW Standings section names the gameweek's highest and lowest scores, says whether each was one manager's alone, and lists every gameweek score and every league position (Pos, and Prev where any is shared) more than one manager holds, plus any season totals that are level but placed apart by the league's tie-break: a score or position it does not list as shared belonged to one manager, so it is "the lowest", never "the joint-lowest". A tie on season totals in the table's Pos column is not a tie on gameweek scores, and a tie on gameweek scores is not one in the table. Managers level on points but placed apart are "level on points", never "joint" in position. The same goes for superlatives: "the highest" or "the lowest" score of the week belongs only to the manager(s) that section names for it
@@ -68,6 +68,7 @@ The editorial is pasted into the league's WhatsApp group and read on phones. Sho
 - A gap between two managers' gameweek scores ("won by N", "N points clear", "N adrift at the bottom") is quoted only as the GW Standings section states it: the highest score's gap to the next-best and the lowest score's gap to the next-lowest. Never work a gap out of the GW Pts column yourself: any other comparison of two gameweek scores keeps both scores side by side and leaves the gap unsaid. Where the highest or lowest score is shared, its holders are level with each other and the stated gap is each one's to the next score, never one holder's margin over another
 - A League History entry keeps its meaning when you use it, in your own sentence: a count stated over a span (e.g. "3 in the last 11 (GW1-GW11). Of the rest, 8 were not recorded.") stays a count over a span with its unrecorded gameweeks mentioned, never simplified to "in a row" or "consecutive" unless the section itself says so. The figures, the span and the qualifier are the facts; the sentence around them is yours
 - A League History season-count line (e.g. "4 gameweek wins this season") is optional colour in the Season Fines mould: use one when it sharpens something that happened this gameweek ("Bob's fourth gameweek win of the season"), or - when the section carries the season's full counts, at the halfway boundary and the finale - to ground a season retrospective. Keep the count exact, and carry its qualifier for gameweeks that could not be judged, in your own words, or leave the line out, and never derive or extrapolate a season total yourself from the weekly sections
+- A gameweek score is "the week of the season", "the season's best", "a season low" or any other best or worst of the season only when a "## League History" season-record line names it, and a manager's week is the best or worst of their own season only when that line names that week as theirs. Where the line names scores from other gameweeks and says no score this gameweek equalled it, this week's highest or lowest was not the season's, however big or small it looks. Carry the line's qualifier where it has one. No section ranks a margin, a bench haul or a pick against the rest of the season, so never call one the season's biggest, narrowest or best
 - A manager's FPL seasons before this one - how many they have played, how they finished last season, their best season, whether they are "returning", a "veteran" or a "newcomer", "entering their Nth season" - may be described only when the "## Prior Seasons" section is present and says so of that manager, with its season names, points, ranks, percentages and counts kept exact. That record is FPL-wide, never this league's: write "their 11th season of FPL", never "their 11th season in this league", "a founder member" or "back for another year in this league" - the section cannot say when anyone joined this league, and neither can you. A manager it lists under "No prior FPL seasons on record" is in their first recorded season and has no past to describe; one it lists under "could not be fetched" gets no claim about their past in either direction. Never derive a trajectory the section does not state ("improving", "declining", "off the pace they set last year") - one gameweek's points against a full season's total is no comparison at all. Without a "## Prior Seasons" section, mention nobody's earlier seasons
 - If fines were triggered, make them a highlight
 - The "## Season Fines" section is optional colour, not a required beat. Use it when a season total sharpens what already happened this gameweek ("Bob's fourth last-place of the season"), and leave it out entirely when it adds nothing - do not open or close on the season table, do not list it out, and never pad the recap with it. A gameweek where nobody was fined rarely needs it at all
@@ -918,8 +919,8 @@ def format_recap_captains_context(
 
 
 def format_recap_league_history_context(pack: NotesPack | None) -> str:
-    """Season phase, streaks, and coverage -- the only permitted source of
-    cross-gameweek claims (R14).
+    """Season phase, streaks, season counts and records, and coverage -- the
+    only permitted source of cross-gameweek claims (R14).
 
     Mirrors the captains/chips enumerate-and-lock shape: an explicit count
     ahead of the list it counts, so the synthesis LLM never has to infer
@@ -964,6 +965,19 @@ def format_recap_league_history_context(pack: NotesPack | None) -> str:
     lines.append(f"Total season-count entries: {len(count_entries)}")
     for entry in count_entries:
         lines.append(f"- {entry.text_for(NoteSurface.PROMPT)}")
+    # Season records (issue #494): the season's highest and lowest gameweek
+    # score, the facts "the week of the season" reaches for. Stated as absent
+    # rather than left out, like the section itself, so their absence on the
+    # league's first gameweek is not read as licence.
+    record_entries = [
+        entry for entry in pack.season_record_entries if NoteSurface.PROMPT in entry.surfaces
+    ]
+    lines.append("")
+    if record_entries:
+        lines.append("Season records:")
+        lines.extend(f"- {entry.text_for(NoteSurface.PROMPT)}" for entry in record_entries)
+    else:
+        lines.append("Season records: none stated")
     if pack.coverage_entries:
         lines.append("")
         lines.append("Coverage:")

@@ -4243,6 +4243,7 @@ def _history_pack(
     coverage_entries: list[NotesPackEntry] | None = None,
     *,
     season_count_entries: list[NotesPackEntry] | None = None,
+    season_record_entries: list[NotesPackEntry] | None = None,
     phase: SeasonPhase = SeasonPhase.MIDPOINT,
     phase_text: str = "GW20 is the season midpoint.",
     fpl_format: str = "classic",
@@ -4256,6 +4257,7 @@ def _history_pack(
         ),
         entries=entries or [],
         season_count_entries=season_count_entries or [],
+        season_record_entries=season_record_entries or [],
         coverage_entries=coverage_entries if coverage_entries is not None else [
             NotesPackEntry(
                 kind=NoteKind.COVERAGE, text="Recorded history is complete from its start (GW1) through GW20.",
@@ -4344,13 +4346,15 @@ class TestFormatRecapLeagueHistoryContext:
             assert "Recorded history is complete" not in line
 
         # The very next non-blank content is the season-count total (its own
-        # counted block, empty here), then the coverage label -- never a
-        # third, uncounted streak-shaped bullet.
+        # counted block, empty here), then the season records (none here),
+        # then the coverage label -- never a third, uncounted streak-shaped
+        # bullet.
         remainder = [line for line in lines[count_index + 3 :] if line]
         assert remainder[0] == "Total season-count entries: 0"
-        assert remainder[1] == "Coverage:"
-        assert remainder[2] == "- Recorded history is complete from its start (GW1) through GW20."
-        assert remainder[3] == (
+        assert remainder[1] == "Season records: none stated"
+        assert remainder[2] == "Coverage:"
+        assert remainder[3] == "- Recorded history is complete from its start (GW1) through GW20."
+        assert remainder[4] == (
             "- Carol: recorded history begins at GW10, later than the league's "
             "start (GW1); earlier gameweeks are not available for this manager."
         )
@@ -4371,6 +4375,59 @@ class TestFormatRecapLeagueHistoryContext:
         assert lines[count_index + 1] == (
             "- Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek."
         )
+
+    def test_season_records_render_under_their_own_label_before_coverage(self):
+        """Issue #494: the season's highest and lowest gameweek score sit
+        apart from the counted blocks, so neither count's scope changes."""
+        records = [
+            NotesPackEntry(
+                kind=NoteKind.SEASON_RECORD,
+                text=(
+                    "The league's highest gameweek score this season is 72 points, scored twice: by "
+                    "Alice in GW1 and by Bob in GW4 (GW1-GW20). No score this gameweek equalled it."
+                ),
+                surfaces=frozenset({NoteSurface.PROMPT}), points=72,
+            ),
+            NotesPackEntry(
+                kind=NoteKind.SEASON_RECORD,
+                text=(
+                    "The league's lowest gameweek score this season is 18 points, scored once: by "
+                    "Carol this gameweek (GW1-GW20)."
+                ),
+                surfaces=frozenset({NoteSurface.PROMPT}), points=18,
+            ),
+        ]
+        lines = [
+            line for line in format_recap_league_history_context(
+                _history_pack(season_record_entries=records),
+            ).splitlines() if line
+        ]
+
+        label = lines.index("Season records:")
+        assert lines[label - 1] == "Total season-count entries: 0"
+        assert lines[label + 1] == f"- {records[0].text}"
+        assert lines[label + 2] == f"- {records[1].text}"
+        assert lines[label + 3] == "Coverage:"
+
+    def test_no_season_record_is_stated_as_none_rather_than_left_out(self):
+        text = format_recap_league_history_context(_history_pack())
+
+        assert "Season records: none stated" in text
+
+    def test_system_prompt_holds_a_season_superlative_to_the_record_line(self):
+        """Issue #494: "the week of the season" was said of a 65 in a season
+        whose best was 72, with no section stating either."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert (
+            'A gameweek score is "the week of the season", "the season\'s best", "a season low" or '
+            'any other best or worst of the season only when a "## League History" season-record '
+            "line names it"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "streaks, season counts and the season's highest and lowest gameweek scores from the "
+            '"## League History" section'
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_a_count_that_did_not_grow_this_gameweek_is_withheld_from_the_prompt(self):
         """A surfaceless season count (retained for `--format json` only)

@@ -905,6 +905,11 @@ def _serialize_notes_pack_entry(entry: NotesPackEntry) -> dict[str, Any]:
         "inapplicable_count": entry.inapplicable_count,
         "excess": entry.excess,
         "occurrences": entry.occurrences,
+        "points": entry.points,
+        "holders": [
+            {"manager_key": h.manager_key, "manager_name": h.manager_name, "gameweek": h.gameweek}
+            for h in entry.holders
+        ],
     }
 
 
@@ -925,6 +930,9 @@ def _serialize_notes_pack(pack: NotesPack) -> dict[str, Any]:
         # below-minimum streaks follow.
         "season_count_entries": [
             _serialize_notes_pack_entry(entry) for entry in pack.season_count_entries
+        ],
+        "season_record_entries": [
+            _serialize_notes_pack_entry(entry) for entry in pack.season_record_entries
         ],
         "coverage_entries": [_serialize_notes_pack_entry(entry) for entry in pack.coverage_entries],
         "entry_count": pack.entry_count,
