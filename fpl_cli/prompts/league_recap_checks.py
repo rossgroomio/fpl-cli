@@ -1767,12 +1767,13 @@ _ESCAPE_GERUND_PREP_RE = re.compile(
 # Where the manager got away from: last place, the bottom, the wooden spoon,
 # the worst week or the lowest score, the foot of the table or the basement,
 # with the scope named straight after it ("on the week", "of the table") so
-# the quote carries it. A bare "last", "bottom", "foot" or "basement" can
+# the quote carries it, hyphenated or not ("the bottom-of-the-week
+# dishonour"). A bare "last", "bottom", "foot" or "basement" can
 # modify something else, so what follows one must end the phrase or carry it
 # on ("by a point", "this week", "again"): "last week", "the bottom half",
 # "the bottom corner", "a foot injury", "the last of his points", "the bottom
 # of the barrel" and "second-last" are none of them.
-_ESCAPE_SCOPE = r"\s+(?:of|on|in|for)\s+the\s+(?:week|gameweek|gw|table|league|standings|pile)(?![\w-])"
+_ESCAPE_SCOPE = r"[-\s]+(?:of|on|in|for)[-\s]+the[-\s]+(?:week|gameweek|gw|table|league|standings|pile)(?![\w-])"
 _ESCAPE_TARGET_RE = re.compile(
     r"(?<![\w-])(?:rock[-\s]+)?(?:"
     r"(?P<phrase>(?:last|bottom)[-\s]+(?:place|spot|position|slot|rung)(?:[-\s]+(?:finish|fine))?|wooden[-\s]+spoon"

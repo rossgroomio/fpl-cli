@@ -8360,6 +8360,9 @@ class TestEscapeClaimCheck:
         ("The wooden spoon was avoided by Gus Peel by a point.", "Gus Peel"),
         (f"{_FINE} Last place was narrowly avoided by him.", "Gus Peel"),
         ("Hal Penn sat out the drama. Gus Peel's 30 meant last place was avoided by him.", "Gus Peel"),
+        # PR #490 A/B: the scope hyphenated into a compound reads as spaced.
+        (f"{_FINE} He missed the bottom-of-the-week dishonour by a single point.", "Gus Peel"),
+        ("Hal Penn dodged the bottom-of-the-table scrap by a point.", "Hal Penn"),
     ])
     def test_an_escape_the_data_contradicts_is_caught(self, summary, escaped):
         problems = self._check(summary)
@@ -8431,6 +8434,7 @@ class TestEscapeClaimCheck:
         # ..."last" and "bottom" before "of", and surviving the worst week...
         "Gus Peel missed the last of Haaland's points.",
         "Gus Peel avoided the bottom of the barrel with his captain.",
+        "Gus Peel avoided the bottom-of-the-barrel captain pick.",
         "Gus Peel survived the worst week of his FPL life.",
         # ...and an escape from an earlier week.
         "Gus Peel took the fine a week after he escaped the wooden spoon.",
