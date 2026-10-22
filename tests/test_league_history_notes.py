@@ -1055,11 +1055,6 @@ class TestSeasonCountEntries:
 
 
 # ---------------------------------------------------------------------------
-# Fidelity tier (point 1)
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Season-record entries (issue #494)
 # ---------------------------------------------------------------------------
 
@@ -1245,6 +1240,73 @@ class TestSeasonRecordEntries:
         for entry in pack.season_record_entries:
             assert entry.surfaces == frozenset({NoteSurface.PROMPT})
             assert entry in pack.all_entries
+
+    def test_a_manager_in_this_gameweeks_league_with_no_row_is_a_missing_score(self):
+        """PR #495 review: a gameweek holding only some of the league's rows
+        is missing a score as surely as one holding an unknown row. A
+        manager who has since left is judged only where they have rows."""
+        store = _scored_store({
+            1: {1: 60, 2: 40},
+            2: {1: 50, 2: 45},
+            3: {1: 55, 2: 30, 3: 35},
+            4: {1: 52, 2: 44, 3: 38},
+        })
+
+        highest = _record(build_notes_pack(store, 4), "highest_gameweek_score")
+
+        assert highest.held_count == 2
+        assert "(GW1-GW4; not every score was recorded in GW1-2)" in highest.text
+
+        # Bob leaves after GW3: GW4's league is Alice and Carol, so GW1-3,
+        # which hold Bob's rows, are complete for everyone GW4 expects.
+        departed = _scored_store({1: {1: 60, 2: 40, 3: 30}, 2: {1: 50, 2: 45, 3: 35}, 3: {1: 52, 3: 38}})
+        assert _record(build_notes_pack(departed, 3), "highest_gameweek_score").held_count == 0
+
+    def test_a_classic_row_with_no_recorded_hit_has_no_net_score(self):
+        """PR #495 review: netting a hit the row never recorded as zero
+        would overstate a net record without naming its gameweek. Gross
+        scoring needs no hit, and a draft row's missing hit is the format's."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [
+            make_history_row(gameweek=1, manager_key=1, manager_name="Alice", gross_points=80, transfer_cost=None),
+            make_history_row(gameweek=1, manager_key=2, manager_name="Bob", gross_points=60, transfer_cost=0),
+        ])
+        store.append_rows(2, [
+            make_history_row(gameweek=2, manager_key=1, manager_name="Alice", gross_points=50, transfer_cost=0),
+            make_history_row(gameweek=2, manager_key=2, manager_name="Bob", gross_points=40, transfer_cost=0),
+        ])
+
+        net = _record(build_notes_pack(store, 2, use_net_points=True), "highest_gameweek_score")
+        gross = _record(build_notes_pack(store, 2), "highest_gameweek_score")
+        draft = _record(
+            build_notes_pack(_scored_store({1: {1: 80, 2: 60}, 2: {1: 50, 2: 40}}), 2, use_net_points=True),
+            "highest_gameweek_score",
+        )
+
+        assert (net.points, net.held_count) == (60, 1)
+        assert "not every score was recorded in GW1" in net.text
+        assert (gross.points, gross.held_count) == (80, 0)
+        assert (draft.points, draft.held_count) == (80, 0)
+
+    def test_the_tier_is_the_weakest_among_the_rows_that_scored(self):
+        """PR #495 review: a null tier reads as "no ledger evidence", which a
+        record built from rows is not."""
+        store = _scored_store({1: {1: 60, 2: 40}}, tier="coarse")
+        store.append_rows(2, [
+            make_history_row(fpl_format="draft", gameweek=2, manager_key=1, manager_name="Alice", gross_points=50),
+            make_history_row(fpl_format="draft", gameweek=2, manager_key=2, manager_name="Bob", gross_points=45),
+        ])
+
+        pack = build_notes_pack(store, 2)
+
+        assert [e.tier for e in pack.season_record_entries] == [FidelityTier.COARSE] * 2
+        detailed = _scored_store({1: {1: 60, 2: 40}, 2: {1: 50, 2: 45}})
+        assert _record(build_notes_pack(detailed, 2), "lowest_gameweek_score").tier is FidelityTier.DETAILED
+
+
+# ---------------------------------------------------------------------------
+# Fidelity tier (point 1)
+# ---------------------------------------------------------------------------
 
 
 class TestStreakEntryTier:
@@ -1610,12 +1672,17 @@ class TestEarliestGameweekCacheReducesRescans:
 
 class TestNotesPackStructure:
     def test_all_entries_combines_streaks_season_phase_and_coverage(self):
+        # Two gameweeks, so the season records exist and the count below
+        # has to include them (PR #495 review).
         store = LeagueHistoryStore("2026-27", "classic", 1)
-        store.append_rows(1, [
-            make_history_row(gameweek=1, manager_key=1, manager_name="Alice", captain=_captain(1)),
-        ])
+        for gw in (1, 2):
+            store.append_rows(gw, [
+                make_history_row(
+                    gameweek=gw, manager_key=1, manager_name="Alice", captain=_captain(1), gross_points=50,
+                ),
+            ])
 
-        pack = build_notes_pack(store, 1)
+        pack = build_notes_pack(store, 2)
 
         assert pack.season_phase_entry in pack.all_entries
         for coverage_entry in pack.coverage_entries:
@@ -1624,8 +1691,12 @@ class TestNotesPackStructure:
             assert streak_entry in pack.all_entries
         for count_entry in pack.season_count_entries:
             assert count_entry in pack.all_entries
+        assert len(pack.season_record_entries) == 2
+        for record_entry in pack.season_record_entries:
+            assert record_entry in pack.all_entries
         assert len(pack.all_entries) == (
-            len(pack.entries) + len(pack.season_count_entries) + 1 + len(pack.coverage_entries)
+            len(pack.entries) + len(pack.season_count_entries) + len(pack.season_record_entries)
+            + 1 + len(pack.coverage_entries)
         )
 
     def test_entry_count_reflects_only_streak_entries(self):

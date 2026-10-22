@@ -1996,6 +1996,65 @@ class TestNetAndTieClaims:
         assert "(2 transfers, -4 hit, net -6 overall after the hit)" in user_prompt
 
 
+class TestSeasonRecordTies:
+    """PR #495 review: the season-record line can state a shared record, so
+    an editorial quoting it ("the joint-highest score of the season") must
+    not be flagged as a tie the data does not show."""
+
+    _TIE = "Cam's 43 was the joint-highest score of the season."
+
+    def _invoke(self, cam_gw3: int, *replies: str):
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in (1, 2, 3, 4):
+            store.append_rows(gw, [
+                make_history_row(
+                    season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                    manager_key=key, manager_name=name, transfer_cost=0,
+                    gross_points=cam_gw3 if (key, gw) == (3, 3) else 30,
+                )
+                for key, name in ((1, "Alice"), (2, "Bob"), (3, "Cam"))
+            ])
+        data = _recap_data(
+            gameweek=5,
+            managers=[
+                _manager(
+                    name="Alice", entry_id=1, gross_points=30, overall_rank=1,
+                    previous_rank=1, total_points=300,
+                ),
+                _manager(
+                    name="Bob", entry_id=2, gross_points=29, overall_rank=2,
+                    previous_rank=2, total_points=290,
+                ),
+                _manager(
+                    name="Cam", entry_id=3, gross_points=43, overall_rank=3,
+                    previous_rank=3, total_points=280,
+                ),
+            ],
+            cohort=_cohort(
+                (1, "Alice", 1, 30, 300), (2, "Bob", 2, 29, 290), (3, "Cam", 3, 43, 280),
+            ),
+        )
+        stub, provider = _queued_provider(*replies)
+        with provider:
+            result = _invoke_recap(data, ["--summarise", "--format", "json"])
+        assert result.exit_code == 0, result.stderr
+        codes = [w["code"] for w in json.loads(result.stdout)["metadata"]["warnings"]]
+        return stub, codes
+
+    def test_a_record_scored_twice_bears_out_a_season_tie(self):
+        stub, codes = self._invoke(43, self._TIE)
+
+        assert len(stub.prompts) == 1
+        assert "synthesis_unsupported_tie" not in codes
+
+    def test_a_record_scored_once_does_not(self):
+        stub, codes = self._invoke(50, self._TIE, self._TIE)
+
+        assert len(stub.prompts) == 2
+        assert "the season's highest gameweek score, 50 pts, was Cam's alone, in GW3" in stub.prompts[1]
+        assert "synthesis_unsupported_tie" in codes
+
+
 class TestGameweekPlacingClaims:
     """#486: the editorial gave a manager their league position as their
     gameweek finish, "finished eighth on 31" for a manager seventh on the

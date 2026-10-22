@@ -58,6 +58,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
     RecapManagerPlayer,
     RecapPriorSeason,
+    RecapSeasonRecord,
     RecapTransfer,
     competition_rank,
     contested_draft_claims,
@@ -4346,12 +4347,12 @@ class TestFormatRecapLeagueHistoryContext:
             assert "Recorded history is complete" not in line
 
         # The very next non-blank content is the season-count total (its own
-        # counted block, empty here), then the season records (none here),
-        # then the coverage label -- never a third, uncounted streak-shaped
-        # bullet.
+        # counted block, empty here), then the season-record total (empty
+        # too), then the coverage label -- never a third, uncounted
+        # streak-shaped bullet.
         remainder = [line for line in lines[count_index + 3 :] if line]
         assert remainder[0] == "Total season-count entries: 0"
-        assert remainder[1] == "Season records: none stated"
+        assert remainder[1] == "Total season-record entries: 0"
         assert remainder[2] == "Coverage:"
         assert remainder[3] == "- Recorded history is complete from its start (GW1) through GW20."
         assert remainder[4] == (
@@ -4376,9 +4377,9 @@ class TestFormatRecapLeagueHistoryContext:
             "- Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek."
         )
 
-    def test_season_records_render_under_their_own_label_before_coverage(self):
-        """Issue #494: the season's highest and lowest gameweek score sit
-        apart from the counted blocks, so neither count's scope changes."""
+    def test_season_records_render_under_their_own_total_before_coverage(self):
+        """Issue #494: the season's highest and lowest gameweek score get
+        their own counted block, so neither earlier count's scope changes."""
         records = [
             NotesPackEntry(
                 kind=NoteKind.SEASON_RECORD,
@@ -4403,16 +4404,16 @@ class TestFormatRecapLeagueHistoryContext:
             ).splitlines() if line
         ]
 
-        label = lines.index("Season records:")
-        assert lines[label - 1] == "Total season-count entries: 0"
-        assert lines[label + 1] == f"- {records[0].text}"
-        assert lines[label + 2] == f"- {records[1].text}"
-        assert lines[label + 3] == "Coverage:"
+        total = lines.index("Total season-record entries: 2")
+        assert lines[total - 1] == "Total season-count entries: 0"
+        assert lines[total + 1] == f"- {records[0].text}"
+        assert lines[total + 2] == f"- {records[1].text}"
+        assert lines[total + 3] == "Coverage:"
 
-    def test_no_season_record_is_stated_as_none_rather_than_left_out(self):
+    def test_no_season_record_is_stated_as_a_zero_total_rather_than_left_out(self):
         text = format_recap_league_history_context(_history_pack())
 
-        assert "Season records: none stated" in text
+        assert "Total season-record entries: 0" in text
 
     def test_system_prompt_holds_a_season_superlative_to_the_record_line(self):
         """Issue #494: "the week of the season" was said of a 65 in a season
@@ -8029,6 +8030,52 @@ class TestTieClaimCheck:
         assert problems == [
             'the editorial says "joint-tenth", but 10th place in the table is Fay Lund\'s alone'
         ]
+
+    def test_a_shared_season_record_bears_out_a_season_tie(self):
+        """PR #495 review: the season-record line can state a shared record,
+        and quoting it is no unsupported tie, though the week's highest score
+        and the table's top spot are each one manager's."""
+        summary = "Dee Ford's 43 was the joint-highest score of the season, level with Eli Ray's GW4."
+        managers = _reported_table()
+        shared = RecapSeasonRecord(points=43, scores=[("Eli Ray", 4), ("Dee Ford", 7)])
+
+        assert check_tie_claims(
+            summary, managers, RecapNames.of(managers), season_records={"top": shared},
+        ) == []
+
+    def test_a_season_record_scored_once_is_caught_on_all_three_readings(self):
+        summary = "Dee Ford's 43 was the joint-highest score of the season."
+        managers = _reported_table()
+        alone = RecapSeasonRecord(points=72, scores=[("Eli Ray", 4)])
+
+        assert check_tie_claims(
+            summary, managers, RecapNames.of(managers), season_records={"top": alone},
+        ) == [
+            'the editorial says "joint-highest", but no reading holds: the highest gameweek score, '
+            "58 pts, was Fay Lund's alone; 1st place in the table is Dee Ford's alone; the season's "
+            "highest gameweek score, 72 pts, was Eli Ray's alone, in GW4"
+        ]
+
+    def test_a_season_record_never_answers_for_a_week_or_the_table(self):
+        """The record is read only where the tie is said of the season."""
+        managers = _reported_table()
+        shared = RecapSeasonRecord(points=29, scores=[("Ann Moss", 2), ("Ann Moss", 7)])
+
+        problems = check_tie_claims(
+            "The previous leader posted the joint-lowest score of the week (29 pts).",
+            managers, RecapNames.of(managers), season_records={"bottom": shared},
+        )
+
+        assert len(problems) == 1
+
+    def test_the_registry_reads_the_records_off_the_recap_data(self):
+        managers = _reported_table()
+        data = _make_recap_data(managers=managers)
+        data["season_highest_score"] = RecapSeasonRecord(points=43, scores=[("Eli Ray", 4), ("Dee Ford", 7)])
+
+        found = check_recap_editorial("Dee Ford's 43 was the joint-highest score of the season.", data)
+
+        assert RECAP_WARNING_UNSUPPORTED_TIE not in found
 
     def test_a_tie_with_no_subject_needs_both_readings_to_fail(self):
         # Last place in the table is Fay Lund's alone too, so neither holds.

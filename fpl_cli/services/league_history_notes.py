@@ -834,6 +834,25 @@ def _season_record_text(
     return text
 
 
+def _recorded_score(row: LeagueHistoryRow, *, use_net_points: bool) -> int | None:
+    """The row's gameweek score as the GW Standings section scores the week,
+    or None where the row does not prove one.
+
+    An unknown row carries the league table's figure, net of any hit
+    (KTD12), which is no gross score and no proven one. Under
+    `use_net_points` a classic row that never recorded its hit cannot be
+    netted, while a draft row's missing hit is the format's: draft charges
+    none.
+    """
+    if row.capture_status is CaptureStatus.UNKNOWN or row.gross_points is None:
+        return None
+    if not use_net_points:
+        return row.gross_points
+    if row.transfer_cost is None:
+        return row.gross_points if row.fpl_format == "draft" else None
+    return row.gross_points - row.transfer_cost
+
+
 def _season_record_entries(
     *,
     store: LeagueHistoryStore,
@@ -852,14 +871,13 @@ def _season_record_entries(
 
     Scored the way the GW Standings section scores a week -- gross, or net
     of the hit under `use_net_points` -- so the two compare directly. The
-    setting is not on the row, which is why it is passed in. Only an OK
-    row's score counts: an unknown row carries the league table's figure,
-    net of any hit (KTD12), which is no gross score and no proven one, so
-    its gameweek is named instead as one where not every score was
-    recorded. A gameweek nobody captured, or one that cannot be read, is
-    named the same way. Both qualify the record rather than void it: every
-    score it names was scored, and the qualifier says one higher (or lower)
-    may be missing.
+    setting is not on the row, which is why it is passed in. Only a score
+    the row proves counts (`_recorded_score`); a gameweek holding a row that
+    proves none, missing a row for a manager in this gameweek's league, or
+    nobody captured or could read is named as one where not every score was
+    recorded. That qualifies the record rather than voiding it: every score
+    it names was scored, and the qualifier says one higher (or lower) may be
+    missing. The tier is the weakest among the rows that scored.
 
     Swept over every gameweek from the league's start, as the season fines
     tally is, rather than read off the counters projection: the store
@@ -876,29 +894,39 @@ def _season_record_entries(
         return []
 
     captured = set(captured_gameweeks)
-    scores: list[tuple[int, int, int]] = []  # (points, gameweek, manager_key)
-    names: dict[int, str] = {}
-    unrecorded: list[int] = []
+    swept: dict[int, dict[int, LeagueHistoryRow]] = {}
     for gw in range(league_start_gameweek, gameweek + 1):
         if gw not in captured:
-            unrecorded.append(gw)
+            swept[gw] = {}
             continue
         try:
-            resolved = store.resolved_gameweek(gw)
+            swept[gw] = store.resolved_gameweek(gw)
         except LeagueHistoryError as exc:
             store.log_unreadable(
                 gw, exc, context="left out of the season's highest and lowest gameweek scores",
             )
-            unrecorded.append(gw)
-            continue
-        complete = bool(resolved)
+            swept[gw] = {}
+    # Every manager in this gameweek's league owes a score to every gameweek
+    # of the span, so one with no row there is a missing score, not an
+    # absent manager (a classic league scores its members from its own
+    # start, whenever they joined; a draft league holds them all from the
+    # draft). A manager who has since left is judged only where they have
+    # rows, so their departure never reads as a gap.
+    cohort = swept[gameweek].keys()
+    scores: list[tuple[int, int, int]] = []  # (points, gameweek, manager_key)
+    tiers: list[FidelityTier] = []
+    names: dict[int, str] = {}
+    unrecorded: list[int] = []
+    for gw, resolved in swept.items():
+        complete = bool(resolved) and cohort <= resolved.keys()
         for manager_key, row in resolved.items():
             names[manager_key] = row.manager_name
-            if row.capture_status is CaptureStatus.UNKNOWN or row.gross_points is None:
+            points = _recorded_score(row, use_net_points=use_net_points)
+            if points is None:
                 complete = False
                 continue
-            points = row.gross_points - (row.transfer_cost or 0) if use_net_points else row.gross_points
             scores.append((points, gw, manager_key))
+            tiers.append(row.tier)
         if not complete:
             unrecorded.append(gw)
 
@@ -923,6 +951,7 @@ def _season_record_entries(
                 gameweek=gameweek, unrecorded=unrecorded,
             ),
             surfaces=_PROMPT_ONLY,
+            tier=weakest_tier(tiers),
             window=window,
             condition_key="highest_gameweek_score" if highest else "lowest_gameweek_score",
             held_count=len(unrecorded),
