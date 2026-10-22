@@ -2051,6 +2051,62 @@ class TestGameweekPlacingClaims:
         assert '> - the editorial places Bob "second" beside their gameweek score' in report
 
 
+class TestEscapeClaims:
+    """#488: with the GW Standings section stating who avoided last place on
+    the week, the editorial handed that escape to the manager who finished
+    last through a pronoun. Checked like the other claims: one retry told
+    who finished last and who avoided it, then a warning if the retry still
+    gets it wrong."""
+
+    # Bob's 29 is the week's lowest; Alice avoided last place on 30.
+    _WRONG = "Bob takes the fine with 29. He escaped the wooden spoon by a single point over Alice."
+    _RIGHT = "Bob takes the fine with 29. Alice escaped the wooden spoon by a single point."
+
+    def _data(self) -> LeagueRecapData:
+        return _recap_data(
+            gameweek=5,
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=30, overall_rank=1, previous_rank=1, total_points=300),
+                _manager(name="Bob", entry_id=2, gross_points=29, overall_rank=2, previous_rank=2, total_points=290),
+                _manager(name="Cam", entry_id=3, gross_points=43, overall_rank=3, previous_rank=3, total_points=280),
+            ],
+            cohort=_cohort((1, "Alice", 1, 30, 300), (2, "Bob", 2, 29, 290), (3, "Cam", 3, 43, 280)),
+        )
+
+    def _invoke(self, args: list[str], *replies: str):
+        stub, provider = _queued_provider(*replies)
+        with provider:
+            result = _invoke_recap(self._data(), ["--summarise", *args])
+        return stub, result
+
+    def test_the_retry_is_told_who_avoided_last_place_and_a_clean_retry_ships(self):
+        stub, result = self._invoke(["--format", "json"], self._WRONG, self._RIGHT)
+
+        assert result.exit_code == 0, result.stderr
+        first, retry = stub.prompts
+        corrections = retry[len(first):]
+        assert "Bob's 29 pts was the lowest gameweek score; Alice avoided last place on the week by 1 pt" in corrections
+        assert "only if their gameweek score was above the lowest" in corrections
+        envelope = json.loads(result.stdout)
+        assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
+        assert not [w for w in envelope["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
+
+    def test_an_escape_that_survives_the_retry_gets_a_warning(self, tmp_path: Path):
+        _, result = self._invoke(
+            ["--format", "json", "--save", "--output", str(tmp_path)], self._WRONG, self._WRONG,
+        )
+
+        assert result.exit_code == 0, result.stderr
+        warnings = {w["code"]: w["message"] for w in json.loads(result.stdout)["metadata"]["warnings"]}
+        assert warnings["synthesis_escape_misattribution"].startswith(
+            "The editorial says a manager avoided a last place they finished in. "
+            'The editorial says Bob avoided last place on the week ("escaped the wooden spoon")'
+        )
+        report = next(tmp_path.rglob("gw5-league-recap.md")).read_text(encoding="utf-8")
+        assert report.index("> [!WARNING]") < report.index(self._WRONG)
+        assert '> - the editorial says Bob avoided last place on the week ("escaped the wooden spoon")' in report
+
+
 class TestKindScopedNets:
     """#390: a draft editorial said of a manager who made one waiver (-1) and
     one free-agent pickup (+4) that "his waiver moves netted +3 overall", the

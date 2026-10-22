@@ -65,6 +65,7 @@ from fpl_cli.cli._league_recap_types import (
     format_contested_claim,
     format_move_counts,
     format_prior_seasons_line,
+    last_place_escape,
     standout_blanks_heading,
     standout_players_lines,
     summarise_prior_seasons,
@@ -90,6 +91,7 @@ from fpl_cli.prompts.league_recap_checks import (
     EDITORIAL_CHECKS,
     RECAP_WARNING_CONTESTED_MISATTRIBUTION,
     RECAP_WARNING_CONTESTED_ROLL_CALL,
+    RECAP_WARNING_ESCAPE_MISATTRIBUTION,
     RECAP_WARNING_KIND_NET_MISATTRIBUTION,
     RECAP_WARNING_NET_MISATTRIBUTION,
     RECAP_WARNING_UNSUPPORTED_TIE,
@@ -97,6 +99,7 @@ from fpl_cli.prompts.league_recap_checks import (
     RecapNames,
     check_contested_attributions,
     check_contested_roll_calls,
+    check_escape_claims,
     check_gameweek_placings,
     check_kind_net_scopes,
     check_net_attributions,
@@ -8303,6 +8306,224 @@ class TestGameweekPlacingCheck:
         )
 
 
+class TestEscapeClaimCheck:
+    """Issue #488: the GW Standings section states who avoided last place on
+    the week (#487), and the editorial handed that escape to the manager who
+    finished last, through a pronoun in the sentence after their fine, or set
+    it against the foot of the table for a manager bottom of the league. In
+    `_placings_table()` Gus Peel's 30 is the week's lowest and Hal Penn, a
+    point clear on 31, is bottom of the table."""
+
+    _FINE = "Gus Peel takes the fine with 30."
+
+    def _check(self, summary: str, managers: list[RecapManagerEntry] | None = None) -> list[str]:
+        managers = managers or _placings_table()
+        return check_escape_claims(summary, managers, RecapNames.of(managers))
+
+    def test_the_escape_given_to_the_manager_who_finished_last_is_caught(self):
+        assert self._check(f"{self._FINE} He escaped the wooden spoon by one cruel point over Hal Penn (31).") == [
+            'the editorial says Gus Peel avoided last place on the week ("escaped the wooden spoon"), but Gus '
+            "Peel's 30 pts was the lowest gameweek score; Hal Penn avoided last place on the week by 1 pt"
+        ]
+
+    def test_the_escape_set_against_the_table_for_its_bottom_manager_is_caught(self):
+        assert self._check("Hal Penn's 31 left him only a point clear of the foot of the table.") == [
+            'the editorial says Hal Penn avoided the bottom of the table ("clear of the foot of the table"), but '
+            "Hal Penn is bottom of the table in 8th; Hal Penn avoided last place on the week by 1 pt"
+        ]
+
+    @pytest.mark.parametrize(("summary", "escaped"), [
+        # The issue's sentences, with the names put back.
+        (f"{_FINE} He escaped the wooden spoon by one cruel point over Hal Penn (31), who will be sending"
+         " thank-you notes.", "Gus Peel"),
+        (f"{_FINE} He missed the dreaded last place by the thinnest of margins, as Hal Penn (31) sat 1 point"
+         " ahead.", "Gus Peel"),
+        (f"{_FINE} He missed the dubious honour of 'worst week' by one point's worth of fortune: Hal Penn, on"
+         " 31, escaped last place by a single point.", "Gus Peel"),
+        (f"{_FINE} He escaped the bottom spot by only a single point, though.", "Gus Peel"),
+        ("Hal Penn's 31 left him only a point clear of the foot of the table.", "Hal Penn"),
+        # Named, and the noun as well as the verb.
+        ("Gus Peel only just dodged the wooden spoon.", "Gus Peel"),
+        ("Gus Peel's narrow escape from last place came down to a single point.", "Gus Peel"),
+        ("Gus Peel avoided finishing last on the week by a point.", "Gus Peel"),
+        ("Gus Peel's 30 was just enough to avoid last place.", "Gus Peel"),
+        ("Gus Peel, who escaped last place by a point, can thank his bench.", "Gus Peel"),
+        ("Gus Peel had a shocker; he survived last place by a whisker all the same.", "Gus Peel"),
+        ("Gus Peel was spared the lowest score of the week.", "Gus Peel"),
+        # The table's, for the manager bottom of it.
+        ("Hal Penn avoided last place in the league.", "Hal Penn"),
+        # PR #490 review: a pronoun goes to the first manager the sentence
+        # before named, the subject a reader takes it for, even where that
+        # sentence named two -- the shape the GW Standings line invites.
+        (f"{_FINE[:-1]}, a point behind Hal Penn. He escaped the wooden spoon by a point.", "Gus Peel"),
+        # ...and the passive, its manager after "by".
+        ("The wooden spoon was avoided by Gus Peel by a point.", "Gus Peel"),
+        (f"{_FINE} Last place was narrowly avoided by him.", "Gus Peel"),
+        ("Hal Penn sat out the drama. Gus Peel's 30 meant last place was avoided by him.", "Gus Peel"),
+        # PR #490 A/B: the scope hyphenated into a compound reads as spaced.
+        (f"{_FINE} He missed the bottom-of-the-week dishonour by a single point.", "Gus Peel"),
+        ("Hal Penn dodged the bottom-of-the-table scrap by a point.", "Hal Penn"),
+    ])
+    def test_an_escape_the_data_contradicts_is_caught(self, summary, escaped):
+        problems = self._check(summary)
+        assert len(problems) == 1
+        assert problems[0].startswith(f"the editorial says {escaped} avoided ")
+
+    @pytest.mark.parametrize("summary", [
+        # The issue's negations: the manager failed to escape.
+        f"{_FINE} He missed out on avoiding it by a single point.",
+        f"{_FINE} He missed the bottom-of-the-week dodge by the narrowest margin.",
+        f"{_FINE} He missed his chance to escape last place.",
+        # True: the GW Standings line's own words, and its manager named.
+        "Hal Penn avoided last place on the week by 1 pt.",
+        f"{_FINE} Hal Penn escaped the wooden spoon by one cruel point.",
+        "Hal Penn escaped last place by a point despite sitting bottom of the table.",
+        # Hedged or negated.
+        "Gus Peel nearly escaped last place.",
+        "Gus Peel came close to avoiding last place.",
+        "Gus Peel would have escaped last place with a captain return.",
+        "Gus Peel couldn't escape last place.",
+        "Gus Peel didn't, in the end, escape last place.",
+        "Gus Peel needed one more point to avoid last place.",
+        "Gus Peel fell a point short of escaping last place.",
+        "There was no escape from last place for Gus Peel.",
+        # The table's, for a manager who is not bottom of it.
+        "Gus Peel stays clear of the bottom.",
+        "Gus Peel is comfortably clear of the bottom.",
+        "Gus Peel avoided last place in the league.",
+        "Gus Peel's 30 kept him clear of the foot of the table.",
+        f"{_FINE} He remains well clear of the foot of the table, though.",
+        # Another week, or a span longer than this one.
+        "Gus Peel escaped last place for the first time this season.",
+        "Gus Peel escaped last place in GW5.",
+        "Gus Peel, who escaped last place last week, was not so lucky this time.",
+        # Not an escape from last place where it stands.
+        "Gus Peel avoided a hit but finished last.",
+        "Gus Peel survived a red card to finish bottom.",
+        "Gus Peel escaped the bottom half of the table.",
+        "Gus Peel dodged the fine last week.",
+        "Gus Peel missed the bottom corner from the spot.",
+        "Gus Peel's Salah missed the bottom corner from the spot.",
+        # Not Gus Peel's escape, or nobody the clause can name.
+        "Gus Peel's rival escaped last place.",
+        "Gus Peel watched Hal Penn escape last place by a point.",
+        "Gus Peel and Hal Penn both struggled. He escaped last place by a point.",
+        "Gus Peel and Hal Penn escaped last place and the bottom half respectively.",
+        "Hal Penn pipped Gus Peel by a point. He escaped last place on the week.",
+        "Last place was not avoided by Gus Peel.",
+        # PR #490 review: the manager who finished last failing to escape, in
+        # words that are no hedge on a finite verb -- a base form, an
+        # infinitive nothing says was achieved, a gerund after a preposition.
+        "Gus Peel cannot escape last place.",
+        "Gus Peel struggled to avoid last place.",
+        "Gus Peel was powerless to avoid the wooden spoon.",
+        "Gus Peel fell a point shy of avoiding last place.",
+        "Gus Peel was a point from escaping the wooden spoon.",
+        "Gus Peel finished one point off avoiding last place.",
+        "Gus Peel had a point too few to avoid the wooden spoon.",
+        "Gus Peel found it impossible to avoid last place.",
+        "Gus Peel could hardly avoid the wooden spoon.",
+        "Did Gus Peel escape the wooden spoon? He did not.",
+        # ...a holding verb or a copula lets the escape be the week's, true
+        # of the manager bottom of the table who avoided last place on it...
+        "Hal Penn stays clear of the bottom.",
+        "Hal Penn is a point clear of the wooden spoon.",
+        "Hal Penn held on to avoid the wooden spoon by a point.",
+        "Hal Penn's narrow cushion clear of the wooden spoon was just one point.",
+        "Hal Penn escaped the wooden spoon by a single league point.",
+        # ..."last" and "bottom" before "of", and surviving the worst week...
+        "Gus Peel missed the last of Haaland's points.",
+        "Gus Peel avoided the bottom of the barrel with his captain.",
+        "Gus Peel avoided the bottom-of-the-barrel captain pick.",
+        "Gus Peel survived the worst week of his FPL life.",
+        # ...and an escape from an earlier week.
+        "Gus Peel took the fine a week after he escaped the wooden spoon.",
+        "Gus Peel took the fine, a week after escaping the wooden spoon.",
+    ])
+    def test_an_escape_the_check_cannot_pin_to_the_wrong_manager_is_left_alone(self, summary):
+        assert self._check(summary) == []
+
+    def test_an_escape_read_both_ways_is_wrong_only_when_both_readings_are(self):
+        """"Stays clear of last place this week" is the table's and the
+        week's at once: true of a manager bottom only on the week."""
+        assert self._check("Gus Peel stays clear of last place this week.") == []
+        managers = _placings_table()
+        managers[6]["overall_rank"], managers[7]["overall_rank"] = 8, 7
+        assert self._check("Gus Peel stays clear of last place this week.", managers) == [
+            'the editorial says Gus Peel avoided last place ("clear of last place"), but Gus Peel\'s 30 pts was '
+            "the lowest gameweek score, and Gus Peel is bottom of the table in 8th; Hal Penn avoided last place "
+            "on the week by 1 pt"
+        ]
+
+    def test_a_shared_lowest_score_names_everyone_level_on_it(self):
+        managers = _placings_table()
+        managers[0]["gw_points"] = 30
+        assert self._check("Gus Peel dodged the wooden spoon.", managers) == [
+            'the editorial says Gus Peel avoided last place on the week ("dodged the wooden spoon"), but Gus '
+            "Peel's 30 pts was the lowest gameweek score, level with Ann Moss; Hal Penn avoided last place on "
+            "the week by 1 pt"
+        ]
+
+    def test_a_shared_next_score_names_everyone_who_avoided_last_place(self):
+        managers = _placings_table()
+        managers[4]["gw_points"] = 31
+        assert self._check("Gus Peel dodged the wooden spoon.", managers)[0].endswith(
+            "; Eli Ray, Hal Penn each avoided last place on the week by 1 pt"
+        )
+
+    def test_the_retry_is_told_the_escape_in_the_prompt_s_own_words(self):
+        """PR #490 review: the GW Standings line and the check each wrote the
+        escape by hand, and a shared next score already read differently."""
+        managers = _placings_table()
+        managers[4]["gw_points"] = 31
+        line = last_place_escape(managers)
+        assert line == "Eli Ray, Hal Penn each avoided last place on the week by 1 pt"
+        assert f"so {line}" in format_recap_standings_context(_make_recap_data(managers=managers))
+        assert self._check("Gus Peel dodged the wooden spoon.", managers)[0].endswith(f"; {line}")
+
+    def test_a_display_name_two_managers_share_hides_neither_score(self):
+        """PR #490 review: scores read off the name-keyed rows dropped one of
+        two managers sharing a name, and the retry was told a false lowest."""
+        managers = [
+            _make_manager(name="Ann Moss", entry_id=1, gw_points=30, overall_rank=1),
+            _make_manager(name="Ann Moss", entry_id=2, gw_points=40, overall_rank=2),
+            _make_manager(name="Hal Penn", entry_id=3, gw_points=35, overall_rank=3),
+        ]
+        assert self._check("Hal Penn dodged the wooden spoon.", managers) == []
+
+    def test_with_every_score_level_nobody_avoided_last_place(self):
+        managers = _placings_table()
+        for manager in managers:
+            manager["gw_points"] = 40
+        assert self._check("Gus Peel dodged the wooden spoon.", managers)[0].endswith(
+            "; every manager scored it, so nobody avoided last place on the week"
+        )
+
+    def test_the_table_is_read_only_where_every_manager_has_a_position(self):
+        managers = _placings_table()
+        managers[0]["overall_rank"] = 0
+        assert self._check("Hal Penn avoided last place in the league.", managers) == []
+
+    def test_a_lone_manager_has_no_last_place_to_escape(self):
+        assert self._check("Gus Peel dodged the wooden spoon.", _placings_table()[6:7]) == []
+
+    def test_the_registry_runs_it_and_the_retry_says_who_avoided_last_place(self):
+        data = _make_recap_data(managers=_placings_table())
+        found = check_recap_editorial(f"{self._FINE} He escaped the bottom spot by only a single point, though.", data)
+        assert list(found) == [RECAP_WARNING_ESCAPE_MISATTRIBUTION]
+        prompt = get_recap_editorial_retry_prompt("ORIGINAL", found)
+        assert "Your previous draft contradicted the data it was given" in prompt
+        assert "Hal Penn avoided last place on the week by 1 pt" in prompt
+        assert "only if their gameweek score was above the lowest" in prompt
+        message = editorial_warning_message(
+            RECAP_WARNING_ESCAPE_MISATTRIBUTION, found[RECAP_WARNING_ESCAPE_MISATTRIBUTION],
+        )
+        assert message.startswith(
+            "The editorial says a manager avoided a last place they finished in. "
+            'The editorial says Gus Peel avoided last place on the week ("escaped the bottom spot")'
+        )
+
+
 class TestStandingsTieLines:
     """Issue #359: the prompt states which scores and positions are shared,
     so the tie rule has a line to hold "joint" to."""
@@ -8514,7 +8735,7 @@ class TestEditorialChecks:
         assert sorted(codes) == sorted({
             RECAP_WARNING_CONTESTED_MISATTRIBUTION, RECAP_WARNING_NET_MISATTRIBUTION,
             RECAP_WARNING_KIND_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE,
-            RECAP_WARNING_WRONG_PLACING, RECAP_WARNING_CONTESTED_ROLL_CALL,
+            RECAP_WARNING_WRONG_PLACING, RECAP_WARNING_ESCAPE_MISATTRIBUTION, RECAP_WARNING_CONTESTED_ROLL_CALL,
         })
         assert all(check.lead and check.retry_instruction for check in EDITORIAL_CHECKS)
 

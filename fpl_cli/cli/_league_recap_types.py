@@ -1301,6 +1301,25 @@ def gameweek_rank(manager: RecapManagerEntry, managers: Sequence[RecapManagerEnt
     return competition_rank(manager["gw_points"], (other["gw_points"] for other in managers))
 
 
+def last_place_escape(managers: Sequence[RecapManagerEntry]) -> str | None:
+    """Who avoided last place on the week and by how much: "Bea Gale avoided
+    last place on the week by 1 pt", or "Bea Gale, Cy Hart each avoided ...".
+    None when every gameweek score is level, so nobody did.
+
+    The one wording of the escape (#487): the prompt's GW Standings section
+    states it on its lowest line, and the editorial check that holds the
+    escape to the data (#488) hands the same sentence to the retry, so the
+    two can never tell the model different things.
+    """
+    scores = sorted({m["gw_points"] for m in managers})
+    if len(scores) < 2:
+        return None
+    lowest, nearest = scores[:2]
+    escaped = sorted(m["manager_name"] for m in managers if m["gw_points"] == nearest)
+    who = f"{', '.join(escaped)} each" if len(escaped) > 1 else escaped[0]
+    return f"{who} avoided last place on the week by {points_label(nearest - lowest)}"
+
+
 def place_label(rank: int) -> str:
     """A league position as the table reads it: "1st", "7th", "12th"."""
     return f"{rank}{ordinal_suffix(rank)}"
