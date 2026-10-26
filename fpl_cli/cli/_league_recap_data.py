@@ -21,7 +21,7 @@ from fpl_cli.cli._fines import (
     evaluate_fines,
     rules_for_format,
 )
-from fpl_cli.cli._fines_config import parse_fines_config
+from fpl_cli.cli._fines_config import DEFAULT_PENALTY, parse_fines_config
 from fpl_cli.cli._helpers import _live_player_stats
 
 if TYPE_CHECKING:
@@ -67,6 +67,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapAwards,
     RecapDraftLostClaim,
     RecapDraftTransaction,
+    RecapFinePenalty,
     RecapFinePlayer,
     RecapFineResult,
     RecapManagerEntry,
@@ -1359,6 +1360,37 @@ def configured_fine_rule_types(settings: dict[str, Any], format_name: str) -> li
     if fines_config is None:
         return []
     return [rule.type for rule in rules_for_format(fines_config, format_name)]
+
+
+def recap_fine_penalties(
+    fines: Sequence[RecapFineResult],
+    settings: dict[str, Any],
+    format_name: str,
+) -> list[RecapFinePenalty]:
+    """Each forfeit `fines` carries, with the league's phrasings for it (#503).
+
+    Read off the rules of the types that triggered, in config order, so the
+    editorial is told only about forfeits it has a fine to write about. A rule
+    that left `penalty:` unset carries no league's forfeit and is skipped. Two
+    rules that share a forfeit share one entry, their phrasings merged.
+    Empty when nothing was fined or fines are unconfigured; a malformed
+    `fines:` block raises `ConfigError` as `evaluate_league_fines` does.
+    """
+    triggered = {fine["rule_type"] for fine in fines}
+    if not triggered:
+        return []
+    fines_config = parse_fines_config(settings)
+    if fines_config is None:
+        return []
+    penalties: dict[str, RecapFinePenalty] = {}
+    for rule in rules_for_format(fines_config, format_name):
+        if rule.type not in triggered or rule.penalty == DEFAULT_PENALTY:
+            continue
+        entry = penalties.setdefault(rule.penalty, RecapFinePenalty(penalty=rule.penalty, phrasings=[]))
+        for phrasing in fines_config.phrasings_for(rule):
+            if phrasing not in entry["phrasings"]:
+                entry["phrasings"].append(phrasing)
+    return list(penalties.values())
 
 
 def evaluate_league_fines(

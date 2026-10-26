@@ -1,4 +1,4 @@
-"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486, #488).
+"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486, #488, #503).
 
 The prompt states every rule these read, and the model has broken each of
 them anyway: a manager named as beaten in a waiver race they won, a
@@ -12,12 +12,13 @@ has already ignored once.
 Each check is narrow by design. It reads only the clauses it can pin down
 and lets everything else pass, so a problem it returns is a sentence the
 data contradicts, never a guess -- a false alarm costs a retry and puts a
-warning above a correct editorial. The one check that breaks that wording is
-the roll call of beaten managers (#459), which fires on a true sentence:
-its contract is the mechanical analogue, a count of known names in one
-paragraph and never a judgement of tone. It is registered as a broken brief
-rather than a contradiction, so the retry, stderr and the saved report say
-the draft broke its brief instead of claiming the data contradicts it.
+warning above a correct editorial. Two checks break that wording, the roll
+call of beaten managers (#459) and the forfeit written out word for word
+more than once (#503), since each fires on true sentences: their contract
+is the mechanical analogue, a count of known strings and never a judgement
+of tone. Both are registered as a broken brief rather than a contradiction,
+so the retry, stderr and the saved report say the draft broke its brief
+instead of claiming the data contradicts it.
 `EDITORIAL_CHECKS` is the one registry: each check's warning code, the prose
 its JSON warning opens with, what the retry is told, and the checker itself.
 """
@@ -31,6 +32,7 @@ from dataclasses import dataclass
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     RecapContestedClaim,
+    RecapFinePenalty,
     RecapManagerEntry,
     RecapSeasonRecord,
     competition_rank,
@@ -55,6 +57,7 @@ RECAP_WARNING_UNSUPPORTED_TIE = "synthesis_unsupported_tie"
 RECAP_WARNING_WRONG_PLACING = "synthesis_wrong_gameweek_placing"
 RECAP_WARNING_ESCAPE_MISATTRIBUTION = "synthesis_escape_misattribution"
 RECAP_WARNING_CONTESTED_ROLL_CALL = "synthesis_contested_roll_call"
+RECAP_WARNING_PENALTY_REPEATED = "synthesis_penalty_repeated"
 
 
 # =============================================================================
@@ -2145,6 +2148,58 @@ def check_escape_claims(summary: str, managers: Sequence[RecapManagerEntry], nam
 
 
 # =============================================================================
+# The forfeit written out word for word (#503)
+# =============================================================================
+
+# What may sit between two of a forfeit's words and still be the forfeit
+# written out: spacing, emphasis and the punctuation inside a phrase, never
+# a sentence's end. "Pint on **video**" is the forfeit; "a pint. On video,
+# ..." is two sentences.
+_PENALTY_WORD_GAP = r"[^\w.!?;:\n]+"
+_PENALTY_WORD_RE = re.compile(r"\w+")
+# Fewer words than this and the forfeit is an ordinary word too: a league
+# whose forfeit is "Shot" would have "a shot at the title" counted against it.
+_PENALTY_MIN_WORDS = 2
+
+
+def _penalty_pattern(penalty: str) -> re.Pattern[str] | None:
+    """The forfeit's words in order, each in either number, or None for a
+    forfeit too short to tell from ordinary prose. "Pints on video" is still
+    the forfeit written out; "a pint on camera" is a phrasing of it."""
+    words = _PENALTY_WORD_RE.findall(penalty)
+    if len(words) < _PENALTY_MIN_WORDS:
+        return None
+    body = _PENALTY_WORD_GAP.join(f"{re.escape(word)}(?:e?s)?" for word in words)
+    return re.compile(rf"(?<!\w){body}(?!\w)", re.IGNORECASE)
+
+
+def check_penalty_repetitions(summary: str, penalties: Sequence[RecapFinePenalty]) -> list[str]:
+    """Every forfeit the editorial writes out word for word more than once.
+
+    The brief allows each once, headline included, and every other mention in
+    other words. A count of one known string, like the roll call's count of
+    known names: it never judges whether a reworded mention kept the
+    forfeit's meaning, and a forfeit of one word is left alone, since it
+    cannot be told from the same word used for something else.
+    """
+    problems: list[str] = []
+    for entry in penalties:
+        pattern = _penalty_pattern(entry["penalty"])
+        if pattern is None:
+            continue
+        found = [match.group(0) for match in pattern.finditer(summary)]
+        if len(found) < 2:
+            continue
+        times = "twice" if len(found) == 2 else f"{len(found)} times"
+        quoted = ", ".join(f'"{text}"' for text in found)
+        problems.append(
+            f'the editorial writes the forfeit "{entry["penalty"]}" out word for word {times} '
+            f"({quoted}), where the brief allows it once",
+        )
+    return problems
+
+
+# =============================================================================
 # The registry, the retry and the warning
 # =============================================================================
 
@@ -2257,6 +2312,17 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
             "manager lost two races), never as a list."
         ),
         run=_contested_roll_calls,
+        broken_brief=True,
+    ),
+    EditorialCheck(
+        code=RECAP_WARNING_PENALTY_REPEATED,
+        lead="The editorial writes a fine's forfeit out word for word more than once",
+        retry_instruction=(
+            'Write each forfeit in the exact words of its "Naming the forfeit" line at most once, '
+            "headline included, and say it in other words everywhere else, using only the league's "
+            "own phrasings where that line gives them, without changing what the forfeit is."
+        ),
+        run=lambda summary, data, names: check_penalty_repetitions(summary, data.get("fine_penalties", [])),
         broken_brief=True,
     ),
 )

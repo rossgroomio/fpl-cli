@@ -71,6 +71,7 @@ The editorial is pasted into the league's WhatsApp group and read on phones. Sho
 - A gameweek score is "the week of the season", "the season's best", "a season low" or any other best or worst of the season only when a "## League History" season-record line names it, and a manager's week is the best or worst of their own season only when that line names that week as theirs. Where the line names scores from other gameweeks and says no score this gameweek equalled it, this week's highest or lowest was not the season's, however big or small it looks. Carry the line's qualifier where it has one. No section ranks a margin, a bench haul or a pick against the rest of the season, so never call one the season's biggest, narrowest or best
 - A manager's FPL seasons before this one - how many they have played, how they finished last season, their best season, whether they are "returning", a "veteran" or a "newcomer", "entering their Nth season" - may be described only when the "## Prior Seasons" section is present and says so of that manager, with its season names, points, ranks, percentages and counts kept exact. That record is FPL-wide, never this league's: write "their 11th season of FPL", never "their 11th season in this league", "a founder member" or "back for another year in this league" - the section cannot say when anyone joined this league, and neither can you. A manager it lists under "No prior FPL seasons on record" is in their first recorded season and has no past to describe; one it lists under "could not be fetched" gets no claim about their past in either direction. Never derive a trajectory the section does not state ("improving", "declining", "off the pace they set last year") - one gameweek's points against a full season's total is no comparison at all. Without a "## Prior Seasons" section, mention nobody's earlier seasons
 - If fines were triggered, make them a highlight
+- A fine's forfeit is the league's own rule, so it never changes in your telling: never more of it, a different drink or forfeit, or a part of it dropped, unless a line in the data says it doubles or escalates. The "## Fines" section names each forfeit under "Naming the forfeit". Write a forfeit word for word at most once in the whole editorial, headline included; every other mention says the same forfeit in other words, and where that section gives the league's own phrasings for it, only in those, varied rather than repeated
 - The "## Season Fines" section is optional colour, not a required beat. Use it when a season total sharpens what already happened this gameweek ("Bob's fourth last-place of the season"), and leave it out entirely when it adds nothing - do not open or close on the season table, do not list it out, and never pad the recap with it. A gameweek where nobody was fined rarely needs it at all
 - Season fine totals come from the "## Season Fines" section exactly, never from adding up the "## Fines" section, which covers this gameweek alone, and a total that section qualifies as incomplete carries its qualification or stays out. Where this gameweek's fine sits in a manager's season - their first, their third, their "another" or "again" - is stated for you under the "## Fines" section; use that placement and no other, and never count a fine ("second", "twice", "back-to-back", "in a row", "still") beyond what it says. A bare total of 1 is one fine, this gameweek: two managers each on 1 are two first offences, not a repeat, and the league-wide total is nobody's running count
 - The biggest bench haul is always funny - lean into it
@@ -1138,7 +1139,39 @@ def format_recap_fines_context(
             "the season table -- use these words rather than counting fines yourself):",
         )
         lines.extend(placements)
+    penalties = _fine_penalty_lines(data)
+    if penalties:
+        lines.append("")
+        lines.append("Naming the forfeit:")
+        lines.extend(penalties)
     return "\n".join(lines)
+
+
+def _fine_penalty_lines(data: LeagueRecapData) -> list[str]:
+    """One line per forfeit this gameweek's fines carry: the words the
+    editorial may write out once, and the league's own others (#503).
+
+    The forfeit is printed on every fine above, so by GW8 one league's
+    editorials were writing it out two and three times a week as filler. Said
+    once here, beside the league's phrasings where it set any, so the model
+    varies the wording from a list the league chose rather than one it makes
+    up -- and a forfeit nobody gave phrasings for is still named, so the
+    once-only rule has a string to hold to.
+    """
+    lines: list[str] = []
+    for entry in data.get("fine_penalties", []):
+        penalty = entry["penalty"]
+        line = f'- "{penalty}": write these exact words at most once in the editorial'
+        if entry["phrasings"]:
+            phrasings = "; ".join(entry["phrasings"])
+            line += (
+                f". Every other mention uses one of this league's own phrasings for it, "
+                f"varied rather than repeated, and no others: {phrasings}"
+            )
+        else:
+            line += ". Every other mention says the same forfeit in your own words"
+        lines.append(line)
+    return lines
 
 
 def format_recap_season_fines_context(tally: SeasonFinesTally | None) -> str:

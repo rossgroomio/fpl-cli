@@ -222,3 +222,53 @@ class TestWhatStaysLenient:
 
         assert config is not None
         assert config.escalation_note == "Fines double each GW"
+
+
+class TestPenaltyPhrasings:
+    """#503: the league's own ways of naming its forfeit, so the editorial can
+    vary them instead of writing the penalty out every time."""
+
+    def test_absent_everywhere_is_empty(self):
+        config = parse_fines_config({"fines": {"classic": [{"type": "last-place", "penalty": "Pint on video"}]}})
+        assert config is not None
+        assert config.penalty_phrasings == ()
+        assert config.phrasings_for(config.classic[0]) == ()
+
+    def test_the_block_list_covers_every_rule_without_its_own(self):
+        config = parse_fines_config({"fines": {
+            "penalty_phrasings": ["pint of shame", "penance pint"],
+            "classic": [{"type": "last-place", "penalty": "Pint on video"}],
+        }})
+        assert config is not None
+        assert config.phrasings_for(config.classic[0]) == ("pint of shame", "penance pint")
+
+    def test_a_rules_own_list_wins_over_the_block(self):
+        config = parse_fines_config({"fines": {
+            "penalty_phrasings": ["pint of shame"],
+            "classic": [
+                {"type": "last-place", "penalty": "Pint on video"},
+                {"type": "red-card", "penalty": "Buy the round", "penalty_phrasings": ["the round"]},
+            ],
+        }})
+        assert config is not None
+        assert config.phrasings_for(config.classic[0]) == ("pint of shame",)
+        assert config.phrasings_for(config.classic[1]) == ("the round",)
+
+    def test_blanks_and_repeats_are_dropped_and_entries_stripped(self):
+        config = parse_fines_config({"fines": {
+            "penalty_phrasings": [" pint of shame ", "", "pint of shame", "   ", "forfeit pint"],
+            "classic": [{"type": "last-place"}],
+        }})
+        assert config is not None
+        assert config.penalty_phrasings == ("pint of shame", "forfeit pint")
+
+    @pytest.mark.parametrize("raw", ["pint of shame", {"a": "b"}, 3])
+    def test_a_block_list_that_is_not_a_list_is_refused(self, raw):
+        with pytest.raises(ConfigError, match="'fines.penalty_phrasings' must be a list of strings"):
+            parse_fines_config({"fines": {"penalty_phrasings": raw, "classic": [{"type": "last-place"}]}})
+
+    def test_a_rule_list_with_a_non_string_entry_is_refused_by_rule(self):
+        with pytest.raises(ConfigError, match="Fine rule 'red-card' penalty_phrasings must be a list of strings"):
+            parse_fines_config({"fines": {"classic": [
+                {"type": "red-card", "penalty_phrasings": ["the round", 5]},
+            ]}})

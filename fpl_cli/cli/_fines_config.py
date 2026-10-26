@@ -16,7 +16,11 @@ VALID_RULE_TYPES = frozenset({"last-place", "red-card", "below-threshold"})
 # fines configured" -- which stamps `fine_rules_evaluated: []` onto the ledger
 # for a gameweek whose rules were never read (#136's false acquittal, and
 # append-only). A rule list that silently disappears has to be an error.
-VALID_FINES_KEYS = frozenset({"classic", "draft", "escalation_note"})
+VALID_FINES_KEYS = frozenset({"classic", "draft", "escalation_note", "penalty_phrasings"})
+
+# What a rule carries when its `penalty:` is left out. Nobody chose it, so it
+# is no league's forfeit and the editorial is never told to vary it (#503).
+DEFAULT_PENALTY = "Fine triggered"
 
 
 @dataclass(frozen=True)
@@ -24,11 +28,15 @@ class FineRule:
     """A single fine rule from config."""
 
     type: str
-    penalty: str = "Fine triggered"
+    penalty: str = DEFAULT_PENALTY
     # `int | float` because a float threshold compares correctly and always
     # has -- narrowing it to `int` now would reject a settings.yaml that
     # works today.
     threshold: int | float | None = None
+    # The league's own ways of referring to `penalty`, which the editorial
+    # varies between instead of repeating it word for word (#503). Empty
+    # means the rule has none of its own and takes the block's.
+    penalty_phrasings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -38,6 +46,13 @@ class FinesConfig:
     classic: list[FineRule] = field(default_factory=list)
     draft: list[FineRule] = field(default_factory=list)
     escalation_note: str | None = None
+    # Phrasings for every rule that sets none of its own.
+    penalty_phrasings: tuple[str, ...] = ()
+
+    def phrasings_for(self, rule: FineRule) -> tuple[str, ...]:
+        """The phrasings the editorial may use for `rule`'s penalty: the
+        rule's own where it has any, else the block's."""
+        return rule.penalty_phrasings or self.penalty_phrasings
 
 
 def parse_fines_config(settings: dict[str, Any]) -> FinesConfig | None:
@@ -80,8 +95,37 @@ def parse_fines_config(settings: dict[str, Any]) -> FinesConfig | None:
     classic = [_parse_rule(r, "classic") for r in classic_raw]
     draft = [_parse_rule(r, "draft") for r in draft_raw]
     escalation_note = fines_raw.get("escalation_note")
+    penalty_phrasings = _phrasings(fines_raw.get("penalty_phrasings"), "'fines.penalty_phrasings'")
 
-    return FinesConfig(classic=classic, draft=draft, escalation_note=escalation_note)
+    return FinesConfig(
+        classic=classic,
+        draft=draft,
+        escalation_note=escalation_note,
+        penalty_phrasings=penalty_phrasings,
+    )
+
+
+def _phrasings(raw: Any, where: str) -> tuple[str, ...]:
+    """A `penalty_phrasings` list, each entry stripped, blanks and repeats dropped.
+
+    Checked rather than coerced: a bare string where the list belongs would
+    otherwise be read a character at a time, and the editorial would be told
+    the league calls its forfeit "p", "i" and "n".
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        msg = f"{where} must be a list of strings, got {type(raw).__name__}"
+        raise ConfigError(msg)
+    phrasings: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            msg = f"{where} must be a list of strings, got an entry of type {type(item).__name__}"
+            raise ConfigError(msg)
+        phrasing = item.strip()
+        if phrasing and phrasing not in phrasings:
+            phrasings.append(phrasing)
+    return tuple(phrasings)
 
 
 def _rule_list(raw: Any, format_name: str) -> list[Any]:
@@ -112,7 +156,7 @@ def _parse_rule(raw: Any, format_name: str) -> FineRule:
         msg = f"Unknown fine rule type '{rule_type}'. Valid types: {', '.join(sorted(VALID_RULE_TYPES))}"
         raise ConfigError(msg)
 
-    penalty = raw.get("penalty", "Fine triggered")
+    penalty = raw.get("penalty", DEFAULT_PENALTY)
     if not isinstance(penalty, str):
         msg = f"Fine rule '{rule_type}' penalty must be a string, got {type(penalty).__name__}"
         raise ConfigError(msg)
@@ -143,4 +187,7 @@ def _parse_rule(raw: Any, format_name: str) -> FineRule:
         type=rule_type,
         penalty=penalty,
         threshold=threshold,
+        penalty_phrasings=_phrasings(
+            raw.get("penalty_phrasings"), f"Fine rule '{rule_type}' penalty_phrasings",
+        ),
     )

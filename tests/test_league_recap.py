@@ -42,6 +42,7 @@ from fpl_cli.cli._league_recap_data import (
     fetch_manager_histories,
     find_standout_players,
     is_league_opening_gameweek,
+    recap_fine_penalties,
     recap_fine_player_names,
     restate_recap_fine_players,
     shape_prior_seasons,
@@ -96,6 +97,7 @@ from fpl_cli.prompts.league_recap_checks import (
     RECAP_WARNING_ESCAPE_MISATTRIBUTION,
     RECAP_WARNING_KIND_NET_MISATTRIBUTION,
     RECAP_WARNING_NET_MISATTRIBUTION,
+    RECAP_WARNING_PENALTY_REPEATED,
     RECAP_WARNING_UNSUPPORTED_TIE,
     RECAP_WARNING_WRONG_PLACING,
     RecapNames,
@@ -105,6 +107,7 @@ from fpl_cli.prompts.league_recap_checks import (
     check_gameweek_placings,
     check_kind_net_scopes,
     check_net_attributions,
+    check_penalty_repetitions,
     check_recap_editorial,
     check_tie_claims,
     editorial_warning_message,
@@ -7532,9 +7535,9 @@ class TestBrokenBriefIsToldApartFromContradiction:
     _ROLL = "one paragraph names 5 of the 5 managers beaten to King"
     _WRONG = "the editorial says Bob was beaten to Giles"
 
-    def test_only_the_roll_call_is_registered_as_a_broken_brief(self):
+    def test_only_the_roll_call_and_the_repeated_forfeit_are_registered_as_broken_briefs(self):
         assert {check.code for check in EDITORIAL_CHECKS if check.broken_brief} == {
-            RECAP_WARNING_CONTESTED_ROLL_CALL,
+            RECAP_WARNING_CONTESTED_ROLL_CALL, RECAP_WARNING_PENALTY_REPEATED,
         }
 
     def test_the_retry_prompt_for_a_roll_call_carries_the_instruction_and_a_header_that_fits(self):
@@ -8976,6 +8979,7 @@ class TestEditorialChecks:
             RECAP_WARNING_CONTESTED_MISATTRIBUTION, RECAP_WARNING_NET_MISATTRIBUTION,
             RECAP_WARNING_KIND_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE,
             RECAP_WARNING_WRONG_PLACING, RECAP_WARNING_ESCAPE_MISATTRIBUTION, RECAP_WARNING_CONTESTED_ROLL_CALL,
+            RECAP_WARNING_PENALTY_REPEATED,
         })
         assert all(check.lead and check.retry_instruction for check in EDITORIAL_CHECKS)
 
@@ -10251,3 +10255,174 @@ class TestCollectorDraftAcquisitions:
         fifth = next(p for p in data["managers"][0]["squad"] if p["name"] == "P5")
         assert fifth["acquisition"] is not None
         assert (fifth["acquisition"]["kind"], fifth["acquisition"]["round"]) == ("draft", 5)
+
+
+# ---------------------------------------------------------------------------
+# Naming the forfeit (#503)
+# ---------------------------------------------------------------------------
+
+_PINT = "Pint on video"
+_PHRASINGS = ["pint of shame", "penance pint", "one for the group chat"]
+
+
+class TestRecapFinePenalties:
+    """Which forfeits the editorial is told about, and in whose words."""
+
+    @staticmethod
+    def _fine(rule_type="last-place", name="Bob"):
+        from fpl_cli.cli._league_recap_types import RecapFineResult
+
+        return RecapFineResult(
+            manager_name=name, rule_type=rule_type, message=f"Finished last in the gameweek. {_PINT}",
+        )
+
+    def test_nothing_fined_is_nothing_to_name(self):
+        settings = {"fines": {"classic": [{"type": "last-place", "penalty": _PINT}]}}
+        assert recap_fine_penalties([], settings, "classic") == []
+
+    def test_a_triggered_rules_forfeit_carries_the_block_phrasings(self):
+        settings = {"fines": {
+            "penalty_phrasings": _PHRASINGS,
+            "classic": [{"type": "last-place", "penalty": _PINT}],
+        }}
+        assert recap_fine_penalties([self._fine()], settings, "classic") == [
+            {"penalty": _PINT, "phrasings": _PHRASINGS},
+        ]
+
+    def test_without_phrasings_the_forfeit_is_still_named(self):
+        settings = {"fines": {"classic": [{"type": "last-place", "penalty": _PINT}]}}
+        assert recap_fine_penalties([self._fine()], settings, "classic") == [
+            {"penalty": _PINT, "phrasings": []},
+        ]
+
+    def test_only_rules_that_triggered_are_named(self):
+        settings = {"fines": {"classic": [
+            {"type": "last-place", "penalty": _PINT},
+            {"type": "red-card", "penalty": "Buy the round"},
+        ]}}
+        penalties = recap_fine_penalties([self._fine("red-card")], settings, "classic")
+        assert [entry["penalty"] for entry in penalties] == ["Buy the round"]
+
+    def test_rules_sharing_a_forfeit_share_one_entry_with_their_phrasings_merged(self):
+        settings = {"fines": {"classic": [
+            {"type": "last-place", "penalty": _PINT, "penalty_phrasings": ["pint of shame", "penance pint"]},
+            {"type": "red-card", "penalty": _PINT, "penalty_phrasings": ["penance pint", "the pint tax"]},
+        ]}}
+        penalties = recap_fine_penalties(
+            [self._fine("last-place"), self._fine("red-card", name="Cam")], settings, "classic",
+        )
+        assert penalties == [{"penalty": _PINT, "phrasings": ["pint of shame", "penance pint", "the pint tax"]}]
+
+    def test_a_rule_with_no_penalty_set_carries_no_forfeit(self):
+        settings = {"fines": {"penalty_phrasings": _PHRASINGS, "classic": [{"type": "last-place"}]}}
+        assert recap_fine_penalties([self._fine()], settings, "classic") == []
+
+    def test_the_format_s_own_rules_are_read(self):
+        settings = {"fines": {
+            "classic": [{"type": "last-place", "penalty": _PINT}],
+            "draft": [{"type": "last-place", "penalty": "Wear the shirt"}],
+        }}
+        penalties = recap_fine_penalties([self._fine()], settings, "draft")
+        assert [entry["penalty"] for entry in penalties] == ["Wear the shirt"]
+
+    def test_unconfigured_fines_name_nothing(self):
+        assert recap_fine_penalties([self._fine()], {}, "classic") == []
+
+
+class TestFinesContextNamesTheForfeit:
+    @staticmethod
+    def _data(phrasings):
+        from fpl_cli.cli._league_recap_types import RecapFineResult
+
+        data = _make_recap_data(fines=[RecapFineResult(
+            manager_name="Bob", rule_type="last-place", message=f"Finished last in the gameweek. {_PINT}",
+        )])
+        data["fine_penalties"] = [{"penalty": _PINT, "phrasings": phrasings}]
+        return data
+
+    def test_the_league_s_phrasings_are_the_only_others_allowed(self):
+        text = format_recap_fines_context(self._data(_PHRASINGS))
+
+        assert "\n\nNaming the forfeit:\n" in text
+        assert f'- "{_PINT}": write these exact words at most once in the editorial' in text
+        assert "varied rather than repeated, and no others: pint of shame; penance pint; one for the group chat" in text
+
+    def test_without_phrasings_the_model_words_it_itself(self):
+        text = format_recap_fines_context(self._data([]))
+
+        assert f'- "{_PINT}": write these exact words at most once in the editorial' in text
+        assert "Every other mention says the same forfeit in your own words" in text
+        assert "no others" not in text
+
+    def test_the_fine_lines_themselves_are_unchanged(self):
+        text = format_recap_fines_context(self._data(_PHRASINGS))
+        assert text.startswith(f"- Bob: Finished last in the gameweek. {_PINT}\n")
+
+    def test_no_penalties_no_block(self):
+        from fpl_cli.cli._league_recap_types import RecapFineResult
+
+        data = _make_recap_data(fines=[RecapFineResult(
+            manager_name="Bob", rule_type="last-place", message="Finished last in the gameweek.",
+        )])
+        assert "Naming the forfeit" not in format_recap_fines_context(data)
+
+    def test_the_system_prompt_holds_the_forfeit_to_what_it_is(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "Write a forfeit word for word at most once in the whole editorial, headline included" in (
+            RECAP_SYNTHESIS_SYSTEM_PROMPT
+        )
+        assert "never more of it, a different drink or forfeit, or a part of it dropped" in (
+            RECAP_SYNTHESIS_SYSTEM_PROMPT
+        )
+
+
+class TestPenaltyRepetitions:
+    _PENALTIES = [{"penalty": _PINT, "phrasings": []}]
+
+    def test_once_is_allowed(self):
+        assert check_penalty_repetitions(f"## The Pint Shop\nBob owes a {_PINT.lower()}.", self._PENALTIES) == []
+
+    def test_twice_is_caught_with_both_quoted(self):
+        summary = "Bob owes a **pint on video**. Cam joins him: pints on video all round."
+        assert check_penalty_repetitions(summary, self._PENALTIES) == [
+            'the editorial writes the forfeit "Pint on video" out word for word twice '
+            '("pint on video", "pints on video"), where the brief allows it once',
+        ]
+
+    def test_the_headline_counts(self):
+        summary = "## Pint on Video Time\nBob owes a pint on video."
+        assert "twice" in check_penalty_repetitions(summary, self._PENALTIES)[0]
+
+    def test_three_times_is_counted(self):
+        summary = "Pint on video. Pint on video. Pint on video."
+        assert "3 times" in check_penalty_repetitions(summary, self._PENALTIES)[0]
+
+    def test_phrasings_and_near_misses_are_not_the_forfeit(self):
+        summary = (
+            "Bob owes a pint on video. A pint on camera for Cam, the pint of shame for Dan, "
+            "and a pint. On video, Eve celebrated."
+        )
+        assert check_penalty_repetitions(summary, self._PENALTIES) == []
+
+    def test_a_one_word_forfeit_is_left_alone(self):
+        summary = "Bob owes a shot. Cam had a shot at the title."
+        assert check_penalty_repetitions(summary, [{"penalty": "Shot", "phrasings": []}]) == []
+
+    def test_the_registry_reads_the_forfeits_off_the_data(self):
+        data = _make_recap_data()
+        summary = "Bob owes a pint on video. Another pint on video for Cam."
+        assert check_recap_editorial(summary, data) == {}
+
+        data["fine_penalties"] = self._PENALTIES
+        problems = check_recap_editorial(summary, data)
+        assert list(problems) == [RECAP_WARNING_PENALTY_REPEATED]
+        assert recap_editorial_flaw(problems) == "breaks the brief it was given"
+
+    def test_the_retry_names_the_forfeit_line_and_keeps_it_unchanged(self):
+        prompt = get_recap_editorial_retry_prompt(
+            "ORIGINAL", {RECAP_WARNING_PENALTY_REPEATED: ["the editorial writes it twice"]},
+        )
+        assert "Your previous draft broke the brief it was given:" in prompt
+        assert 'in the exact words of its "Naming the forfeit" line at most once' in prompt
+        assert "without changing what the forfeit is." in prompt

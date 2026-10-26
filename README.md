@@ -93,6 +93,11 @@ as configured — whether or not it has an editorial. The editorial's own headli
 as a `##` subheading, never as the title, so the first line you paste into the group chat reads
 the same every week and the name on it is the league's rather than one the model restyled.
 
+The Fines list prints each fine's forfeit as configured, but the editorial writes it out word
+for word at most once and says it in other words elsewhere, so "pint on video" does not wear
+thin by October. Give it your league's own vocabulary with `penalty_phrasings` under `fines:`
+in `settings.yaml` (see [Fine Rule Types](docs/command-reference.md#fine-rule-types)).
+
 Fines are ruled per gameweek by `league-recap` and recorded against it, so `fpl
 league-fines` reads them straight back off disk — no network, and any season still
 on disk (`--season 2025-26`). Every gameweek that could not be ruled is named

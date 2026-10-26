@@ -60,6 +60,9 @@ llm:
 #
 # fines:
 #   escalation_note: "Fines double each GW if not honoured"
+#   penalty_phrasings:             # Optional - the league's own ways of naming the forfeit,
+#     - "pint of shame"            # which the league-recap editorial varies between rather
+#     - "penance pint"             # than writing the penalty out word for word every time
 #   classic:
 #     - type: last-place           # Fine if you finish last in the GW
 #       penalty: "Pint on video"   # Custom consequence text
@@ -75,7 +78,8 @@ llm:
 #       penalty: "Pint on video"
 #
 # Valid rule types: last-place, red-card, below-threshold
-# Valid keys under 'fines': classic, draft, escalation_note - a misspelled one is
+# Valid keys under 'fines': classic, draft, escalation_note, penalty_phrasings - a misspelled one is
 # refused by name rather than ignored, since an ignored key silently disables the
-# rules under it. 'threshold' must be an unquoted number.
+# rules under it. 'threshold' must be an unquoted number. A rule may carry its own
+# 'penalty_phrasings' list, which replaces the block's for that rule.
 # Net points (transfer hits) controlled by top-level use_net_points setting

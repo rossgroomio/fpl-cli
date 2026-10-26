@@ -772,6 +772,17 @@ class RecapFineResult(TypedDict):
     players: NotRequired[list[RecapFinePlayer]]
 
 
+class RecapFinePenalty(TypedDict):
+    """One forfeit this gameweek's fines carry, and the league's own ways of
+    saying it (#503)."""
+
+    # The configured `penalty:`, exactly as the Fines list prints it.
+    penalty: str
+    # The league's `penalty_phrasings:` for it, in config order. Empty when
+    # the league set none, and the editorial then words it itself.
+    phrasings: list[str]
+
+
 class RecapSeasonRecord(TypedDict):
     """The league's highest or lowest gameweek score this season, as the
     editorial's League History section states it (issue #494)."""
@@ -836,6 +847,11 @@ class LeagueRecapData(TypedDict):
     # ruled rather than a rule list they were never measured against.
     # Absent entirely means the caller ruled every manager it collected.
     fines_ruled_manager_keys: NotRequired[list[int]]
+    # Each distinct forfeit `fines` carries, from the rules that triggered
+    # (#503). Read by the editorial's prompt and by the check that holds it
+    # to naming each one word for word at most once; never by the ledger.
+    # Absent when nothing was fined, or no triggered rule set a `penalty:`.
+    fine_penalties: NotRequired[list[RecapFinePenalty]]
     synthesis_summary: NotRequired[str]
     # The provider's own stop reason for the editorial, recorded only when it
     # was not a normal completion (#266), on the attempt that shipped (#372).
