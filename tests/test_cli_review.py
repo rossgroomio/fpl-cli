@@ -2350,8 +2350,11 @@ class TestReviewCommandWithAnUnreadableRecsFile:
         season_dir = tmp_path / "2026-27"
         season_dir.mkdir()
         (season_dir / "gw6-recommendations.md").write_text(recs_text, encoding="utf-8")
+        # Wide enough that the tmp path never wraps: where it would wrap
+        # depends on how long the machine's temp dir is.
         return CliRunner().invoke(
             review_module.review_command, ["--gameweek", "6", "--compare-recs", "--output", str(tmp_path)],
+            env={"COLUMNS": "500"},
         )
 
     def test_unread_transfers_are_not_graded_unadvised(self, monkeypatch, tmp_path):
@@ -2366,10 +2369,8 @@ class TestReviewCommandWithAnUnreadableRecsFile:
         ))
 
         assert result.exit_code == 0, result.output
-        # Rich wraps the long path, mid-name included.
-        stderr = result.stderr.replace("\n", "")
-        assert "Could not read the transfers from" in stderr
-        assert "2026-27/gw6-recommendations.md, so it is not graded" in stderr
+        assert "Could not read the transfers from" in result.stderr
+        assert "2026-27/gw6-recommendations.md, so it is not graded" in result.stderr
         assert "Recommendations vs Actuals" in result.stdout
         assert "Transfers: ? not graded (could not be read from the file)" in result.stdout
         assert "Unadvised" not in result.stdout

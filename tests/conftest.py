@@ -1,7 +1,10 @@
 """Shared fixtures and mock data for FPL Agents tests."""
 
 import importlib.util
+import os
+import re
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
@@ -9,8 +12,18 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import httpx._transports.default as httpx_transport
 import pytest
 import yaml
+
+# Rich fixes a console's width for good when COLUMNS is set as the console is
+# built, and fpl_cli builds its consoles at import, just below. pytest-xdist
+# workers start with COLUMNS=80, as does any shell that exports it, which
+# would pin every table to that width and silently ignore the COLUMNS a test
+# passes to CliRunner. Dropping both here, before the import, keeps the width
+# read per render, so each test decides its own.
+os.environ.pop("COLUMNS", None)
+os.environ.pop("LINES", None)
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.models.fixture import Fixture
@@ -146,6 +159,48 @@ def malformed_fines(offline, tmp_path):
     bad_rule = [{"type": "below-threshold", "penalty": "Pint on video"}]
     settings["fines"] = {"classic": bad_rule, "draft": bad_rule}
     settings_file.write_text(yaml.safe_dump(settings), encoding="utf-8")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _shared_ssl_context():
+    """One TLS context for every httpx client the suite builds.
+
+    Each httpx client reads the whole CA bundle into a fresh TLS context,
+    about 20ms, and the suite builds thousands of them (every FPLClient,
+    FPLDraftClient, ...) without ever opening a connection -- pytest-socket
+    blocks the network. Sharing one context took about 90s off a full run.
+    Clients asking for anything but the default (verify=False, a client
+    cert) still get their own. patch.object fails loudly if an httpx
+    release moves the function, rather than letting the suite slow down
+    unnoticed.
+    """
+    shared = httpx.create_ssl_context()
+    build = httpx_transport.create_ssl_context
+
+    # Keyword pass-through: httpx 0.27 (the floor) also sends http2=.
+    def _create_ssl_context(**kwargs):
+        default = {"verify": True, "cert": None, "trust_env": True, "http2": False}
+        if all(kwargs.get(key, value) == value for key, value in default.items()):
+            return shared
+        return build(**kwargs)
+
+    with patch.object(httpx_transport, "create_ssl_context", _create_ssl_context):
+        yield
+
+
+@pytest.fixture
+def tmp_path(request, tmp_path_factory):
+    """pytest's tmp_path, without a cost that grows with the suite.
+
+    pytest numbers each test's directory by listing every directory already
+    in the session's base temp dir, and _isolated_user_dirs gives every test
+    one, so each listing is longer than the last -- about 30s across a full
+    run. mkdtemp picks a random suffix with no listing. The directory still
+    sits under the base temp dir, named after the test, so --basetemp and
+    pytest's keep-the-last-three-runs cleanup behave as before.
+    """
+    name = re.sub(r"\W", "_", request.node.name)[:30]
+    return Path(tempfile.mkdtemp(prefix=f"{name}-", dir=tmp_path_factory.getbasetemp()))
 
 
 @pytest.fixture(autouse=True)

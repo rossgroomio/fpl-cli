@@ -34,7 +34,7 @@ jobs:
         run: pyright fpl_cli/ scripts/
 
       - name: Test
-        run: pytest
+        run: pytest -n auto
 
       - name: Build package
         run: pip install hatch && hatch build

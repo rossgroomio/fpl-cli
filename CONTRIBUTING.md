@@ -13,7 +13,7 @@ setup. Every PR must pass CI, which runs:
 ```console
 $ ruff check fpl_cli/ scripts/    # Lint
 $ pyright fpl_cli/ scripts/       # Type check
-$ pytest                 # Tests
+$ pytest -n auto         # Tests, one worker per core (pytest-xdist)
 $ hatch build            # Package build
 ```
 
