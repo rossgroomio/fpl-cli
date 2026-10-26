@@ -43,7 +43,6 @@ from fpl_cli.cli._league_recap_data import (
     find_standout_players,
     is_league_opening_gameweek,
     recap_fine_lines,
-    recap_fine_penalties,
     recap_fine_player_names,
     restate_recap_fine_players,
     shape_prior_seasons,
@@ -114,6 +113,7 @@ from fpl_cli.prompts.league_recap_checks import (
     editorial_warning_message,
     get_recap_editorial_retry_prompt,
     recap_editorial_flaw,
+    restates_forfeit,
     split_recap_problems,
 )
 from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
@@ -10465,68 +10465,83 @@ _PINT = "Pint on video"
 _PHRASINGS = ["pint of shame", "penance pint", "one for the group chat"]
 
 
-class TestRecapFinePenalties:
+class TestRulingNamesTheForfeitsThatFired:
     """Which forfeits the editorial is told about, and in whose words."""
 
     @staticmethod
-    def _fine(rule_type="last-place", name="Bob"):
-        from fpl_cli.cli._league_recap_types import RecapFineResult
-
-        return RecapFineResult(
-            manager_name=name, rule_type=rule_type, message=f"Finished last in the gameweek. {_PINT}",
-        )
+    def _managers(*points):
+        squad = [_make_squad_player(name=f"P{i}") for i in range(11)]
+        return [
+            _make_manager(name=name, gw_points=pts, entry_id=i + 1, squad=squad)
+            for i, (name, pts) in enumerate(zip(("Alice", "Bob", "Cam"), points))
+        ]
 
     def test_nothing_fined_is_nothing_to_name(self):
         settings = {"fines": {"classic": [{"type": "last-place", "penalty": _PINT}]}}
-        assert recap_fine_penalties([], settings, "classic") == []
+        assert evaluate_league_fines([], settings, "classic").penalties == []
 
-    def test_a_triggered_rules_forfeit_carries_the_block_phrasings(self):
+    def test_a_fired_rule_s_forfeit_carries_the_block_phrasings(self):
         settings = {"fines": {
             "penalty_phrasings": _PHRASINGS,
             "classic": [{"type": "last-place", "penalty": _PINT}],
         }}
-        assert recap_fine_penalties([self._fine()], settings, "classic") == [
-            {"penalty": _PINT, "phrasings": _PHRASINGS},
-        ]
+        ruling = evaluate_league_fines(self._managers(80, 20), settings, "classic")
+        assert ruling.penalties == [{"penalty": _PINT, "phrasings": _PHRASINGS}]
 
     def test_without_phrasings_the_forfeit_is_still_named(self):
         settings = {"fines": {"classic": [{"type": "last-place", "penalty": _PINT}]}}
-        assert recap_fine_penalties([self._fine()], settings, "classic") == [
-            {"penalty": _PINT, "phrasings": []},
-        ]
+        ruling = evaluate_league_fines(self._managers(80, 20), settings, "classic")
+        assert ruling.penalties == [{"penalty": _PINT, "phrasings": []}]
 
-    def test_only_rules_that_triggered_are_named(self):
+    def test_only_the_rule_that_fired_is_named_not_every_rule_of_its_type(self):
+        """Review: two below-threshold rules, a manager under only the higher
+        one, used to name both forfeits."""
         settings = {"fines": {"classic": [
-            {"type": "last-place", "penalty": _PINT},
-            {"type": "red-card", "penalty": "Buy the round"},
+            {"type": "below-threshold", "threshold": 30, "penalty": _PINT, "penalty_phrasings": ["pint of shame"]},
+            {"type": "below-threshold", "threshold": 20, "penalty": "Pay the pot", "penalty_phrasings": ["the pot"]},
         ]}}
-        penalties = recap_fine_penalties([self._fine("red-card")], settings, "classic")
-        assert [entry["penalty"] for entry in penalties] == ["Buy the round"]
+        ruling = evaluate_league_fines(self._managers(80, 25), settings, "classic")
+        assert ruling.penalties == [{"penalty": _PINT, "phrasings": ["pint of shame"]}]
 
-    def test_rules_sharing_a_forfeit_share_one_entry_with_their_phrasings_merged(self):
+    def test_rules_sharing_a_forfeit_share_one_entry(self):
         settings = {"fines": {"classic": [
             {"type": "last-place", "penalty": _PINT, "penalty_phrasings": ["pint of shame", "penance pint"]},
-            {"type": "red-card", "penalty": _PINT, "penalty_phrasings": ["penance pint", "the pint tax"]},
+            {"type": "below-threshold", "threshold": 30, "penalty": _PINT, "penalty_phrasings": ["the pint tax"]},
         ]}}
-        penalties = recap_fine_penalties(
-            [self._fine("last-place"), self._fine("red-card", name="Cam")], settings, "classic",
-        )
-        assert penalties == [{"penalty": _PINT, "phrasings": ["pint of shame", "penance pint", "the pint tax"]}]
+        ruling = evaluate_league_fines(self._managers(80, 20), settings, "classic")
+        assert ruling.penalties == [
+            {"penalty": _PINT, "phrasings": ["pint of shame", "penance pint", "the pint tax"]},
+        ]
 
-    def test_a_rule_with_no_penalty_set_carries_no_forfeit(self):
-        settings = {"fines": {"penalty_phrasings": _PHRASINGS, "classic": [{"type": "last-place"}]}}
-        assert recap_fine_penalties([self._fine()], settings, "classic") == []
+    @pytest.mark.parametrize("rule", [{"type": "last-place"}, {"type": "last-place", "penalty": "  "}])
+    def test_a_rule_naming_no_forfeit_carries_none(self, rule):
+        """Review: a blank penalty used to reach the prompt as `- "": write
+        these exact words...`."""
+        settings = {"fines": {"penalty_phrasings": _PHRASINGS, "classic": [rule]}}
+        ruling = evaluate_league_fines(self._managers(80, 20), settings, "classic")
+        assert ruling.fines
+        assert ruling.penalties == []
+
+    def test_a_phrasing_that_writes_the_forfeit_out_is_dropped(self):
+        """Review: listed as a phrasing, the forfeit itself would be the
+        editorial's to repeat and the check's to flag."""
+        settings = {"fines": {
+            "penalty_phrasings": ["pint on video", "Pints on video for the lads", "penance pint"],
+            "classic": [{"type": "last-place", "penalty": _PINT}],
+        }}
+        ruling = evaluate_league_fines(self._managers(80, 20), settings, "classic")
+        assert ruling.penalties == [{"penalty": _PINT, "phrasings": ["penance pint"]}]
 
     def test_the_format_s_own_rules_are_read(self):
         settings = {"fines": {
             "classic": [{"type": "last-place", "penalty": _PINT}],
             "draft": [{"type": "last-place", "penalty": "Wear the shirt"}],
         }}
-        penalties = recap_fine_penalties([self._fine()], settings, "draft")
-        assert [entry["penalty"] for entry in penalties] == ["Wear the shirt"]
+        ruling = evaluate_league_fines(self._managers(80, 20), settings, "draft")
+        assert [entry["penalty"] for entry in ruling.penalties] == ["Wear the shirt"]
 
     def test_unconfigured_fines_name_nothing(self):
-        assert recap_fine_penalties([self._fine()], {}, "classic") == []
+        assert evaluate_league_fines(self._managers(80, 20), {}, "classic").penalties == []
 
 
 class TestFinesContextNamesTheForfeit:
@@ -10545,7 +10560,19 @@ class TestFinesContextNamesTheForfeit:
 
         assert "\n\nNaming the forfeit:\n" in text
         assert f'- "{_PINT}": write these exact words at most once in the editorial' in text
-        assert "varied rather than repeated, and no others: pint of shame; penance pint; one for the group chat" in text
+        assert (
+            'varied rather than repeated, and no others: ["pint of shame", "penance pint", '
+            '"one for the group chat"]'
+        ) in text
+
+    def test_quotes_and_semicolons_in_the_league_s_text_stay_inside_their_entry(self):
+        """Review: `; `-joined, one phrasing with a semicolon read as two."""
+        data = self._data(["one for the lads; no questions", "penance pint"])
+        data["fine_penalties"][0]["penalty"] = 'Wear the "Spoon" shirt'
+        text = format_recap_fines_context(data)
+
+        assert '- "Wear the \\"Spoon\\" shirt": write these exact words' in text
+        assert 'no others: ["one for the lads; no questions", "penance pint"]' in text
 
     def test_without_phrasings_the_model_words_it_itself(self):
         text = format_recap_fines_context(self._data([]))
@@ -10604,6 +10631,38 @@ class TestPenaltyRepetitions:
             "and a pint. On video, Eve celebrated."
         )
         assert check_penalty_repetitions(summary, self._PENALTIES) == []
+
+    def test_a_forfeit_with_its_own_sentence_break_still_matches_itself(self):
+        """Review: the gap that stops a match at a sentence end was applied
+        inside the forfeit too, so this never fired."""
+        penalties = [{"penalty": "Pint on video. Tag the group", "phrasings": []}]
+        summary = "Pint on video. Tag the group for Sam. Another Pint on video. Tag the group."
+        assert "twice" in check_penalty_repetitions(summary, penalties)[0]
+
+        penalties = [{"penalty": "Pint on video: no excuses", "phrasings": []}]
+        summary = "Sam: pint on video: no excuses. Jo: Pint on video: no excuses."
+        assert "twice" in check_penalty_repetitions(summary, penalties)[0]
+
+    def test_a_break_the_forfeit_does_not_carry_still_ends_the_match(self):
+        penalties = [{"penalty": "Pint on video. Tag the group", "phrasings": []}]
+        assert check_penalty_repetitions("Pint on video; tag the group. Pint on video! Tag the group", penalties) == []
+
+    def test_number_is_matched_whichever_way_the_forfeit_was_configured(self):
+        """Review: a forfeit configured in the plural missed the singular."""
+        summary = "Pint on video for Sam. Another pint on video for Jo."
+        assert "twice" in check_penalty_repetitions(summary, [{"penalty": "Pints on video", "phrasings": []}])[0]
+        summary = "A glass of wine for Sam, two glasses of wine for Jo."
+        assert "twice" in check_penalty_repetitions(summary, [{"penalty": "Glasses of wine", "phrasings": []}])[0]
+
+    def test_short_words_keep_the_number_they_were_written_in(self):
+        penalties = [{"penalty": "Pay us back", "phrasings": []}]
+        assert check_penalty_repetitions("Pay u back, then pay u back.", penalties) == []
+
+    def test_restates_forfeit(self):
+        assert restates_forfeit("pint on video", _PINT)
+        assert restates_forfeit("a pints on video for the lads", _PINT)
+        assert not restates_forfeit("a pint on camera", _PINT)
+        assert not restates_forfeit("shot", "Shot")
 
     def test_a_one_word_forfeit_is_left_alone(self):
         summary = "Bob owes a shot. Cam had a shot at the title."

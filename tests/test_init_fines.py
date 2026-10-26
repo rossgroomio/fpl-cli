@@ -100,3 +100,55 @@ class TestInitFinesCoverage:
         assert offered_types == VALID_RULE_TYPES, (
             f"Init flow missing rule types: {VALID_RULE_TYPES - offered_types}"
         )
+
+
+class TestReconfigureKeepsPenaltyPhrasings:
+    """#503 review: `penalty_phrasings` is hand-written in settings.yaml, so a
+    reconfigure must carry it over while its forfeit stands, and drop it,
+    saying so, once the forfeit changes."""
+
+    _EXISTING = {
+        "penalty_phrasings": ["pint of shame"],
+        "classic": [
+            {"type": "last-place", "penalty": "Pint on video", "penalty_phrasings": ["penance pint"]},
+        ],
+    }
+
+    @staticmethod
+    def _reconfigure(monkeypatch, *, penalty: str | None = None):
+        """"Reconfigure?" yes, then only last-place (classic) kept; the penalty
+        prompt keeps its default unless `penalty` is given."""
+        confirms = iter([True, True, False, False])
+        monkeypatch.setattr("click.confirm", lambda *_a, **_kw: next(confirms))
+
+        def prompt(text, **kw):
+            if text.strip().startswith("Penalty") and penalty is not None:
+                return penalty
+            return kw.get("default", "")
+
+        monkeypatch.setattr("click.prompt", prompt)
+
+    def test_an_unchanged_forfeit_keeps_both_lists(self, monkeypatch):
+        from fpl_cli.cli.init import _tier_fines
+
+        self._reconfigure(monkeypatch)
+        data = {"fines": {**self._EXISTING}}
+        _tier_fines(data, "classic")
+
+        assert data["fines"]["classic"] == [
+            {"type": "last-place", "penalty": "Pint on video", "penalty_phrasings": ["penance pint"]},
+        ]
+        assert data["fines"]["penalty_phrasings"] == ["pint of shame"]
+
+    def test_a_changed_forfeit_drops_both_lists_and_says_so(self, monkeypatch, capsys):
+        from fpl_cli.cli.init import _tier_fines
+
+        self._reconfigure(monkeypatch, penalty="Buy the round")
+        data = {"fines": {**self._EXISTING}}
+        _tier_fines(data, "classic")
+
+        assert data["fines"]["classic"] == [{"type": "last-place", "penalty": "Buy the round"}]
+        assert "penalty_phrasings" not in data["fines"]
+        err = capsys.readouterr().err
+        assert "Dropped this rule's penalty_phrasings" in err
+        assert "Dropped the fines block's penalty_phrasings" in err

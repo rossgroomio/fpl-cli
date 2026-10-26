@@ -232,17 +232,19 @@ class TestPenaltyPhrasings:
         config = parse_fines_config({"fines": {"classic": [{"type": "last-place", "penalty": "Pint on video"}]}})
         assert config is not None
         assert config.penalty_phrasings == ()
-        assert config.phrasings_for(config.classic[0]) == ()
+        assert config.classic[0].penalty_phrasings is None
+        assert config.phrasings_for("Pint on video") == ()
 
-    def test_the_block_list_covers_every_rule_without_its_own(self):
+    def test_the_block_list_covers_the_forfeit_no_rule_claims(self):
         config = parse_fines_config({"fines": {
             "penalty_phrasings": ["pint of shame", "penance pint"],
             "classic": [{"type": "last-place", "penalty": "Pint on video"}],
+            "draft": [{"type": "last-place", "penalty": "Pint on video"}],
         }})
         assert config is not None
-        assert config.phrasings_for(config.classic[0]) == ("pint of shame", "penance pint")
+        assert config.phrasings_for("Pint on video") == ("pint of shame", "penance pint")
 
-    def test_a_rules_own_list_wins_over_the_block(self):
+    def test_a_rules_own_list_replaces_the_block_for_its_forfeit(self):
         config = parse_fines_config({"fines": {
             "penalty_phrasings": ["pint of shame"],
             "classic": [
@@ -251,8 +253,58 @@ class TestPenaltyPhrasings:
             ],
         }})
         assert config is not None
-        assert config.phrasings_for(config.classic[0]) == ("pint of shame",)
-        assert config.phrasings_for(config.classic[1]) == ("the round",)
+        assert config.phrasings_for("Pint on video") == ("pint of shame",)
+        assert config.phrasings_for("Buy the round") == ("the round",)
+
+    def test_a_forfeit_one_rule_claims_never_takes_the_block_through_another(self):
+        """Review: two rules sharing a forfeit, one with its own list and one
+        inheriting, used to hand that forfeit both lists."""
+        config = parse_fines_config({"fines": {
+            "penalty_phrasings": ["pint of shame"],
+            "classic": [
+                {"type": "last-place", "penalty": "Pint on video", "penalty_phrasings": ["penance pint"]},
+                {"type": "red-card", "penalty": "Pint on video"},
+            ],
+        }})
+        assert config is not None
+        assert config.phrasings_for("Pint on video") == ("penance pint",)
+
+    def test_an_empty_rule_list_opts_its_forfeit_out_of_the_block(self):
+        config = parse_fines_config({"fines": {
+            "penalty_phrasings": ["pint of shame"],
+            "classic": [
+                {"type": "last-place", "penalty": "Pint on video"},
+                {"type": "red-card", "penalty": "Buy the round", "penalty_phrasings": []},
+            ],
+        }})
+        assert config is not None
+        assert config.classic[1].penalty_phrasings == ()
+        assert config.phrasings_for("Buy the round") == ()
+        assert config.phrasings_for("Pint on video") == ("pint of shame",)
+
+    def test_a_block_list_over_two_unclaimed_forfeits_is_refused(self):
+        """Review: it would hand "pint of shame" to the editorial as a way of
+        saying "Buy the group a round", changing the forfeit."""
+        with pytest.raises(ConfigError, match="the rules carry 2 different ones"):
+            parse_fines_config({"fines": {
+                "penalty_phrasings": ["pint of shame"],
+                "classic": [
+                    {"type": "last-place", "penalty": "Pint on video"},
+                    {"type": "red-card", "penalty": "Buy the group a round"},
+                ],
+            }})
+
+    def test_rules_naming_no_forfeit_do_not_count_against_the_block(self):
+        config = parse_fines_config({"fines": {
+            "penalty_phrasings": ["pint of shame"],
+            "classic": [
+                {"type": "last-place", "penalty": "Pint on video"},
+                {"type": "red-card"},
+                {"type": "below-threshold", "threshold": 20, "penalty": "  "},
+            ],
+        }})
+        assert config is not None
+        assert [rule.forfeit for rule in config.classic] == ["Pint on video", None, None]
 
     def test_blanks_and_repeats_are_dropped_and_entries_stripped(self):
         config = parse_fines_config({"fines": {

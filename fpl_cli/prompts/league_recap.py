@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Sequence
 
@@ -1157,13 +1158,17 @@ def _fine_penalty_lines(data: LeagueRecapData) -> list[str]:
     varies the wording from a list the league chose rather than one it makes
     up -- and a forfeit nobody gave phrasings for is still named, so the
     once-only rule has a string to hold to.
+
+    Both are quoted as JSON strings, the phrasings as a JSON list: they are
+    the league's free text, and a quote or a semicolon inside one must not
+    read as the end of it when "no others" depends on the list being exact.
     """
     lines: list[str] = []
     for entry in data.get("fine_penalties", []):
-        penalty = entry["penalty"]
-        line = f'- "{penalty}": write these exact words at most once in the editorial'
+        penalty = json.dumps(entry["penalty"], ensure_ascii=False)
+        line = f"- {penalty}: write these exact words at most once in the editorial"
         if entry["phrasings"]:
-            phrasings = "; ".join(entry["phrasings"])
+            phrasings = json.dumps(entry["phrasings"], ensure_ascii=False)
             line += (
                 f". Every other mention uses one of this league's own phrasings for it, "
                 f"varied rather than repeated, and no others: {phrasings}"

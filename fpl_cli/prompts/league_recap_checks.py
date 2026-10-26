@@ -2154,23 +2154,67 @@ def check_escape_claims(summary: str, managers: Sequence[RecapManagerEntry], nam
 # What may sit between two of a forfeit's words and still be the forfeit
 # written out: spacing, emphasis and the punctuation inside a phrase, never
 # a sentence's end. "Pint on **video**" is the forfeit; "a pint. On video,
-# ..." is two sentences.
-_PENALTY_WORD_GAP = r"[^\w.!?;:\n]+"
-_PENALTY_WORD_RE = re.compile(r"\w+")
+# ..." is two sentences. The exception is a break the forfeit itself carries
+# ("Pint on video. Tag the group"), which is matched as written.
+_SENTENCE_BREAKS = ".!?;:"
+_PENALTY_WORD_GAP = rf"[^\w{re.escape(_SENTENCE_BREAKS)}\n]+"
+_PENALTY_EDGE_GAP = rf"[^\w{re.escape(_SENTENCE_BREAKS)}\n]*"
+_PENALTY_TOKEN_RE = re.compile(r"(\w+)|(\W+)")
 # Fewer words than this and the forfeit is an ordinary word too: a league
 # whose forfeit is "Shot" would have "a shot at the title" counted against it.
 _PENALTY_MIN_WORDS = 2
+# Shorter words are left in the number they were written in: taking the "s"
+# off "is" or "us" leaves a different word.
+_PENALTY_STEM_MIN_LETTERS = 4
+
+
+def _penalty_word(word: str) -> str:
+    """One word of a forfeit in either number, whichever it was configured
+    in: "pint" matches "pints", and "pints" matches "pint"."""
+    stems = {word}
+    if len(word) >= _PENALTY_STEM_MIN_LETTERS and word[-1] in "sS" and word[-2] not in "sS":
+        stems.add(word[:-1])
+        if word[-2] in "eE":
+            stems.add(word[:-2])
+    alternatives = "|".join(re.escape(stem) for stem in sorted(stems, key=len, reverse=True))
+    return f"(?:{alternatives})(?:e?s)?"
+
+
+def _penalty_gap(separator: str) -> str:
+    """What may stand for the text between two of a forfeit's words."""
+    breaks = "".join(c for c in separator if c in _SENTENCE_BREAKS)
+    if not breaks:
+        return _PENALTY_WORD_GAP
+    return f"{_PENALTY_EDGE_GAP}{re.escape(breaks)}{_PENALTY_EDGE_GAP}"
 
 
 def _penalty_pattern(penalty: str) -> re.Pattern[str] | None:
     """The forfeit's words in order, each in either number, or None for a
     forfeit too short to tell from ordinary prose. "Pints on video" is still
     the forfeit written out; "a pint on camera" is a phrasing of it."""
-    words = _PENALTY_WORD_RE.findall(penalty)
-    if len(words) < _PENALTY_MIN_WORDS:
+    parts: list[str] = []
+    words = 0
+    separator = ""
+    for match in _PENALTY_TOKEN_RE.finditer(penalty):
+        if match.group(1) is None:
+            separator += match.group(2)
+            continue
+        if words:
+            parts.append(_penalty_gap(separator))
+        parts.append(_penalty_word(match.group(1)))
+        separator = ""
+        words += 1
+    if words < _PENALTY_MIN_WORDS:
         return None
-    body = _PENALTY_WORD_GAP.join(f"{re.escape(word)}(?:e?s)?" for word in words)
-    return re.compile(rf"(?<!\w){body}(?!\w)", re.IGNORECASE)
+    return re.compile(rf"(?<!\w){''.join(parts)}(?!\w)", re.IGNORECASE)
+
+
+def restates_forfeit(phrasing: str, penalty: str) -> bool:
+    """Whether `phrasing` writes `penalty` out word for word, which would
+    make it no other way of saying it: listed as one, it would tell the
+    editorial to write out the very words this check counts."""
+    pattern = _penalty_pattern(penalty)
+    return pattern is not None and pattern.search(phrasing) is not None
 
 
 def check_penalty_repetitions(summary: str, penalties: Sequence[RecapFinePenalty]) -> list[str]:

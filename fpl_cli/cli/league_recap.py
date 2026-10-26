@@ -120,7 +120,6 @@ def league_recap_command(
         collect_draft_recap_data,
         configured_fine_rule_types,
         evaluate_league_fines,
-        recap_fine_penalties,
     )
     from fpl_cli.cli._league_recap_history import capture_draft_picks, capture_recap_history
     from fpl_cli.cli.review import GameweekResolutionError, _review_resolve_gw
@@ -409,11 +408,8 @@ def league_recap_command(
                 collected_data["fines"] = ruling.fines
                 # For the editorial alone, so it can vary how it names the
                 # forfeit (#503); replays below reach only the ledger.
-                penalties = recap_fine_penalties(
-                    ruling.fines, settings, collected_data["fpl_format"],
-                )
-                if penalties:
-                    collected_data["fine_penalties"] = penalties
+                if ruling.penalties:
+                    collected_data["fine_penalties"] = ruling.penalties
             # Recorded whether or not anything triggered: a gameweek with no
             # fines and a gameweek nobody ruled on are different facts, and
             # only this tells the season tally which one it is read

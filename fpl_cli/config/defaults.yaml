@@ -81,5 +81,7 @@ llm:
 # Valid keys under 'fines': classic, draft, escalation_note, penalty_phrasings - a misspelled one is
 # refused by name rather than ignored, since an ignored key silently disables the
 # rules under it. 'threshold' must be an unquoted number. A rule may carry its own
-# 'penalty_phrasings' list, which replaces the block's for that rule.
+# 'penalty_phrasings' list, which replaces the block's for that rule's penalty ('[]'
+# opts it out). The block's list covers the one penalty no rule's list claims, and is
+# refused if rules without a list carry different penalties.
 # Net points (transfer hits) controlled by top-level use_net_points setting

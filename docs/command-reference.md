@@ -1658,7 +1658,7 @@ they share the channel: `synthesis_provider_unavailable`, `synthesis_stopped_ear
 | `synthesis_wrong_gameweek_placing` | Either format. The editorial still gives a manager a placing on the week after one retry that their gameweek score does not earn: a placing it says is the week's ("third on the week", "came last on the week", "the second-best score of the week"), or one the manager's own gameweek score is attached to ("finished eighth on 31", the league position read as the week's finish that issue #483 reported, or "scored 31 and finished eighth"). The message quotes the placing and gives the manager's score and gameweek placing, who held the week's lowest or highest score where it said "last", "bottom" or "top", and, where the placing it gave is the manager's league position, says so. Saved as written, with the same lines in the report's callout |
 | `synthesis_escape_misattribution` | Either format. The editorial still says, after one retry, that a manager escaped, avoided or dodged a last place they finished in: last place on the week (or the bottom, the wooden spoon, the worst week) for a manager on the week's lowest score, or the foot or bottom of the table for a manager bottom of it. The message quotes the escape, gives the manager's score and who was level on it, or their place at the bottom of the table, and says who avoided last place on the week and by how much, as the GW Standings section states it. Saved as written, with the same lines in the report's callout |
 | `synthesis_contested_roll_call` | Draft only. The shipped editorial still has a paragraph that names a contested race's player and three or more of its beaten managers. The message says how many of the race's beaten managers the paragraph names and which player they were beaten to, or, where more than one paragraph lists the race at the same count, how many paragraphs do. Unlike the codes above, the sentence is true: this is a draft that broke its brief, not one the data contradicts, so the saved report's callout says so in its own words. Two beaten managers in a paragraph, three spread across paragraphs, or a paragraph that never names the player never raise it. A retry ships over the first draft only when it has fewer contradicted claims, or as many and fewer roll calls, so the warning means the draft that shipped is one that lists them. Saved as written, with the same line in the report's callout |
-| `synthesis_penalty_repeated` | Either format. The shipped editorial still writes a fine's forfeit out word for word more than once after one retry, headline included, where the brief allows it once (see [Naming the forfeit](#league-recap)). The message names the forfeit and quotes each time it was written. Like `synthesis_contested_roll_call`, the sentences are true: this is a draft that broke its brief, so the saved report's callout says so in its own words. Only forfeits of two or more words are counted, and a mention in other words, from `penalty_phrasings` or not, is never one |
+| `synthesis_penalty_repeated` | Either format. The shipped editorial still writes a fine's forfeit out word for word more than once after one retry, headline included, where the brief allows it once (see [Naming the forfeit](#league-recap)). The message names the forfeit and quotes each time it was written. Like `synthesis_contested_roll_call`, the sentences are true: this is a draft that broke its brief, so the saved report's callout says so in its own words. Only forfeits of two or more words are counted, each word in either number ("pint" and "pints"), and punctuation the forfeit itself carries is matched as written. A mention in other words, from `penalty_phrasings` or not, is never one: a phrasing that would count is dropped before the editorial sees it |
 | `league_standings_moved_on` | The recapped gameweek is the most recently finished one, but a later gameweek has started, so the league table no longer describes it. The gameweek is recapped and recorded from each manager's own gameweek history instead — see [When to run it](#league-recap) |
 | `league_tables_updating` | FPL's processing feed for the recapped game covers the recapped gameweek and says bonus is not yet confirmed for every match day, or the league tables are still updating, so the positions and totals the recap read may be stale. The gameweek is recorded anyway; re-run before the next deadline and the later capture supersedes this one — see [When to run it](#league-recap) |
 | `draft_provenance_unavailable` | Draft only. The Standout Players lines could not say how each player came to his manager, so they read without it: the history of the league's draft, waivers and trades (or its list of drafts) could not be read, did not end where FPL's own ownership list says everyone is, did not match the squads the gameweek recorded, or the draft's picks are held by neither the choices feed nor a saved snapshot (see [How a draft player came to his manager](#league-recap)). The message names which. Nothing else in the recap changes |
@@ -1730,7 +1730,9 @@ which measure ruled it — is named by `league_history_tied_last_place_ambiguous
 fined on a guess.
 
 **A block it cannot read stops the command.** An unknown `type:`, a rule missing one, a
-`below-threshold` without its `threshold:`, a non-string `penalty:`, a `threshold:` that
+`below-threshold` without its `threshold:`, a non-string `penalty:`, a `penalty_phrasings`
+that isn't a list of strings, a block-level `penalty_phrasings` over two different forfeits,
+a `threshold:` that
 isn't a number (`"40"` in quotes is the easy YAML slip), or a key `fines:` doesn't
 recognise — only `classic`, `draft`, `escalation_note` and `penalty_phrasings` are valid — is reported by name,
 on stderr in table mode and in the `error` envelope under `--format json`, rather than
@@ -2060,11 +2062,21 @@ rather than settled by whichever of them the standings happened to list first.
 
 `penalty_phrasings` is the league's own ways of saying its forfeit, which the `league-recap`
 editorial varies between rather than repeating the `penalty` word for word (see Naming the
-forfeit under [league-recap](#league-recap)). Set it under `fines:` to cover every rule, or
-on one rule to give that rule its own list, which then replaces the block's for it. Set it
-at the block level only when every rule carries the same forfeit. It must be a list of
-strings; blanks and repeats are dropped. The Fines list and the ledger always carry the
-configured `penalty`, whatever is set here.
+forfeit under [league-recap](#league-recap)). The editorial is only told about forfeits
+from rules that actually fired that gameweek, and a rule with no `penalty` (or a blank one)
+names no forfeit, so it has none to vary.
+
+Lists attach to a forfeit, not a rule, since two rules can share one. A rule's own list
+covers its forfeit, merged with any other rule's list for the same forfeit, and replaces
+the block's for it; set it to `[]` to keep that forfeit out of the block's list. The block's
+list under `fines:` covers whichever forfeit no rule-level list claims, so it can only
+describe one: if the rules without a list carry two different forfeits, the block is
+refused by name, since one of them would be described with phrasings meant for the other.
+A phrasing that writes the forfeit itself out word for word is dropped, as it is no other
+way of saying it. It must be a list of strings; blanks and repeats are dropped. The Fines
+list and the ledger always carry the configured `penalty`, whatever is set here. `fpl init`
+does not ask for phrasings, but a reconfigure keeps them while the forfeit they were written
+for stands, and drops them with a note on stderr once it changes.
 
 ```yaml
 fines:

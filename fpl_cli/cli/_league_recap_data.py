@@ -8,7 +8,7 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from fpl_cli.cli._context import fpl_config
@@ -21,7 +21,7 @@ from fpl_cli.cli._fines import (
     evaluate_fines,
     rules_for_format,
 )
-from fpl_cli.cli._fines_config import DEFAULT_PENALTY, parse_fines_config
+from fpl_cli.cli._fines_config import FineRule, FinesConfig, parse_fines_config
 from fpl_cli.cli._helpers import _live_player_stats
 
 if TYPE_CHECKING:
@@ -1444,6 +1444,12 @@ class LeagueFinesRuling:
 
     fines: list[RecapFineResult]
     ruled_manager_keys: frozenset[int]
+    # Each forfeit the rules that fired carry, with the league's phrasings
+    # for it, for the editorial alone (#503). Read off the rules that fired,
+    # never every rule of a type that did: two `below-threshold` rules with
+    # different forfeits must not tell the editorial about both when one
+    # manager fell under only one of them.
+    penalties: list[RecapFinePenalty] = field(default_factory=list)
 
 
 def configured_fine_rule_types(settings: dict[str, Any], format_name: str) -> list[str]:
@@ -1467,37 +1473,6 @@ def configured_fine_rule_types(settings: dict[str, Any], format_name: str) -> li
     if fines_config is None:
         return []
     return [rule.type for rule in rules_for_format(fines_config, format_name)]
-
-
-def recap_fine_penalties(
-    fines: Sequence[RecapFineResult],
-    settings: dict[str, Any],
-    format_name: str,
-) -> list[RecapFinePenalty]:
-    """Each forfeit `fines` carries, with the league's phrasings for it (#503).
-
-    Read off the rules of the types that triggered, in config order, so the
-    editorial is told only about forfeits it has a fine to write about. A rule
-    that left `penalty:` unset carries no league's forfeit and is skipped. Two
-    rules that share a forfeit share one entry, their phrasings merged.
-    Empty when nothing was fined or fines are unconfigured; a malformed
-    `fines:` block raises `ConfigError` as `evaluate_league_fines` does.
-    """
-    triggered = {fine["rule_type"] for fine in fines}
-    if not triggered:
-        return []
-    fines_config = parse_fines_config(settings)
-    if fines_config is None:
-        return []
-    penalties: dict[str, RecapFinePenalty] = {}
-    for rule in rules_for_format(fines_config, format_name):
-        if rule.type not in triggered or rule.penalty == DEFAULT_PENALTY:
-            continue
-        entry = penalties.setdefault(rule.penalty, RecapFinePenalty(penalty=rule.penalty, phrasings=[]))
-        for phrasing in fines_config.phrasings_for(rule):
-            if phrasing not in entry["phrasings"]:
-                entry["phrasings"].append(phrasing)
-    return list(penalties.values())
 
 
 def evaluate_league_fines(
@@ -1534,6 +1509,7 @@ def evaluate_league_fines(
 
     triggered: list[RecapFineResult] = []
     ruled: set[int] = set()
+    fired: list[FineRule] = []
 
     from fpl_cli.cli._fines import WorstPerformer
 
@@ -1591,7 +1567,9 @@ def evaluate_league_fines(
                 use_net_points=use_net_points,
             )
 
-            for r in results:
+            # One result per rule, in config order, so each result is read
+            # beside the rule that produced it.
+            for rule, r in zip(rules_for_format(fines_config, format_name), results, strict=True):
                 if r.triggered:
                     fine = RecapFineResult(
                         manager_name=m["manager_name"],
@@ -1605,6 +1583,8 @@ def evaluate_league_fines(
                     if (parts := _recap_fine_parts(r)) is not None:
                         fine["trigger"], fine["penalty"] = parts
                     triggered.append(fine)
+                    if rule not in fired:
+                        fired.append(rule)
             ruled.add(recap_manager_key(m))
 
         except Exception:  # noqa: BLE001 — best-effort enrichment
@@ -1617,7 +1597,39 @@ def evaluate_league_fines(
                 m["manager_name"], exc_info=True,
             )
 
-    return LeagueFinesRuling(fines=triggered, ruled_manager_keys=frozenset(ruled))
+    return LeagueFinesRuling(
+        fines=triggered,
+        ruled_manager_keys=frozenset(ruled),
+        penalties=_fired_forfeits(fines_config, format_name, fired),
+    )
+
+
+def _fired_forfeits(
+    fines_config: FinesConfig, format_name: str, fired: Sequence[FineRule],
+) -> list[RecapFinePenalty]:
+    """Each forfeit the fired rules carry, in config order, with the
+    league's phrasings for it (#503).
+
+    A rule that named no forfeit (left unset, or blank) carries none to
+    vary. A phrasing that writes the forfeit out word for word is dropped:
+    it is no other way of saying it, and listing it would tell the editorial
+    to write the very words the repeat check counts.
+    """
+    from fpl_cli.prompts.league_recap_checks import restates_forfeit
+
+    penalties: dict[str, RecapFinePenalty] = {}
+    for rule in rules_for_format(fines_config, format_name):
+        forfeit = rule.forfeit
+        if rule not in fired or forfeit is None or forfeit in penalties:
+            continue
+        penalties[forfeit] = RecapFinePenalty(
+            penalty=forfeit,
+            phrasings=[
+                phrasing for phrasing in fines_config.phrasings_for(forfeit)
+                if not restates_forfeit(phrasing, forfeit)
+            ],
+        )
+    return list(penalties.values())
 
 
 # ---------------------------------------------------------------------------

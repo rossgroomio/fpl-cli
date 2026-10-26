@@ -34,9 +34,18 @@ class FineRule:
     # works today.
     threshold: int | float | None = None
     # The league's own ways of referring to `penalty`, which the editorial
-    # varies between instead of repeating it word for word (#503). Empty
-    # means the rule has none of its own and takes the block's.
-    penalty_phrasings: tuple[str, ...] = ()
+    # varies between instead of repeating it word for word (#503). None means
+    # the rule set no list of its own; an empty tuple is a list set empty,
+    # which opts the rule's forfeit out of the block's.
+    penalty_phrasings: tuple[str, ...] | None = None
+
+    @property
+    def forfeit(self) -> str | None:
+        """The penalty as the league configured it, or None where it named
+        none: left unset, or set blank. Only a named forfeit is the
+        editorial's to vary."""
+        penalty = self.penalty.strip()
+        return penalty if penalty and penalty != DEFAULT_PENALTY else None
 
 
 @dataclass(frozen=True)
@@ -46,13 +55,30 @@ class FinesConfig:
     classic: list[FineRule] = field(default_factory=list)
     draft: list[FineRule] = field(default_factory=list)
     escalation_note: str | None = None
-    # Phrasings for every rule that sets none of its own.
+    # Phrasings for the one forfeit no rule-level list claims.
     penalty_phrasings: tuple[str, ...] = ()
 
-    def phrasings_for(self, rule: FineRule) -> tuple[str, ...]:
-        """The phrasings the editorial may use for `rule`'s penalty: the
-        rule's own where it has any, else the block's."""
-        return rule.penalty_phrasings or self.penalty_phrasings
+    def phrasings_for(self, forfeit: str) -> tuple[str, ...]:
+        """The phrasings the editorial may use for `forfeit`.
+
+        Keyed on the forfeit, not the rule, because that is what the
+        editorial names: two rules carrying one forfeit share one entry in
+        the prompt. A forfeit any rule-level list claims takes those lists
+        alone, merged, and never the block's -- a rule's own list replaces
+        the block's, and an empty one opts out. Otherwise the block's list,
+        which `parse_fines_config` only accepts when it can describe a
+        single forfeit.
+        """
+        own = [
+            rule.penalty_phrasings for rule in (*self.classic, *self.draft)
+            if rule.forfeit == forfeit and rule.penalty_phrasings is not None
+        ]
+        if not own:
+            return self.penalty_phrasings
+        merged: list[str] = []
+        for phrasings in own:
+            merged.extend(p for p in phrasings if p not in merged)
+        return tuple(merged)
 
 
 def parse_fines_config(settings: dict[str, Any]) -> FinesConfig | None:
@@ -95,7 +121,9 @@ def parse_fines_config(settings: dict[str, Any]) -> FinesConfig | None:
     classic = [_parse_rule(r, "classic") for r in classic_raw]
     draft = [_parse_rule(r, "draft") for r in draft_raw]
     escalation_note = fines_raw.get("escalation_note")
-    penalty_phrasings = _phrasings(fines_raw.get("penalty_phrasings"), "'fines.penalty_phrasings'")
+    penalty_phrasings = _phrasings(fines_raw.get("penalty_phrasings"), "'fines.penalty_phrasings'") or ()
+    if penalty_phrasings:
+        _check_block_phrasings_name_one_forfeit([*classic, *draft])
 
     return FinesConfig(
         classic=classic,
@@ -105,15 +133,39 @@ def parse_fines_config(settings: dict[str, Any]) -> FinesConfig | None:
     )
 
 
-def _phrasings(raw: Any, where: str) -> tuple[str, ...]:
-    """A `penalty_phrasings` list, each entry stripped, blanks and repeats dropped.
+def _check_block_phrasings_name_one_forfeit(rules: list[FineRule]) -> None:
+    """Refuse a block-level list that would have to describe two forfeits.
+
+    The block's list covers every forfeit no rule-level list claims, so with
+    "Pint on video" on one rule and "Buy the round" on another it would hand
+    "pint of shame" to the editorial as a way of saying "Buy the round" --
+    changing the forfeit, which the prompt forbids. No reading of the list
+    can be right there, so it is a config mistake, not a guess to make.
+    """
+    claimed = {rule.forfeit for rule in rules if rule.penalty_phrasings is not None}
+    unclaimed = sorted({
+        forfeit for rule in rules
+        if (forfeit := rule.forfeit) is not None and forfeit not in claimed
+    })
+    if len(unclaimed) > 1:
+        msg = (
+            "'fines.penalty_phrasings' covers every forfeit without a list of its own, but "
+            f"the rules carry {len(unclaimed)} different ones ({', '.join(repr(f) for f in unclaimed)}). "
+            "Give each rule its own 'penalty_phrasings' instead"
+        )
+        raise ConfigError(msg)
+
+
+def _phrasings(raw: Any, where: str) -> tuple[str, ...] | None:
+    """A `penalty_phrasings` list, each entry stripped, blanks and repeats
+    dropped; None where the key is absent.
 
     Checked rather than coerced: a bare string where the list belongs would
     otherwise be read a character at a time, and the editorial would be told
     the league calls its forfeit "p", "i" and "n".
     """
     if raw is None:
-        return ()
+        return None
     if not isinstance(raw, list):
         msg = f"{where} must be a list of strings, got {type(raw).__name__}"
         raise ConfigError(msg)
