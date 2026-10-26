@@ -12,6 +12,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.cli._helpers import performer_score, rec_in_options, waiver_superseded_reason, your_gw_rank_line
+from fpl_cli.cli._league_recap_data import recap_fine_lines
 from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
     draft_transaction_kind_label,
@@ -682,6 +683,10 @@ class ReportAgent(Agent):
         data["title"] = recap_title(gameweek, data.get("league_name", ""))
         data.setdefault("generated_at", format_generated_at())
         data["standings_block"] = _format_standings_block(data.get("managers", []))
+        # Grouped by the fine (#504), the same lines the console prints.
+        data["fine_lines"] = recap_fine_lines(
+            data.get("fines", []), data.get("fine_rules_evaluated", []),
+        )
         # The editorial's problems the data contradicts apart from those that
         # only broke its brief (#459), so the callout never says the data
         # contradicts a sentence that was true.

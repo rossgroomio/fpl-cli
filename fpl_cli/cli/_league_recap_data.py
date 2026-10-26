@@ -90,6 +90,7 @@ from fpl_cli.services.fixture_predictions import had_fixture
 from fpl_cli.services.league_history_drafts import draft_snapshot_path
 from fpl_cli.services.player_clubs import gameweek_club
 from fpl_cli.services.scoring.constants import VALID_FORMATIONS
+from fpl_cli.utils.text import join_and
 
 logger = logging.getLogger(__name__)
 
@@ -1298,8 +1299,12 @@ def restate_recap_fine_players(
     )
 
 
-def _recap_fine_message(result: FineResult, manager_name: str) -> str:
-    """Generate a clean recap-specific fine message (no 'FINE TRIGGERED' prefix)."""
+def _recap_fine_parts(result: FineResult) -> tuple[str, str] | None:
+    """The trigger and penalty a recap fine message is written from.
+
+    None for a rule the recap does not word itself, whose message is the
+    handler's own. The penalty is "" where none was configured.
+    """
     # Extract the penalty text (after the last period-space in the original message)
     penalty = ""
     if ". " in result.message:
@@ -1308,7 +1313,7 @@ def _recap_fine_message(result: FineResult, manager_name: str) -> str:
             penalty = parts[1].rstrip(".")
 
     if result.rule_type == LAST_PLACE_RULE_TYPE:
-        return f"Finished last in the gameweek. {penalty}" if penalty else "Finished last in the gameweek."
+        return "Finished last in the gameweek", penalty
     if result.rule_type == RED_CARD_RULE_TYPE:
         # The handler's own list of who it fined, not a re-read of the prose
         # it wrote. Recovering the names by splitting the handler's message
@@ -1319,10 +1324,112 @@ def _recap_fine_message(result: FineResult, manager_name: str) -> str:
             f"{_RED_CARD_PREFIX} "
             f"({_FINE_PLAYER_SEPARATOR.join(p.name for p in result.players)})"
         )
-        return f"{base}. {penalty}" if penalty else f"{base}."
+        return base, penalty
     if result.rule_type == "below-threshold":
-        return f"Scored below threshold. {penalty}" if penalty else "Scored below threshold."
-    return result.message
+        return "Scored below threshold", penalty
+    return None
+
+
+def _recap_fine_message(result: FineResult, manager_name: str) -> str:
+    """Generate a clean recap-specific fine message (no 'FINE TRIGGERED' prefix)."""
+    parts = _recap_fine_parts(result)
+    if parts is None:
+        return result.message
+    trigger, penalty = parts
+    return f"{trigger}. {penalty}" if penalty else f"{trigger}."
+
+
+@dataclass(frozen=True)
+class RecapFineLine:
+    """One line of the week's Fines section, as the console and the saved
+    report both print it (issue #504).
+
+    A fine one manager alone took reads as it always has, the manager leading
+    (`grouped` False). Several managers taking the same fine collapse into one
+    line led by the fine itself, every name listed: fines are personal, so
+    nobody is folded into "and 7 others".
+    """
+
+    lead: str
+    detail: str
+    grouped: bool
+
+
+def _fine_group_detail(names: Sequence[str], penalty: str) -> str:
+    """"3 managers: A, B and C. Pint on video" -- the penalty as configured.
+
+    Never suffixed "each": the penalty is free text, and a shared forfeit
+    ("Team buys a round") would read as one per manager. Punctuated like a
+    single fine's message, a full stop only where no penalty follows.
+    """
+    named = f"{len(names)} managers: {join_and(names)}."
+    return f"{named} {penalty}" if penalty else named
+
+
+def _can_share_a_line(members: Sequence[RecapFineResult]) -> bool:
+    """Two or more managers, each told apart from the rest by name.
+
+    The same manager twice (two identically worded rules of one type) or two
+    managers sharing a display name would read "2 managers: Sam and Sam",
+    which says nothing a reader can act on -- so those keep a line each, the
+    way they always printed.
+    """
+    names = [f["manager_name"] for f in members]
+    managers = {f.get("manager_key", f["manager_name"]) for f in members}
+    return len(members) > 1 and len(managers) == len(set(names)) == len(members)
+
+
+def recap_fine_lines(
+    fines: Sequence[RecapFineResult], rule_order: Sequence[str] = (),
+) -> list[RecapFineLine]:
+    """The week's fines grouped by the fine rather than listed per manager.
+
+    Fines group when they share a rule, a trigger (which carries the
+    red-carded player) and a penalty, so a red card for Palmer and one for
+    Rice stay two lines, and so do two rules of one type with different
+    penalties. A ruling with no `trigger` -- a rule the recap does not word
+    itself, or one built by hand -- never groups.
+
+    Every shared line comes before every single one: biggest first, then in
+    config rule order (`rule_order`, the gameweek's `fine_rules_evaluated`),
+    then by first appearance. Single fines follow in the order they were
+    ruled, the order the section always had, so a week where every fine
+    differs reads exactly as before.
+
+    Presentation only: the ruling, the ledger and `--format json` keep one
+    record per manager per fine.
+    """
+    groups: dict[tuple[str, str, str], list[int]] = {}
+    for i, fine in enumerate(fines):
+        trigger = fine.get("trigger")
+        if trigger is not None:
+            groups.setdefault((fine["rule_type"], trigger, fine.get("penalty", "")), []).append(i)
+
+    # First index wins: two rules of one type list it twice.
+    rank: dict[str, int] = {}
+    for i, rule_type in enumerate(rule_order):
+        rank.setdefault(rule_type, i)
+    shared = [
+        (key, members) for key, members in groups.items()
+        if _can_share_a_line([fines[i] for i in members])
+    ]
+    # Stable, so equal groups keep their first-appearance order.
+    shared.sort(key=lambda g: (-len(g[1]), rank.get(g[0][0], len(rank))))
+
+    lines = [
+        RecapFineLine(
+            lead=trigger,
+            detail=_fine_group_detail([fines[i]["manager_name"] for i in members], penalty),
+            grouped=True,
+        )
+        for (_, trigger, penalty), members in shared
+    ]
+    on_shared_line = {i for _, members in shared for i in members}
+    lines.extend(
+        RecapFineLine(lead=fine["manager_name"], detail=fine["message"], grouped=False)
+        for i, fine in enumerate(fines) if i not in on_shared_line
+    )
+    return lines
 
 
 @dataclass(frozen=True)
@@ -1486,16 +1593,18 @@ def evaluate_league_fines(
 
             for r in results:
                 if r.triggered:
-                    msg = _recap_fine_message(r, m["manager_name"])
-                    triggered.append(RecapFineResult(
+                    fine = RecapFineResult(
                         manager_name=m["manager_name"],
                         manager_key=recap_manager_key(m),
                         rule_type=r.rule_type,
-                        message=msg,
+                        message=_recap_fine_message(r, m["manager_name"]),
                         players=[
                             RecapFinePlayer(name=p.name, code=p.code) for p in r.players
                         ],
-                    ))
+                    )
+                    if (parts := _recap_fine_parts(r)) is not None:
+                        fine["trigger"], fine["penalty"] = parts
+                    triggered.append(fine)
             ruled.add(recap_manager_key(m))
 
         except Exception:  # noqa: BLE001 — best-effort enrichment

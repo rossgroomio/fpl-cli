@@ -172,7 +172,7 @@ def _eval_last_place(
 
     if any(p.get("is_user", False) for p in tied):
         others = [p.get("name", "Unknown") for p in tied if not p.get("is_user", False)]
-        # Named before the penalty, never after: `_recap_fine_message` splits
+        # Named before the penalty, never after: `_recap_fine_parts` splits
         # the penalty off the last ". " to normalise this into a ledger row.
         level = f", level with {', '.join(others)}" if others else ""
         return FineResult(

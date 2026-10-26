@@ -1301,7 +1301,13 @@ and `round`, `pick`, `overall_pick` and `auto_pick` are then null. Classic rows 
 ruling against the gameweek. A backfilled gameweek is ruled too — the detailed replay rules every configured rule, the coarse tier rules the ones
 derivable from cohort points (`last-place`, `below-threshold`) and records that it could not
 rule `red-card`, which needs a squad the manager-history endpoint does not return. See
-[Season Fines](#season-fines) for the table this builds up.
+[Season Fines](#season-fines) for the table this builds up. On the console and in the saved
+report, managers who took the same fine (same rule, same red-carded player, same penalty) share
+one line led by the fine and naming every one of them, the penalty as configured. Shared lines
+come first, biggest first and then in the order the rules are configured; a fine only one manager
+took follows, reading `Manager: fine. penalty` as before. Two managers sharing a display name keep
+a line each, since one line could not tell them apart. The ledger and `--format json` still hold
+one record per manager per fine.
 
 **Season fines:** the season-to-date *table* appears on console and in the saved report only
 at the two milestone gameweeks — GW19 (the chip-availability boundary, which is also the
@@ -1325,7 +1331,7 @@ names the gap and forbids numbering the fine instead. `--format json` is
 ungated too — `metadata.season_fines` is emitted every
 week, so a scripted consumer never sees it appear and disappear on a calendar it cannot see.
 
-**Naming the forfeit:** the Fines list prints each fine's configured `penalty` every time,
+**Naming the forfeit:** the Fines list prints each fine's configured `penalty` exactly,
 and that list is unchanged, but the editorial may write a forfeit out word for word only
 once, headline included. Everywhere else it names the same forfeit in other words, without
 changing what it is (no more of it, a different drink or forfeit, or a part of it dropped). Give
