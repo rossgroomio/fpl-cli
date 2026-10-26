@@ -770,6 +770,13 @@ class RecapFineResult(TypedDict):
     # this by hand and said nothing either way, which the ledger records as
     # unknown rather than as "names nobody" (issue #176).
     players: NotRequired[list[RecapFinePlayer]]
+    # The two halves `message` is written from, kept apart so the Fines
+    # section can group managers who took the same fine without re-parsing
+    # the prose (#504). Absent for a rule the recap does not word itself, or
+    # a ruling built by hand, which then prints a line per manager. Never
+    # stored: the ledger records `message`.
+    trigger: NotRequired[str]
+    penalty: NotRequired[str]
 
 
 class RecapSeasonRecord(TypedDict):

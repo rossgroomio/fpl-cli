@@ -3439,6 +3439,24 @@ def _ruled(managers: list[RecapManagerEntry], rules: list[dict] | None = None) -
     return evaluate_league_fines(managers, settings, "classic").fines
 
 
+def _fine(
+    name: str, rule_type: str, trigger: str, penalty: str = "Pint on video", key: int | None = None,
+) -> RecapFineResult:
+    """A ruling built by hand, in the shape `evaluate_league_fines` produces."""
+    fine = RecapFineResult(
+        manager_name=name, rule_type=rule_type, trigger=trigger, penalty=penalty,
+        message=f"{trigger}. {penalty}" if penalty else f"{trigger}.",
+    )
+    if key is not None:
+        fine["manager_key"] = key
+    return fine
+
+
+_PALMER = "Red card in starting XI (Palmer)"
+_RICE = "Red card in starting XI (Rice)"
+_LAST = "Finished last in the gameweek"
+
+
 class TestRecapFineLines:
     """Issue #504: the Fines section groups by the fine, not one line per manager."""
 
@@ -3450,22 +3468,17 @@ class TestRecapFineLines:
 
         assert [(line.lead, line.detail, line.grouped) for line in lines] == [
             (
-                "Red card in starting XI (Palmer)",
+                _PALMER,
                 "10 managers: Manager A, Manager B, Manager C, Manager D, Manager E, "
-                "Manager F, Manager G, Manager H, Manager I and Manager J. Pint on video each",
+                "Manager F, Manager G, Manager H, Manager I and Manager J. Pint on video",
                 True,
             ),
             ("Manager K", "Finished last in the gameweek. Pint on video", False),
         ]
 
     def test_a_week_where_every_fine_differs_reads_exactly_as_before(self):
-        fines: list[RecapFineResult] = [
-            {"manager_name": "Bob", "rule_type": "last-place",
-             "message": "Finished last in the gameweek. Pint on video"},
-            {"manager_name": "Alice", "rule_type": "red-card",
-             "message": "Red card in starting XI (Palmer). Pint on video"},
-            {"manager_name": "Cam", "rule_type": "red-card",
-             "message": "Red card in starting XI (Rice). Pint on video"},
+        fines = [
+            _fine("Bob", "last-place", _LAST), _fine("Alice", "red-card", _PALMER), _fine("Cam", "red-card", _RICE),
         ]
 
         lines = recap_fine_lines(fines, ["red-card", "last-place"])
@@ -3475,44 +3488,50 @@ class TestRecapFineLines:
         ]
 
     def test_red_cards_for_different_players_stay_separate_lines(self):
-        def fine(name: str, player: str) -> RecapFineResult:
-            return {"manager_name": name, "rule_type": "red-card",
-                    "message": f"Red card in starting XI ({player}). Pint on video"}
-
         lines = recap_fine_lines([
-            fine("A", "Palmer"), fine("B", "Rice"), fine("C", "Palmer"), fine("D", "Rice"), fine("E", "Rice"),
+            _fine("A", "red-card", _PALMER), _fine("B", "red-card", _RICE), _fine("C", "red-card", _PALMER),
+            _fine("D", "red-card", _RICE), _fine("E", "red-card", _RICE),
         ])
 
-        assert [line.lead for line in lines] == [
-            "Red card in starting XI (Rice)", "Red card in starting XI (Palmer)",
-        ], "biggest group first"
-        assert lines[0].detail == "3 managers: B, D and E. Pint on video each"
-        assert lines[1].detail == "2 managers: A and C. Pint on video each"
+        assert [line.lead for line in lines] == [_RICE, _PALMER], "biggest group first"
+        assert lines[0].detail == "3 managers: B, D and E. Pint on video"
+        assert lines[1].detail == "2 managers: A and C. Pint on video"
 
     def test_equal_groups_follow_the_config_rule_order(self):
-        fines: list[RecapFineResult] = [
-            {"manager_name": n, "rule_type": "red-card", "message": "Red card in starting XI (Palmer). Round"}
-            for n in ("A", "B")
-        ] + [
-            {"manager_name": n, "rule_type": "last-place", "message": "Finished last in the gameweek. Round"}
-            for n in ("C", "D")
+        fines = [_fine(n, "red-card", _PALMER) for n in ("A", "B")] + [
+            _fine(n, "last-place", _LAST) for n in ("C", "D")
         ]
 
         lines = recap_fine_lines(fines, ["last-place", "red-card"])
 
-        assert [line.lead for line in lines] == [
-            "Finished last in the gameweek", "Red card in starting XI (Palmer)",
+        assert [line.lead for line in lines] == [_LAST, _PALMER]
+
+    def test_single_fines_follow_every_shared_line_in_ruling_order(self):
+        """Config order only ranks the shared lines; a single fine is never
+        lifted above a group, even when its rule is configured first."""
+        fines = [
+            _fine("A", "last-place", _LAST), _fine("B", "red-card", _PALMER),
+            _fine("C", "red-card", _RICE), _fine("D", "red-card", _PALMER),
+        ]
+
+        lines = recap_fine_lines(fines, ["last-place", "red-card"])
+
+        assert [(line.lead, line.grouped) for line in lines] == [
+            (_PALMER, True), ("A", False), ("C", False),
         ]
 
     def test_the_same_rule_with_different_penalties_stays_apart(self):
-        fines = [
-            {"manager_name": "A", "rule_type": "last-place", "message": "Finished last in the gameweek. Pint"},
-            {"manager_name": "B", "rule_type": "last-place", "message": "Finished last in the gameweek. £5"},
-        ]
-
-        lines = recap_fine_lines(fines)
+        lines = recap_fine_lines([_fine("A", "last-place", _LAST, "Pint"), _fine("B", "last-place", _LAST, "£5")])
 
         assert [line.grouped for line in lines] == [False, False]
+
+    @pytest.mark.parametrize("penalty", ["Team buys a round", "Pay £5 each", "Pay £5 to the pot"])
+    def test_the_penalty_reads_as_configured(self, penalty: str):
+        """Free text from settings.yaml: suffixing it "each" turns a shared
+        forfeit into one per manager, or doubles a word already there."""
+        (line,) = recap_fine_lines([_fine(n, "red-card", _PALMER, penalty) for n in ("A", "B")])
+
+        assert line.detail == f"2 managers: A and B. {penalty}"
 
     def test_a_group_with_no_penalty_ends_on_the_names(self):
         fines = _ruled(_gw8_week(red_carded=2), [{"type": "red-card", "penalty": ""}])
@@ -3521,24 +3540,47 @@ class TestRecapFineLines:
 
         assert line.detail == "2 managers: Manager A and Manager B."
 
-    def test_a_message_the_recap_did_not_write_is_never_split(self):
-        """A hand-built ruling or a player name with brackets has no trigger
-        to lead with, so each manager keeps the line they always had."""
+    def test_two_managers_sharing_a_name_keep_a_line_each(self):
+        """"2 managers: Sam and Sam" tells a reader nothing."""
+        fines = [_fine("Sam", "red-card", _PALMER, key=1), _fine("Sam", "red-card", _PALMER, key=2)]
+
+        lines = recap_fine_lines(fines)
+
+        assert [(line.lead, line.grouped) for line in lines] == [("Sam", False), ("Sam", False)]
+
+    def test_one_manager_fined_twice_alike_is_not_counted_as_two(self):
+        fines = [_fine("Sam", "last-place", _LAST, key=1), _fine("Sam", "last-place", _LAST, key=1)]
+
+        lines = recap_fine_lines(fines)
+
+        assert [(line.lead, line.grouped) for line in lines] == [("Sam", False), ("Sam", False)]
+
+    def test_a_ruling_without_a_trigger_never_groups(self):
+        """A rule the recap does not word itself, or a ruling built by hand
+        with only a message, keeps the line it always had."""
         fines = [
-            {"manager_name": n, "rule_type": "red-card", "message": "Red card in starting XI (Gabriel (ARS)). Pint"}
-            for n in ("A", "B")
+            RecapFineResult(manager_name=n, rule_type="red-card", message=f"{_PALMER}. Pint") for n in ("A", "B")
         ]
 
         lines = recap_fine_lines(fines)
 
         assert [(line.lead, line.grouped) for line in lines] == [("A", False), ("B", False)]
 
-    def test_the_ruling_itself_keeps_one_record_per_manager(self):
+    def test_a_player_name_with_brackets_still_groups(self):
+        fines = _ruled([
+            _make_manager(name=n, entry_id=i, squad=[_make_squad_player(name="Gabriel (ARS)", red_cards=1)])
+            for i, n in enumerate(("A", "B"), start=1)
+        ], [{"type": "red-card", "penalty": "Pint"}])
+
+        (line,) = recap_fine_lines(fines)
+
+        assert (line.lead, line.detail) == ("Red card in starting XI (Gabriel (ARS))", "2 managers: A and B. Pint")
+
+    def test_the_ruling_carries_the_message_it_was_written_from(self):
         fines = _ruled(_gw8_week())
 
-        recap_fine_lines(fines)
-
-        assert len(fines) == 11
+        assert all(f["message"] == f"{f['trigger']}. {f['penalty']}" for f in fines)
+        assert len(fines) == 11, "one record per manager per fine"
 
 
 class TestFinesReport:
@@ -3563,7 +3605,7 @@ class TestFinesReport:
         assert section.splitlines() == [
             "- **Red card in starting XI (Palmer)** - 10 managers: Manager A, Manager B, Manager C, "
             "Manager D, Manager E, Manager F, Manager G, Manager H, Manager I and Manager J. "
-            "Pint on video each",
+            "Pint on video",
             "- **Manager K:** Finished last in the gameweek. Pint on video",
         ]
 

@@ -3699,9 +3699,12 @@ class TestConsoleFines:
     def test_a_shared_fine_prints_once_with_every_name(self, capsys: pytest.CaptureFixture[str]):
         from fpl_cli.cli.league_recap import _render_console_highlights
 
-        palmer = "Red card in starting XI (Palmer). Pint on video"
+        palmer = {
+            "rule_type": "red-card", "message": "Red card in starting XI (Palmer). Pint on video",
+            "trigger": "Red card in starting XI (Palmer)", "penalty": "Pint on video",
+        }
         data = _recap_data(managers=[_manager()], fines=[
-            *({"manager_name": n, "rule_type": "red-card", "message": palmer} for n in ("Alice", "Bob", "[Cam]")),
+            *({"manager_name": n, **palmer} for n in ("Alice", "Bob", "[Cam]")),
             {"manager_name": "Dan", "rule_type": "last-place",
              "message": "Finished last in the gameweek. Pint on video"},
         ])
@@ -3709,7 +3712,7 @@ class TestConsoleFines:
 
         out = _stdout(capsys)
         assert (
-            "Red card in starting XI (Palmer) - 3 managers: Alice, Bob and [Cam]. Pint on video each"
+            "Red card in starting XI (Palmer) - 3 managers: Alice, Bob and [Cam]. Pint on video"
         ) in out, "names are escaped, not read as markup"
         assert "Dan: Finished last in the gameweek. Pint on video" in out
         assert out.index("Red card") < out.index("Dan:"), "the headline fine leads"
