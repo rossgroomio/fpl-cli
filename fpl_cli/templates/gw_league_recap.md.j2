@@ -153,8 +153,12 @@
 
 # Fines
 
-{% for f in fines %}
-- **{{ f.manager_name }}:** {{ f.message }}
+{% for line in fine_lines %}
+{% if line.grouped %}
+- **{{ line.lead }}** - {{ line.detail }}
+{% else %}
+- **{{ line.lead }}:** {{ line.detail }}
+{% endif %}
 {% endfor %}
 {% endif %}
 

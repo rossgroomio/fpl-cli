@@ -1301,7 +1301,11 @@ and `round`, `pick`, `overall_pick` and `auto_pick` are then null. Classic rows 
 ruling against the gameweek. A backfilled gameweek is ruled too — the detailed replay rules every configured rule, the coarse tier rules the ones
 derivable from cohort points (`last-place`, `below-threshold`) and records that it could not
 rule `red-card`, which needs a squad the manager-history endpoint does not return. See
-[Season Fines](#season-fines) for the table this builds up.
+[Season Fines](#season-fines) for the table this builds up. On the console and in the saved
+report, managers who took the same fine (same rule, same red-carded player, same penalty) share
+one line led by the fine and naming every one of them, biggest group first; a fine only one
+manager took reads `Manager: fine. penalty` as before. The ledger and `--format json` still
+hold one record per manager per fine.
 
 **Season fines:** the season-to-date *table* appears on console and in the saved report only
 at the two milestone gameweeks — GW19 (the chip-availability boundary, which is also the
