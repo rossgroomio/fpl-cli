@@ -1042,12 +1042,20 @@ def _render_console_highlights(
             for line in blank_lines:
                 console.print(f"  [red]{rich_escape(line)}[/red]")
 
-    # Fines
+    # Fines, grouped by the fine where several managers took the same one
+    # (#504), the same lines the saved report prints. Escaped: they carry
+    # manager names, which Rich would otherwise read as markup.
     fines = data.get("fines", [])
     if fines:
+        from fpl_cli.cli._league_recap_data import recap_fine_lines
+
         console.print("\n[bold]Fines:[/bold]")
-        for f in fines:
-            console.print(f"  [red]{f['manager_name']}:[/red] {f['message']}")
+        for line in recap_fine_lines(fines, data.get("fine_rules_evaluated", [])):
+            lead, detail = rich_escape(line.lead), rich_escape(line.detail)
+            if line.grouped:
+                console.print(f"  [red]{lead}[/red] - {detail}")
+            else:
+                console.print(f"  [red]{lead}:[/red] {detail}")
 
     # Season totals, at the milestone gameweeks the caller gates on -- a
     # `None` tally here means either "not a milestone week" or "no fine
