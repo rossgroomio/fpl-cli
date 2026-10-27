@@ -10757,6 +10757,19 @@ class TestFinesContextCountsTheUnfined:
         assert "Never count a section's list yourself to make a manager the only one in it" in system
         assert "no line names who holds a lower season total" in system
 
+    def test_the_system_prompt_holds_universal_claims_and_forbids_reciting_the_unfined(self):
+        """The pr512-gw8 A/B: one treatment editorial named three unfined
+        managers as a group, and one in each arm said "nobody is spared this
+        week" with 8 of 19 unfined."""
+        system, _ = get_recap_synthesis_prompt(
+            gw=8, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="Bob fined",
+        )
+
+        assert '"nobody was spared", "everyone paid" or "no one got away" holds only where' in system
+        assert "The not-fined lists are there to count from, never to recite" in system
+        assert "never as one of a group" in system
+
 
 class TestFinesContextNamesTheForfeit:
     @staticmethod
