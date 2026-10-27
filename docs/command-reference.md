@@ -1336,8 +1336,9 @@ and that list is unchanged, but the editorial may write a forfeit out word for w
 once, headline included. Everywhere else it names the same forfeit in other words, without
 changing what it is (no more of it, a different drink or forfeit, or a part of it dropped). Give
 the league its own vocabulary with `penalty_phrasings` (see [Fine Rule Types](#fine-rule-types))
-and every other mention in the prose is one of those phrasings, varied, and nothing else: an
-aside alluding to the forfeit, or a bare "the forfeit", counts as a mention. Only the headline
+and every other mention in the prose that names the forfeit is one of those phrasings,
+varied, and nothing else; a bare "the forfeit" counts as one. A short aside that only alludes
+to the forfeit (the camera, a glass) may be in the model's own words. Only the headline
 may play on the forfeit in words of its own, and never into more of it than one per fine or a
 different act such as paying for a round. Without the list, the model words the forfeit
 itself. An editorial that still writes a forfeit of two or more words out

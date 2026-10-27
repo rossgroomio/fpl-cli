@@ -10560,17 +10560,18 @@ class TestFinesContextNamesTheForfeit:
 
         assert "\n\nNaming the forfeit:\n" in text
         assert f'- "{_PINT}": write these exact words at most once in the editorial' in text
-        assert "Every other mention in the prose uses one of this league's own phrasings" in text
+        assert "Every other mention in the prose that names it uses one of this league's own phrasings" in text
         assert 'never into more of it or a different act: ["pint of shame", "penance pint", ' in text
         assert text.endswith('"one for the group chat"]')
 
-    def test_the_phrasings_line_names_asides_as_mentions_and_frees_only_the_headline(self):
-        """Round pr507-gw8: with phrasings set, 11 of 20 editorials reached
-        outside the list -- headline puns, asides about the camera or the
-        group chat, and a bare "the forfeit"."""
+    def test_the_phrasings_line_counts_a_bare_forfeit_allows_asides_and_frees_only_the_headline(self):
+        """Round pr507-gw8: a bare "the forfeit" went once it was named a
+        mention; short asides held at 5 in 20 over two rounds and never
+        changed the forfeit, so the league accepts them."""
         text = format_recap_fines_context(self._data(_PHRASINGS))
 
-        assert "an aside alluding to it and a bare \"the forfeit\" are mentions too" in text
+        assert "Every other mention in the prose that names it uses one of this league's own phrasings" in text
+        assert 'a bare "the forfeit" counts; a short aside alluding to it may be in your own words' in text
         assert "only the headline may play on it in words of its own" in text
 
     def test_without_phrasings_there_is_no_list_to_free_the_headline_from(self):
@@ -10615,13 +10616,16 @@ class TestFinesContextNamesTheForfeit:
             RECAP_SYNTHESIS_SYSTEM_PROMPT
         )
 
-    def test_the_system_prompt_counts_asides_as_mentions_and_frees_only_the_headline(self):
+    def test_the_system_prompt_counts_a_bare_forfeit_and_allows_short_asides(self):
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
 
         assert (
-            "every other mention in the prose is one of those, varied rather than repeated, and nothing else: "
-            "an aside that alludes to the forfeit - a joke about what it involves, where it happens or who "
-            'sees it - and a bare "the forfeit" are mentions too'
+            "every other mention in the prose that names the forfeit is one of those, varied rather than "
+            'repeated, and nothing else, and a bare "the forfeit" is such a mention'
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "A short aside that only alludes to it - what it involves, where it happens or who sees it - "
+            "may be in your own words, as long as it keeps the forfeit as it is"
         ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert (
             "The headline is the one place you may play on the forfeit in words of your own, "
