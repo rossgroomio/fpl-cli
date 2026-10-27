@@ -8899,6 +8899,9 @@ class TestGameweekPlacingCheck:
         ("Gus Peel fell two places to 7th, and Hal Penn finished 8th on 31 after his Wildcard.", "Hal Penn"),
         # Issue #499: "out of" leaves a placing only straight before it.
         ("Hal Penn ran out of steam and finished last on the week.", "Hal Penn"),
+        # Issue #524: a pronoun passes over the manager it is measured against.
+        ("Gus Peel had a shocker. His 30 was a point behind Hal Penn's 31, so he finished seventh on the week.",
+         "Gus Peel"),
     ])
     def test_a_placing_the_week_does_not_bear_out_is_caught(self, summary, placed):
         problems = self._check(summary)
@@ -8981,6 +8984,10 @@ class TestGameweekPlacingCheck:
         # after the placing, not the week alone or said of something else.
         "Ann Moss kept top spot for the week.",
         "Ann Moss stays top with the captaincy call of the week.",
+        # Issue #524: true of the manager the pronoun is about, not of the
+        # one it is measured against.
+        "Hal Penn had a quiet week. His 31 was one point clear of Gus Peel's 30, so he finished seventh on the week.",
+        "Hal Penn had a quiet week. His 31 was one point clear of Gus Peel's 30. He finished seventh on the week.",
     ])
     def test_a_placing_the_check_cannot_pin_to_the_week_is_left_alone(self, summary):
         managers = _placings_table()
@@ -9218,6 +9225,10 @@ class TestEscapeClaimCheck:
         ("Gus Peel missed the bus then escaped the wooden spoon.", "Gus Peel"),
         (f"{_FINE} He missed the wooden spoon by a point in what felt like a real let-off.", "Gus Peel"),
         (f"{_FINE} He missed last place by a point thanks to a late lifeline from Hal Penn.", "Gus Peel"),
+        # Issue #524: a pronoun passes over the manager it is measured
+        # against to the one it is about, who finished last.
+        ("Gus Peel had a shocker. His 30 was a point behind Hal Penn's 31, so he avoided last place.", "Gus Peel"),
+        ("Gus Peel had a shocker. He was a point short of Hal Penn, so he dodged the wooden spoon.", "Gus Peel"),
     ])
     def test_an_escape_the_data_contradicts_is_caught(self, summary, escaped):
         problems = self._check(summary)
@@ -9303,6 +9314,20 @@ class TestEscapeClaimCheck:
         # ...and an escape from an earlier week.
         "Gus Peel took the fine a week after he escaped the wooden spoon.",
         "Gus Peel took the fine, a week after escaping the wooden spoon.",
+        # Issue #524: the manager a pronoun's escape is measured against is
+        # not whose it is; the one the sentence is about avoided last place.
+        "Hal Penn had a quiet week. His 31 was one point clear of Gus Peel's 30, so he avoided last place by the"
+        " thinnest margin going.",
+        "Hal Penn had a quiet week. He was one point clear of Gus Peel, so he avoided last place by the thinnest"
+        " margin going.",
+        "Hal Penn had a quiet week. His 31 was one point clear of Gus Peel's 30, so he avoided last place, and he"
+        " still paid for Palmer.",
+        "Hal Penn had a quiet week. His 31 was one point clear of Gus Peel's 30. He avoided last place by a point.",
+        "Hal Penn had a quiet week. He finished a point ahead of Gus Peel and dodged the wooden spoon.",
+        "Hal Penn had a quiet week. He finished a point above Gus Peel (30) and dodged the wooden spoon.",
+        "Hal Penn had a quiet week. He scored one more than Gus Peel and avoided last place.",
+        "Hal Penn's 31 was one point clear of Gus Peel's 30, so Hal Penn avoided last place.",
+        "Hal Penn had a quiet week. A point clear of Gus Peel, last place was avoided by him.",
     ])
     def test_an_escape_the_check_cannot_pin_to_the_wrong_manager_is_left_alone(self, summary):
         assert self._check(summary) == []
