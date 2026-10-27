@@ -7,7 +7,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -170,22 +170,27 @@ def _shared_ssl_context():
     FPLDraftClient, ...) without ever opening a connection -- pytest-socket
     blocks the network. Sharing one context took about 90s off a full run.
     Clients asking for anything but the default (verify=False, a client
-    cert) still get their own. patch.object fails loudly if an httpx
-    release moves the function, rather than letting the suite slow down
-    unnoticed.
+    cert) still get their own, as should a test that changes SSL_CERT_FILE:
+    the shared context is built from the environment at session start.
+
+    If an httpx release moves the function, patch.object fails at session
+    start; if it calls it positionally, the keyword-only wrapper raises; and
+    if it stops calling it under this name, test_harness.py sees no reuse.
+    Each way the suite says so, rather than quietly slowing down again.
     """
-    shared = httpx.create_ssl_context()
+    state = SimpleNamespace(context=httpx.create_ssl_context(), reuses=0)
     build = httpx_transport.create_ssl_context
 
     # Keyword pass-through: httpx 0.27 (the floor) also sends http2=.
     def _create_ssl_context(**kwargs):
         default = {"verify": True, "cert": None, "trust_env": True, "http2": False}
         if all(kwargs.get(key, value) == value for key, value in default.items()):
-            return shared
+            state.reuses += 1
+            return state.context
         return build(**kwargs)
 
     with patch.object(httpx_transport, "create_ssl_context", _create_ssl_context):
-        yield
+        yield state
 
 
 @pytest.fixture
@@ -197,7 +202,10 @@ def tmp_path(request, tmp_path_factory):
     one, so each listing is longer than the last -- about 30s across a full
     run. mkdtemp picks a random suffix with no listing. The directory still
     sits under the base temp dir, named after the test, so --basetemp and
-    pytest's keep-the-last-three-runs cleanup behave as before.
+    pytest's keep-the-last-three-runs cleanup behave as before. Per-test
+    pruning does not: tmp_path_retention_policy / _count are read by the
+    fixture this replaces, so setting them no longer removes passed tests'
+    directories. Nothing here sets them; the default keeps every directory.
     """
     name = re.sub(r"\W", "_", request.node.name)[:30]
     return Path(tempfile.mkdtemp(prefix=f"{name}-", dir=tmp_path_factory.getbasetemp()))
