@@ -20,6 +20,7 @@ from fpl_cli.cli._context import (
     resolve_format,
     settings_block,
 )
+from fpl_cli.cli._fines_config import DEFAULT_PENALTY
 from fpl_cli.utils.files import atomic_write_text
 
 
@@ -67,6 +68,18 @@ def _prompt_penalty(existing_rules: list[dict[str, Any]], rule_type: str, rule: 
     penalty = click.prompt("    Penalty (e.g. £5)", default=default, show_default=bool(default))
     if penalty:
         rule["penalty"] = penalty
+    # Not asked for -- they are hand-written in settings.yaml -- but carried
+    # over, or a reconfigure rebuilding the rule would drop them without a
+    # word. Only while the penalty they were written for stands (#503).
+    phrasings = _rule_field(existing_rules, rule_type, "penalty_phrasings")
+    if phrasings is not None:
+        if penalty == default:
+            rule["penalty_phrasings"] = phrasings
+        else:
+            click.echo(
+                f"    Dropped this rule's penalty_phrasings: they were written for {default!r}",
+                err=True,
+            )
 
 
 def _prompt_fines_config(fmt: str, existing: dict[str, Any]) -> dict[str, Any]:
@@ -123,7 +136,31 @@ def _prompt_fines_config(fmt: str, existing: dict[str, Any]) -> dict[str, Any]:
         if escalation:
             fines["escalation_note"] = escalation
 
+        # The block's phrasings, like a rule's, only survive while the
+        # forfeits they were written for do (#503).
+        block_phrasings = existing.get("penalty_phrasings")
+        if block_phrasings is not None:
+            if _forfeits(existing) == _forfeits({**existing, **fines}):
+                fines["penalty_phrasings"] = block_phrasings
+            else:
+                click.echo(
+                    "  Dropped the fines block's penalty_phrasings: the penalties they were "
+                    "written for changed. Re-add them in settings.yaml.",
+                    err=True,
+                )
+
     return fines
+
+
+def _forfeits(fines: dict[str, Any]) -> set[str]:
+    """Every penalty a `fines:` block names, across both formats."""
+    named = {
+        str(rule.get("penalty", "")).strip()
+        for fmt in ("classic", "draft")
+        for rule in fines.get(fmt) or []
+        if isinstance(rule, dict)
+    }
+    return named - {"", DEFAULT_PENALTY}
 
 
 def _prompt_llm_config(existing: dict[str, Any]) -> dict[str, Any]:
@@ -362,6 +399,9 @@ def _tier_fines(data: dict[str, Any], fmt: str) -> None:
     fines_section = _prompt_fines_config(fmt, existing_fines)
     data.setdefault("fines", {})
     data["fines"].update(fines_section)
+    if fines_section and "penalty_phrasings" not in fines_section:
+        # Dropped above for forfeits that changed; `update` alone keeps it.
+        data["fines"].pop("penalty_phrasings", None)
 
 
 def _tier_fpl_login() -> None:

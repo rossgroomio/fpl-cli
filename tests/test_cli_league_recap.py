@@ -2232,6 +2232,41 @@ class TestKindScopedNets:
         assert "synthesis_net_misattribution" not in warnings
 
 
+class TestTheEditorialIsToldHowToNameTheForfeit:
+    """#503: the league's phrasings reach the prompt beside the fine, and the
+    stored ruling still carries the configured penalty word for word."""
+
+    _SETTINGS = {
+        "fpl": {"classic_league_id": 42},
+        "fines": {
+            "penalty_phrasings": ["pint of shame", "penance pint"],
+            "classic": [{"type": "last-place", "penalty": "Pint on video"}],
+        },
+    }
+
+    def test_a_dry_run_prompt_names_the_forfeit_and_the_ledger_is_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        data = _recap_data(
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=60),
+                _manager(name="Bob", entry_id=2, gross_points=10, gw_rank=2, overall_rank=2),
+            ],
+            cohort=_cohort((1, "Alice", 1, 60, 300), (2, "Bob", 2, 10, 200)),
+        )
+
+        result = _invoke_recap(data, ["--dry-run"], settings=self._SETTINGS)
+
+        assert result.exit_code == 0, result.output
+        user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "- Bob: Finished last in the gameweek. Pint on video" in user_prompt
+        assert "Naming the forfeit:" in user_prompt
+        assert 'or a different act: ["pint of shame", "penance pint"]' in user_prompt
+        [fine] = _store().resolved_gameweek(5)[2].fines
+        assert fine.message == "Finished last in the gameweek. Pint on video"
+
+
 class TestFinesAreRecordedNotJustRendered:
     def test_a_live_capture_records_what_was_ruled_even_when_nothing_triggered(self):
         """`fines == []` says three different things at once without this; the

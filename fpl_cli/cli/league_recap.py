@@ -406,6 +406,10 @@ def league_recap_command(
             )
             if ruling.fines:
                 collected_data["fines"] = ruling.fines
+                # For the editorial alone, so it can vary how it names the
+                # forfeit (#503); replays below reach only the ledger.
+                if ruling.penalties:
+                    collected_data["fine_penalties"] = ruling.penalties
             # Recorded whether or not anything triggered: a gameweek with no
             # fines and a gameweek nobody ruled on are different facts, and
             # only this tells the season tally which one it is read
