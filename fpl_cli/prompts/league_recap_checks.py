@@ -2414,34 +2414,42 @@ _BRIEF_SECTION_RE = re.compile(
 # "word for word" ("copied his rival's XI word for word") and a bare "once"
 # ("once again bottom") are the league's English as much as the brief's.
 _BRIEF_PHRASE_RE = re.compile(r"(?<!\w)(?:exact\s+phrases?|at\s+most\s+once)(?!\w)", re.IGNORECASE)
-# The label the Fines section lists each forfeit under. Only as the brief
-# writes it, capital and all, and never opening a sentence: "naming the
-# forfeit" is ordinary English about a fine, and "Naming the forfeit is half
-# the fun" is that sentence's first word capitalised. Quoted, or capitalised
-# mid-sentence ("its Naming the forfeit line"), it is the label.
+# The label the Fines section lists each forfeit under, as the brief writes
+# it, capital and all: "naming the forfeit" is ordinary English about a fine.
+# Capitalised, it is the label only where nothing else can explain the
+# capital: quoted as a label ('its "Naming the forfeit" line'), or run into
+# by a word on the same line ("its Naming the forfeit line"). After a
+# sentence's end, a bullet, a dash or an opening quote it may be a sentence's
+# first word ("Naming the forfeit is half the fun"), so it is left alone.
 _FORFEIT_LABEL_RE = re.compile(r"(?<!\w)Naming\s+the\s+forfeit(?!\w)")
-_SENTENCE_OPENERS = ".!?:(#\n"
+_BRIEF_QUOTE_MARK_TUPLE = tuple(_BRIEF_QUOTE_MARKS)
+# Where a sentence ends: its stop and any quote or bracket it closes, before a
+# space or the end. A stop inside a figure ("£7.5m") ends nothing.
+_SENTENCE_END_RE = re.compile(r"[.!?]+[\"”’')\]]*(?=\s|$)|\n")
 # How many words either side of an echo its quote carries, inside its sentence.
 _BRIEF_QUOTE_WORDS = 6
 
 
-def _opens_sentence(text: str, start: int) -> bool:
-    """Whether `text[start:]` opens a sentence, emphasis and a heading's
-    marks aside."""
-    before = text[:start].rstrip(" \t*_")
-    return not before or before[-1] in _SENTENCE_OPENERS
+def _forfeit_label(text: str, match: re.Match[str]) -> bool:
+    """Whether a capitalised "Naming the forfeit" is the brief's label
+    rather than a sentence that opens with those words."""
+    before = text[:match.start()].rstrip("*_")
+    if before.endswith(_BRIEF_QUOTE_MARK_TUPLE) and text[match.end():].lstrip("*_").startswith(_BRIEF_QUOTE_MARK_TUPLE):
+        return True
+    before = before.rstrip(" \t*_")
+    return bool(before) and before[-1].isalnum()
 
 
 def _sentence_quote(text: str, start: int, end: int) -> str:
     """`text[start:end]` with up to `_BRIEF_QUOTE_WORDS` words either side,
     never past the sentence it sits in."""
-    sentence_start = max(text.rfind(mark, 0, start) for mark in ".!?\n") + 1
-    ends = [found for mark in ".!?\n" if (found := text.find(mark, end)) != -1]
-    sentence = text[sentence_start:min(ends, default=len(text))]
+    sentence_start = max((m.end() for m in _SENTENCE_END_RE.finditer(text, 0, start)), default=0)
+    sentence_end = m.end() if (m := _SENTENCE_END_RE.search(text, end)) else len(text)
+    sentence = text[sentence_start:sentence_end]
     start -= sentence_start
     end -= sentence_start
     window = sentence[_window_start(sentence, start, _BRIEF_QUOTE_WORDS):_window_end(sentence, end, _BRIEF_QUOTE_WORDS)]
-    return " ".join(_plain(window).split()).rstrip(",;")
+    return " ".join(_plain(window).split()).rstrip(",;:.!?")
 
 
 def check_brief_echoes(summary: str) -> list[str]:
@@ -2467,7 +2475,7 @@ def check_brief_echoes(summary: str) -> list[str]:
         for match in (
             *_BRIEF_SECTION_RE.finditer(summary),
             *_BRIEF_PHRASE_RE.finditer(summary),
-            *(m for m in _FORFEIT_LABEL_RE.finditer(summary) if not _opens_sentence(summary, m.start())),
+            *(m for m in _FORFEIT_LABEL_RE.finditer(summary) if _forfeit_label(summary, m)),
         )
     )
     problems: list[str] = []

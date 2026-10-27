@@ -92,6 +92,7 @@ from fpl_cli.prompts.league_recap import (
     get_recap_synthesis_prompt,
 )
 from fpl_cli.prompts.league_recap_checks import (
+    _BRIEF_SECTIONS,
     EDITORIAL_CHECKS,
     RECAP_WARNING_BRIEF_ECHOED,
     RECAP_WARNING_CONTESTED_MISATTRIBUTION,
@@ -11445,16 +11446,18 @@ class TestBriefEchoes:
         assert [problem.split('"')[1] for problem in found] == ["At Most Once", "Exact phrases"]
 
     def test_every_section_the_prompt_hands_over_is_caught_named_as_a_section(self):
-        """Read off the prompt's own headings, so a section added to it
-        without a place on the list fails here."""
-        _, user = get_recap_synthesis_prompt(
-            gw=10, league_name="Test", fpl_format="classic", awards_text="x", standings_text="| t |",
-            fines_text="x", research_summary="x", season_fines_text="x", captains_text="x", chips_text="x",
-            transfers_text="x", waivers_text="x", player_clubs_text="x", league_history_text="x",
-            prior_seasons_text="x", standout_players_text="x",
-        )
+        """PR #523 review: the list is the prompt builder's headings, read
+        off a prompt with every section it can render, so a section added,
+        renamed or dropped there fails here until the list follows."""
+        import inspect
+
+        texts = {
+            name: "x" for name, param in inspect.signature(get_recap_synthesis_prompt).parameters.items()
+            if "str" in str(param.annotation) and name not in {"league_name", "fpl_format"}
+        }
+        _, user = get_recap_synthesis_prompt(gw=10, league_name="Test", fpl_format="classic", **texts)
         headings = [re.sub(r"\s*\(.*\)$", "", line[3:]) for line in user.splitlines() if line.startswith("## ")]
-        assert len(headings) == 13
+        assert sorted(headings) == sorted(_BRIEF_SECTIONS)
         for heading in headings:
             for named in (f"the {heading} section", f'the "## {heading}" section', f"the **{heading}** sections"):
                 assert check_brief_echoes(f"As {named} says, Bob pays.") != [], named
@@ -11468,9 +11471,31 @@ class TestBriefEchoes:
     def test_the_forfeit_label_is_caught_only_as_a_label(self):
         assert check_brief_echoes("Under its Naming the forfeit line, a pint.") != []
         assert check_brief_echoes('Bob owes one. "Naming the forfeit" says a pint.') != []
+        assert check_brief_echoes("The brief's **'Naming the forfeit'** list.") != []
         assert check_brief_echoes("Naming the forfeit is half the fun.") == []
         assert check_brief_echoes("Bob owes one. **Naming the forfeit** took a while.") == []
         assert check_brief_echoes("## Naming the forfeit: Bob\nBob owes one.") == []
+        assert check_brief_echoes("## Pints\n\nNaming the forfeit took a while.") == []
+
+    def test_a_capital_something_else_explains_is_not_the_label(self):
+        """PR #523 review: a sentence opening after a closing quote, a bullet
+        or a dash, or inside a quote of its own, was read as the label."""
+        for summary in (
+            'Bob said "stop." Naming the forfeit took a while.',
+            "- Naming the forfeit took a while.",
+            "Bob paid up — Naming the forfeit took a while.",
+            'Bob chose "Naming the forfeit is half the fun," he said.',
+        ):
+            assert check_brief_echoes(summary) == [], summary
+
+    def test_a_stop_inside_a_figure_does_not_cut_the_quote(self):
+        """PR #523 review: the quote stopped at the stop in "13.5"."""
+        found = check_brief_echoes("Salah at 13.5m earned the exact phrase in full.")
+        assert found[0].endswith('("Salah at 13.5m earned the exact phrase in full")')
+
+    def test_a_sentence_ending_inside_a_quote_ends_before_the_next(self):
+        found = check_brief_echoes('Bob said "never again." The exact phrase was his.')
+        assert found[0].endswith('("The exact phrase was his")')
 
     def test_the_quote_stays_inside_its_sentence(self):
         summary = "Alice won the week by miles and nobody came close. Bob, at most once, did not."
@@ -11495,9 +11520,11 @@ class TestBriefEchoes:
             'once) landed on Manager A").'
         )
 
-    def test_the_retry_says_to_write_for_the_league_without_handing_back_the_words(self):
+    def test_the_retry_instruction_names_none_of_the_words_it_catches(self):
         """The forfeit's own retry quotes the brief's wording, the likeliest
-        source of the echo, so this one names none of the words it catches."""
+        source of the echo, so this instruction names none of the words it
+        catches. The problem lines above it quote the echo, as every check's
+        do, so the retry knows which sentence to rewrite."""
         prompt = get_recap_editorial_retry_prompt("ORIGINAL", {RECAP_WARNING_BRIEF_ECHOED: ["an echo"]})
         assert "Your previous draft broke the brief it was given:\n- an echo\n" in prompt
         assert "Write every sentence for the league, never about your instructions" in prompt
