@@ -133,21 +133,39 @@ docs, tests or CI only (an empty `fpl_cli/` diffstat). If they touch
 `fpl_cli/`, stop and put it to the user: the PR should probably merge main
 first, so the round tests what will ship.
 
+**Only what you have read in full.** Every expectation in the brief about
+a file, probe, earlier change or count comes from reading the whole thing,
+never a preview, a diffstat or an inference. The first real brief told the
+vault session that a probe wrote the forfeit once, from the probe's first
+600 characters (it wrote it twice), and that an earlier PR had changed the
+prompt, from a diffstat that included console code (it had not). Each cost
+the round a stop. Where you could not check, write it as a question the
+dry run or the corpus answers, not as an expectation.
+
 **What the change is meant to do, per sentence shape, and what counts as
 a regression.** Quote real sentence shapes in full from the reports the
 issue cites or the PR's tests, with every manager name replaced by
 Manager A, Manager B. Never trim a sentence into a test-shaped fragment:
 one October fix brief did, and the PR's test passed while the real
 sentence was still missed. For each shape, say what treatment should write
-instead (or that it should be unchanged) and what would be a regression.
-The brief that listed expected changes per shape ran fastest and cleanest
+instead (or that it should be unchanged) and what would be a regression,
+and name the file each shape was quoted from so the vault session can find
+it. If an expectation you want sits uneasily with the PR's own rule (puns
+wanted in headlines, while the prompt's "no others" covers the headline
+too), put that to the user before writing the brief: left in, it becomes a
+definitional call the vault session makes mid-round, and the call moves
+the count. The brief that listed expected changes per shape ran fastest and cleanest
 of all the October rounds, because grading became a comparison against a
 written expectation instead of a judgement made from scratch.
 
 **The baseline.** The previous round's numbers for the same measure, from
 the linked issue or earlier PR bodies, numbers only. If no round has
 measured it, say so and say where the first measurement will come from
-(often control's own runs, or a replay of older control drafts).
+(often control's own runs, or a replay of older control drafts), and do
+not predict its size: the first brief expected "a clear share" of repeats
+in control and the round found 1 in 10, which left the vault session
+deciding whether a wrong guess was a stop. "Better" is then stated against
+whatever control measures, not against a guess.
 
 **The gameweek.** The most recently finished one per
 `fpl status --format json`, unless the PR's evidence came from a specific
@@ -173,15 +191,28 @@ data key older snapshots lack judges those drafts on less than its build
 computes, so the replay needs `RECAP_AB_RECHECK_DATA` carrying that key for
 each round's gameweek and format, merged with any round's own
 `recheck-data.json`. Say what the key should hold and where its value
-comes from.
+comes from. Name the rounds whose snapshots already carry the key (a round
+recorded on this PR's own build does), since the override would replace
+their values. Read each probe you expect a result from in full.
+
+The replay's control will not reproduce a round recorded on an older build
+wherever a check changed in between. For each round, run
+`git log --oneline <round's recorded sha>..<control> --
+fpl_cli/prompts/league_recap_checks.py` and name the expected
+non-reproductions with their PR, giving every SHA involved in full: the
+first round's vault session met one such miss, guessed the SHA of the
+commit that explained it, and broke a replay before looking it up.
 
 **Whether a second control exists:** an earlier corpus round, at the same
-gameweek, whose control prompts are byte-identical to this control's. One
+gameweek, holding control model runs (dry runs and probes alone cannot be
+pooled), whose control prompts are byte-identical to this control's. One
 October round pooled with its predecessor this way and halved the control
-runs it needed. Check by reading `git diff <earlier round's ctl sha>
-<control> -- fpl_cli/prompts/ fpl_cli/cli/` (an empty diff is a strong
-sign; the vault session confirms it by diffing the dry-run prompts). If
-none exists, say so, so the vault session does not go looking.
+runs it needed. Read what changed between the two builds in the code that
+writes the prompt (`fpl_cli/prompts/league_recap.py` and the recap data it
+reads), not a diffstat: `fpl_cli/cli/` also holds the console and saved
+report, which the model never sees. If you cannot tell, say the dry runs
+decide and leave it there. If no such round exists, say so, so the vault
+session does not go looking.
 
 ## Step 4: Write the brief
 
@@ -205,7 +236,10 @@ here so the brief stays short enough to read before the round starts.
   run, anything in the brief that does not match). "If anything in this
   brief doesn't match what you find, stop and ask me" caught a missing
   corpus in one round. A brief is written from one repo about another; a
-  stop costs a message, a wrong round costs an hour.
+  stop costs a message, a wrong round costs an hour. Stops are for set-up
+  facts (triage, dry-run diffs, corpus contents, SHAs), never for results:
+  a number that differs from what the brief hoped for is the finding, and
+  the brief should not predict one in the first place.
 - **Landing** is spelled out because every October session needed a
   follow-up message to land its round. Never write a blanket "don't commit
   anything": one October brief did, and that round's drafts were lost
@@ -222,8 +256,9 @@ here so the brief stays short enough to read before the round starts.
 
 Before printing, read the brief once as the vault session will: every SHA
 is 40 characters and came from command output, no `<placeholder>` or
-"TBD" is left, every number has a source, and no manager name or ID
-appears anywhere in it.
+"TBD" is left, every number has a source, every expectation comes from
+something you read in full, and no manager name or ID appears anywhere in
+it.
 
 ## The handback
 
@@ -245,7 +280,8 @@ Then a heading, `## A/B handback for <round>, from the fpl-workspace
 session`, and two blocks:
 
 - **Block A, "PR body".** First-person prose in the create-pr skill's
-  style, numbers only, ready to go into the PR body as written.
+  style and length budget (up to three short paragraphs, plus caveats in
+  italics), numbers only, ready to go into the PR body as written.
 - **Block B, "Findings".** A verdict line (`ship`, `fix then re-run
   fresh`, `fix then replay`, or `don't ship`), the vault PR link if one was
   opened, then one entry per finding: kind (regression, check false
@@ -269,8 +305,8 @@ correction is a second short comment, through the same check.
 
 ## Step 5: Closing the loop
 
-When the handback lands (the subscription wakes this session; otherwise
-the user says it has been posted, and you read it from the PR's comments):
+When the handback lands (found by a check-in, a wake, or the user saying
+it has been posted; read it from the PR's comments):
 
 1. **Check the marker.** Its `pr` is this PR and its `head` is the head
    the brief pinned, or a later head the brief allowed ("if the PR has
@@ -303,11 +339,20 @@ the approach is wrong, which is their decision, not a fix to push.
 
 ## Step 6: Deliver
 
-1. **Subscribe this session to the PR's activity first**
-   (`subscribe_pr_activity`), and say so, so the handback wakes this
-   session. Subscribing after printing races a fast replay round. Where
-   the tool is missing (a local session, another agent), tell the user to
-   come back here and say when the handback is posted.
+1. **Subscribe this session to the PR's activity, and arm a check-in,
+   before printing.** The subscription catches the reviews and CI on any
+   fixes; it has not been seen to deliver the handback. In the first real
+   round the comment landed and the subscribed session did not wake: both
+   sessions post as one account, and either a comment from that account is
+   filtered out as the session's own, or a plain PR comment is not an event
+   the subscription delivers. One miss cannot tell which, so the skill does
+   not rely on the wake. Arm a `send_later` check-in about an hour after
+   delivery, and on firing read the PR's comments for the marker; if none
+   is there, re-arm two hours out, and stop after four empty check-ins,
+   telling the user once that the next message from them will bring you
+   back. Say both are set. Where either tool is missing (a local session,
+   another agent), tell the user to come back here and say when the
+   handback is posted.
 2. **Print the brief in one fenced block** for copy and paste, with a
    fence longer than any fence inside it (`~~~~` around a brief that holds
    ```` ``` ```` blocks), so the copy comes out whole.
@@ -323,7 +368,9 @@ the approach is wrong, which is their decision, not a fix to push.
 - A placeholder or hand-typed SHA, or a short one
 - A sentence shape trimmed to the fragment a test matches
 - "Don't commit anything" in place of the landing rules
-- Printing the brief before subscribing to the PR
+- Printing the brief before subscribing to the PR and arming the check-in
+- Relying on the subscription alone to deliver the handback
+- An expectation built from a preview, a diffstat or a guess at a count
 - Treating the handback as an echo of this session's own comment, or
   editing the PR body with the vault session's transcript instead of
   Block A
