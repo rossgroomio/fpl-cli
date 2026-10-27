@@ -10560,10 +10560,22 @@ class TestFinesContextNamesTheForfeit:
 
         assert "\n\nNaming the forfeit:\n" in text
         assert f'- "{_PINT}": write these exact words at most once in the editorial' in text
-        assert (
-            'varied rather than repeated, and no others: ["pint of shame", "penance pint", '
-            '"one for the group chat"]'
-        ) in text
+        assert "Every other mention in the prose uses one of this league's own phrasings" in text
+        assert 'only the headline may play on it in words of its own: ["pint of shame", "penance pint", ' in text
+        assert text.endswith('"one for the group chat"]')
+
+    def test_the_phrasings_line_names_asides_as_mentions_and_frees_only_the_headline(self):
+        """Round pr507-gw8: with phrasings set, 11 of 20 editorials reached
+        outside the list -- headline puns, asides about the camera or the
+        group chat, and a bare "the forfeit"."""
+        text = format_recap_fines_context(self._data(_PHRASINGS))
+
+        assert "an aside alluding to it and a bare \"the forfeit\" are mentions too" in text
+        assert "only the headline may play on it in words of its own" in text
+
+    def test_without_phrasings_there_is_no_list_to_free_the_headline_from(self):
+        text = format_recap_fines_context(self._data([]))
+        assert "headline" not in text
 
     def test_quotes_and_semicolons_in_the_league_s_text_stay_inside_their_entry(self):
         """Review: `; `-joined, one phrasing with a semicolon read as two."""
@@ -10572,7 +10584,7 @@ class TestFinesContextNamesTheForfeit:
         text = format_recap_fines_context(data)
 
         assert '- "Wear the \\"Spoon\\" shirt": write these exact words' in text
-        assert 'no others: ["one for the lads; no questions", "penance pint"]' in text
+        assert 'in words of its own: ["one for the lads; no questions", "penance pint"]' in text
 
     def test_without_phrasings_the_model_words_it_itself(self):
         text = format_recap_fines_context(self._data([]))
@@ -10602,6 +10614,19 @@ class TestFinesContextNamesTheForfeit:
         assert "never more of it, a different drink or forfeit, or a part of it dropped" in (
             RECAP_SYNTHESIS_SYSTEM_PROMPT
         )
+
+    def test_the_system_prompt_counts_asides_as_mentions_and_frees_only_the_headline(self):
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert (
+            "every other mention in the prose is one of those, varied rather than repeated, and nothing else: "
+            "an aside that alludes to the forfeit - a joke about what it involves, where it happens or who "
+            'sees it - and a bare "the forfeit" are mentions too'
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "The headline is the one place you may play on the forfeit in words of your own, "
+            "as long as it stays the same forfeit"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
 
 class TestPenaltyRepetitions:

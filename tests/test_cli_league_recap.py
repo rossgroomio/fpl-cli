@@ -2262,7 +2262,7 @@ class TestTheEditorialIsToldHowToNameTheForfeit:
         user_prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
         assert "- Bob: Finished last in the gameweek. Pint on video" in user_prompt
         assert "Naming the forfeit:" in user_prompt
-        assert 'no others: ["pint of shame", "penance pint"]' in user_prompt
+        assert 'in words of its own: ["pint of shame", "penance pint"]' in user_prompt
         [fine] = _store().resolved_gameweek(5)[2].fines
         assert fine.message == "Finished last in the gameweek. Pint on video"
 

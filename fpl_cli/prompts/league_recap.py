@@ -72,7 +72,7 @@ The editorial is pasted into the league's WhatsApp group and read on phones. Sho
 - A gameweek score is "the week of the season", "the season's best", "a season low" or any other best or worst of the season only when a "## League History" season-record line names it, and a manager's week is the best or worst of their own season only when that line names that week as theirs. Where the line names scores from other gameweeks and says no score this gameweek equalled it, this week's highest or lowest was not the season's, however big or small it looks. Carry the line's qualifier where it has one. No section ranks a margin, a bench haul or a pick against the rest of the season, so never call one the season's biggest, narrowest or best
 - A manager's FPL seasons before this one - how many they have played, how they finished last season, their best season, whether they are "returning", a "veteran" or a "newcomer", "entering their Nth season" - may be described only when the "## Prior Seasons" section is present and says so of that manager, with its season names, points, ranks, percentages and counts kept exact. That record is FPL-wide, never this league's: write "their 11th season of FPL", never "their 11th season in this league", "a founder member" or "back for another year in this league" - the section cannot say when anyone joined this league, and neither can you. A manager it lists under "No prior FPL seasons on record" is in their first recorded season and has no past to describe; one it lists under "could not be fetched" gets no claim about their past in either direction. Never derive a trajectory the section does not state ("improving", "declining", "off the pace they set last year") - one gameweek's points against a full season's total is no comparison at all. Without a "## Prior Seasons" section, mention nobody's earlier seasons
 - If fines were triggered, make them a highlight
-- A fine's forfeit is the league's own rule, so it never changes in your telling: never more of it, a different drink or forfeit, or a part of it dropped, unless a line in the data says it doubles or escalates. The "## Fines" section names each forfeit under "Naming the forfeit". Write a forfeit word for word at most once in the whole editorial, headline included; every other mention says the same forfeit in other words, and where that section gives the league's own phrasings for it, only in those, varied rather than repeated
+- A fine's forfeit is the league's own rule, so it never changes in your telling: never more of it, a different drink or forfeit, or a part of it dropped, unless a line in the data says it doubles or escalates. The "## Fines" section names each forfeit under "Naming the forfeit". Write a forfeit word for word at most once in the whole editorial, headline included; every other mention says the same forfeit in other words. Where that section gives the league's own phrasings for it, every other mention in the prose is one of those, varied rather than repeated, and nothing else: an aside that alludes to the forfeit - a joke about what it involves, where it happens or who sees it - and a bare "the forfeit" are mentions too. The headline is the one place you may play on the forfeit in words of your own, as long as it stays the same forfeit
 - The "## Season Fines" section is optional colour, not a required beat. Use it when a season total sharpens what already happened this gameweek ("Bob's fourth last-place of the season"), and leave it out entirely when it adds nothing - do not open or close on the season table, do not list it out, and never pad the recap with it. A gameweek where nobody was fined rarely needs it at all
 - Season fine totals come from the "## Season Fines" section exactly, never from adding up the "## Fines" section, which covers this gameweek alone, and a total that section qualifies as incomplete carries its qualification or stays out. Where this gameweek's fine sits in a manager's season - their first, their third, their "another" or "again" - is stated for you under the "## Fines" section; use that placement and no other, and never count a fine ("second", "twice", "back-to-back", "in a row", "still") beyond what it says. A bare total of 1 is one fine, this gameweek: two managers each on 1 are two first offences, not a repeat, and the league-wide total is nobody's running count
 - The biggest bench haul is always funny - lean into it
@@ -1159,6 +1159,12 @@ def _fine_penalty_lines(data: LeagueRecapData) -> list[str]:
     up -- and a forfeit nobody gave phrasings for is still named, so the
     once-only rule has a string to hold to.
 
+    "No others" names its loopholes because the A/B round found them: with
+    phrasings set, 11 of 20 editorials still reached outside the list, in
+    headline puns, asides about the camera or the group chat, and a bare
+    "the forfeit". The asides count as mentions; the headline alone keeps
+    its wordplay, which the league wants there.
+
     Both are quoted as JSON strings, the phrasings as a JSON list: they are
     the league's free text, and a quote or a semicolon inside one must not
     read as the end of it when "no others" depends on the list being exact.
@@ -1170,8 +1176,10 @@ def _fine_penalty_lines(data: LeagueRecapData) -> list[str]:
         if entry["phrasings"]:
             phrasings = json.dumps(entry["phrasings"], ensure_ascii=False)
             line += (
-                f". Every other mention uses one of this league's own phrasings for it, "
-                f"varied rather than repeated, and no others: {phrasings}"
+                f". Every other mention in the prose uses one of this league's own phrasings "
+                f"for it, varied rather than repeated, and no others; an aside alluding to "
+                f'it and a bare "the forfeit" are mentions too, and only the headline may '
+                f"play on it in words of its own: {phrasings}"
             )
         else:
             line += ". Every other mention says the same forfeit in your own words"
