@@ -11473,6 +11473,32 @@ class TestBriefEchoes:
         assert len(found) == 1
         assert '"Season Fines section"' in found[0]
 
+    def test_the_ab_rounds_official_wording_and_possessive_section_are_caught(self):
+        """#523's A/B: two corpus drafts echoed the brief in words the first
+        list did not read, quoted here in full with their managers masked."""
+        found = check_brief_echoes(
+            "Manager A, Manager B and Manager C are all fined: **one pint, filmed, for the group** "
+            '(that\'s "Pint on video" in the official wording).'
+        )
+        assert [problem.split('"')[1] for problem in found] == ["official wording"]
+        found = check_brief_echoes(
+            "Manager A's moves netted -7 overall, and the league's history section has it as three waiver "
+            "backfires in a row (GW6-GW8) and five this season."
+        )
+        assert [problem.split('"')[1] for problem in found] == ["league's history section"]
+
+    def test_a_possessive_joins_a_sections_words_but_never_makes_one(self):
+        assert check_brief_echoes("Per the season\u2019s fines section, Bob is on three.") != []
+        assert check_brief_echoes("The league's history is long, and the away section sang his name.") == []
+
+    @pytest.mark.xfail(strict=True, reason="#525: the brief read out in the editorial's own words, left out")
+    @pytest.mark.parametrize("summary", [
+        "That fine is the one **Pint on video** this column will name, so enjoy it.",
+        "Ten red-card fines in one week is a record only in spirit, because no section ranks it.",
+    ])
+    def test_the_brief_in_the_editorials_own_words_is_caught(self, summary):
+        assert check_brief_echoes(summary) != []
+
     def test_the_forfeit_label_is_caught_only_as_a_label(self):
         assert check_brief_echoes("Under its Naming the forfeit line, a pint.") != []
         assert check_brief_echoes('Bob owes one. "Naming the forfeit" says a pint.') != []

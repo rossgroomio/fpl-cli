@@ -2399,21 +2399,30 @@ _BRIEF_SECTIONS = (
 # quotes it ('the "## Fines" section') or a draft bolds it.
 _BRIEF_QUOTE_MARKS = "\"“”'‘’"
 _BRIEF_NAME_WRAP = rf"[{_BRIEF_QUOTE_MARKS}*_]*"
-_BRIEF_UNQUOTE = str.maketrans("", "", _BRIEF_QUOTE_MARKS)
+# The quote marks around an echo, not an apostrophe inside a word ("the
+# league's history section").
+_BRIEF_UNQUOTE_RE = re.compile(r"[\"“”‘]|(?<!\w)['’]|['’](?!\w)")
 # Longest first, so "Season Fines section" is one echo and not "Fines section"
-# inside it.
+# inside it. A name's words may be joined by a possessive as well as a space:
+# "the league's history section" is the League History section too (#523's A/B).
+_BRIEF_SECTION_WORD_GAP = r"(?:['’]s)?\s+"
 _BRIEF_SECTION_NAMES = "|".join(
-    r"\s+".join(map(re.escape, name.split())) for name in sorted(_BRIEF_SECTIONS, key=len, reverse=True)
+    _BRIEF_SECTION_WORD_GAP.join(map(re.escape, name.split()))
+    for name in sorted(_BRIEF_SECTIONS, key=len, reverse=True)
 )
 _BRIEF_SECTION_RE = re.compile(
     rf"(?<!\w){_BRIEF_NAME_WRAP}(?:##\s*)?(?:{_BRIEF_SECTION_NAMES}){_BRIEF_NAME_WRAP}\s+sections?(?!\w)",
     re.IGNORECASE,
 )
-# The rules' own words for counting what the editorial may say. Each has no
-# meaning in football, which is the whole test for a place on this list:
-# "word for word" ("copied his rival's XI word for word") and a bare "once"
-# ("once again bottom") are the league's English as much as the brief's.
-_BRIEF_PHRASE_RE = re.compile(r"(?<!\w)(?:exact\s+phrases?|at\s+most\s+once)(?!\w)", re.IGNORECASE)
+# The rules' own words for the editorial's wording and how often it may say
+# something ("in the official wording", from #523's A/B, is the forfeit
+# label's wording called by another name). Each has no meaning in football,
+# which is the whole test for a place on this list: "word for word" ("copied
+# his rival's XI word for word") and a bare "once" ("once again bottom") are
+# the league's English as much as the brief's.
+_BRIEF_PHRASE_RE = re.compile(
+    r"(?<!\w)(?:exact\s+phrases?|at\s+most\s+once|official\s+wordings?)(?!\w)", re.IGNORECASE,
+)
 # The label the Fines section lists each forfeit under, as the brief writes
 # it, capital and all: "naming the forfeit" is ordinary English about a fine.
 # Capitalised, it is the label only where nothing else can explain the
@@ -2460,12 +2469,13 @@ def check_brief_echoes(summary: str) -> list[str]:
     once) landed on ...": the forfeit rule's instruction, said to the group
     chat. Like the roll call and the forfeit count this fires on a sentence
     that may be true, so it holds itself to known strings: a section of the
-    prompt named as a section, the rules' phrases for counting ("exact
-    phrase", "at most once") and the Fines section's "Naming the forfeit"
-    label. It never judges whether a sentence is about the instructions, so
-    "write for the league" in other words passes; a phrase the league could
-    use of its own week stays off the list, since a false alarm here costs a
-    retry and a warning above a draft that broke nothing.
+    prompt named as a section, the rules' phrases for wording and counting
+    ("exact phrase", "at most once", "official wording") and the Fines
+    section's "Naming the forfeit" label. It never judges whether a sentence
+    is about the instructions, so the brief in the editorial's own words
+    passes (#525); a phrase the league could use of its own week stays off
+    the list, since a false alarm here costs a retry and a warning above a
+    draft that broke nothing.
 
     Returns one line per echo, in the order the editorial reaches them, each
     quoting the words around it.
@@ -2480,7 +2490,7 @@ def check_brief_echoes(summary: str) -> list[str]:
     )
     problems: list[str] = []
     for start, end in found:
-        echo = " ".join(_plain(summary[start:end]).translate(_BRIEF_UNQUOTE).split())
+        echo = " ".join(_BRIEF_UNQUOTE_RE.sub("", _plain(summary[start:end])).split())
         problem = (
             f'the editorial reads its brief\'s own wording, "{echo}", out to the league '
             f'("{_sentence_quote(summary, start, end)}")'
