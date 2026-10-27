@@ -10561,7 +10561,7 @@ class TestFinesContextNamesTheForfeit:
         assert "\n\nNaming the forfeit:\n" in text
         assert f'- "{_PINT}": write these exact words at most once in the editorial' in text
         assert "Every other mention in the prose uses one of this league's own phrasings" in text
-        assert 'only the headline may play on it in words of its own: ["pint of shame", "penance pint", ' in text
+        assert 'never into more of it or a different act: ["pint of shame", "penance pint", ' in text
         assert text.endswith('"one for the group chat"]')
 
     def test_the_phrasings_line_names_asides_as_mentions_and_frees_only_the_headline(self):
@@ -10584,7 +10584,7 @@ class TestFinesContextNamesTheForfeit:
         text = format_recap_fines_context(data)
 
         assert '- "Wear the \\"Spoon\\" shirt": write these exact words' in text
-        assert 'in words of its own: ["one for the lads; no questions", "penance pint"]' in text
+        assert 'or a different act: ["one for the lads; no questions", "penance pint"]' in text
 
     def test_without_phrasings_the_model_words_it_itself(self):
         text = format_recap_fines_context(self._data([]))
@@ -10627,6 +10627,27 @@ class TestFinesContextNamesTheForfeit:
             "The headline is the one place you may play on the forfeit in words of your own, "
             "as long as it stays the same forfeit"
         ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_the_headline_sentence_says_what_the_same_forfeit_rules_out(self):
+        """Round 2 of pr507-gw8: 3 of 20 headlines with phrasings set grew
+        the forfeit ("a pub crawl", "the barman gets a busy night") or swapped
+        it ("ten managers pay the bar tab")."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert (
+            "never more of it than one per fine (a single fine is never a pub crawl or a long night at "
+            "the bar), and never a different act in its place, such as paying, buying or standing a round"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_the_phrasings_line_keeps_the_headline_to_the_same_forfeit(self):
+        from fpl_cli.cli._league_recap_types import RecapFineResult
+
+        data = _make_recap_data(fines=[RecapFineResult(
+            manager_name="Bob", rule_type="last-place", message=f"Finished last in the gameweek. {_PINT}",
+        )])
+        data["fine_penalties"] = [{"penalty": _PINT, "phrasings": _PHRASINGS}]
+        text = format_recap_fines_context(data)
+        assert "only the headline may play on it in words of its own, never into more of it or a different act" in text
 
 
 class TestPenaltyRepetitions:
