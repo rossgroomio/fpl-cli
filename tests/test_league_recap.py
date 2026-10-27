@@ -11418,9 +11418,14 @@ class TestPenaltyRepetitions:
         assert "without changing what the forfeit is." in prompt
 
 
-# The sentence a shipped GW8 editorial wrote in the A/B for #515 (#517).
+# The paragraph a shipped GW8 editorial wrote in the A/B for #515 (#517), in
+# full with its managers masked: the sentences either side of the echo are the
+# league's own English ("once you add") and must pass.
 _ECHOED_FORFEIT = (
-    "The pint-on-video fine (that's the exact phrase, once) landed on Manager A, Manager B and eight others."
+    "Palmer played, got sent off, and **ten managers had him in their starting XI**. The pint-on-video "
+    "fine (that's the exact phrase, once) landed on Manager A, Manager B, Manager C, Manager D, Manager E, "
+    "Manager F, Manager G, Manager H, Manager I and Manager J. Eleven of 19 were fined once you add the "
+    "usual last-place customer."
 )
 
 
