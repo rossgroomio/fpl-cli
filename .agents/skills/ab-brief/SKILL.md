@@ -327,7 +327,15 @@ it has been posted; read it from the PR's comments):
    checks, a replay brief; either way the next round's handback comes back
    the same way, and this session stays subscribed. A verdict of
    `fix then re-run fresh` or `fix then replay` is the vault session's
-   expectation, and Step 2 on the actual fixes decides.
+   expectation, and Step 2 on the actual fixes decides. Scope the round by
+   the diff, not by the finding: a system-prompt line reaches every arm,
+   so a fix aimed at the phrasings arm alone still re-runs the plain
+   treatment arm when it touches the system prompt (#507's first fix did).
+   An earlier round's arm is reused only where its build is unchanged and
+   the new dry runs show the same data sections, and a follow-up round
+   whose predecessor's vault PR is still open continues on that PR's
+   branch under the same round name with new labels, so both rounds are
+   graded together and land together.
 5. **If no fix is needed**, say the A/B gate is cleared, and resolve the
    thread left open as the gate (reply first, saying which round cleared
    it). Merging stays the user's call.
