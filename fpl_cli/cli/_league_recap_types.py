@@ -242,6 +242,90 @@ def draft_transaction_kind_nets(
     return [(label, nets[label]) for label in DRAFT_TRANSACTION_LABEL_ORDER if label in nets]
 
 
+@dataclass(frozen=True)
+class DraftMoveChain:
+    """A run of one manager's draft moves linked through players brought in
+    and dropped again the same gameweek: B in for A, then C in for B (#501).
+
+    B never played for the manager, so each move's own swing along the run
+    is measured against a player whose points never counted for them. Only
+    the ends compare: C in for A, its swing `net`, which the swings along the
+    run add up to. A closed loop brings back the player its first move
+    dropped, so it ends where it started and nets nothing.
+    """
+
+    moves: tuple[RecapDraftTransaction, ...]
+
+    @property
+    def player_out(self) -> str:
+        return self.moves[0]["player_out"]
+
+    @property
+    def player_in(self) -> str:
+        return self.moves[-1]["player_in"]
+
+    @property
+    def passed_through(self) -> tuple[str, ...]:
+        return tuple(move["player_in"] for move in self.moves[:-1])
+
+    @property
+    def closed(self) -> bool:
+        return self.player_in == self.player_out
+
+    @property
+    def net(self) -> int:
+        return self.moves[-1]["player_in_points"] - self.moves[0]["player_out_points"]
+
+    @property
+    def path(self) -> str:
+        """The run as the waiver roster prints it: "Kinsky out -> Henderson -> Penders in"."""
+        end = f"{self.player_in} back in" if self.closed else f"{self.player_in} in"
+        return " -> ".join([f"{self.player_out} out", *self.passed_through, end])
+
+
+def draft_transaction_chains(txns: Sequence[RecapDraftTransaction]) -> list[DraftMoveChain]:
+    """Every chain in one manager's raw draft moves for a gameweek, ordered by
+    where its first move sits in `txns`. A move linked to no other is in none.
+
+    The links are by player name, the same key the moves are printed with.
+    An open chain starts at a move whose dropped player nobody brought in;
+    whatever stays linked after those is a closed loop, which starts at its
+    earliest move. The awards contract every chain to its ends
+    (`_contract_draft_txn_chains`) and the editorial's waiver roster marks
+    each one beside the raw moves, both from this, so the two never disagree
+    about which moves form one.
+    """
+    by_out: dict[str, RecapDraftTransaction] = {}
+    for t in txns:
+        by_out.setdefault(t["player_out"], t)
+    in_names = {t["player_in"] for t in txns}
+    position = {id(t): i for i, t in enumerate(txns)}
+
+    def walk(start: RecapDraftTransaction) -> list[RecapDraftTransaction]:
+        run = [start]
+        while (nxt := by_out.get(run[-1]["player_in"])) is not None and all(nxt is not m for m in run):
+            run.append(nxt)
+        return run
+
+    chains: list[DraftMoveChain] = []
+    linked: set[int] = set()
+    for start in txns:
+        if start["player_out"] in in_names or start["player_in"] not in by_out:
+            continue
+        run = walk(start)
+        linked.update(id(m) for m in run)
+        chains.append(DraftMoveChain(tuple(run)))
+    for start in txns:
+        if id(start) in linked or start["player_in"] not in by_out:
+            continue
+        run = walk(start)
+        if len(run) < 2 or run[-1]["player_in"] != start["player_out"]:
+            continue
+        linked.update(id(m) for m in run)
+        chains.append(DraftMoveChain(tuple(run)))
+    return sorted(chains, key=lambda chain: position[id(chain.moves[0])])
+
+
 def format_move_counts(breakdown: list[tuple[str, int]]) -> str:
     """Render a labelled count breakdown as prose: "2 transfers", "1 free
     agent", or across more than one kind "3 moves: 2 waivers, 1 free agent".

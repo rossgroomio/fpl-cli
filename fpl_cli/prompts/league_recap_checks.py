@@ -1,4 +1,4 @@
-"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486, #488, #503).
+"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486, #488, #501, #503).
 
 The prompt states every rule these read, and the model has broken each of
 them anyway: a manager named as beaten in a waiver race they won, a
@@ -30,6 +30,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from fpl_cli.cli._league_recap_types import (
+    DraftMoveChain,
     LeagueRecapData,
     RecapContestedClaim,
     RecapFinePenalty,
@@ -37,6 +38,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapSeasonRecord,
     competition_rank,
     contested_draft_claims,
+    draft_transaction_chains,
     draft_transaction_kind_label,
     draft_transaction_kind_nets,
     format_contested_claim,
@@ -665,13 +667,17 @@ _NOT_POINTS_RE = re.compile(_NOT_POINTS, re.IGNORECASE)
 # 6 net" and "-6 net" make the same claim -- and none is ever read off a
 # place or a percentage ("a net gain of 3 places"). The verb never takes an
 # unsigned one: in a recap "Isak netted 2" is goals and "Gibbs-White netted
-# 6 points" is the player's score, not a move's (#390).
+# 6 points" is the player's score, not a move's (#390). Two more ways of
+# saying the same take a signed figure only, for the same reason: "was worth
+# -9" and "a -9 swing" (#501), where "worth 9" is as often a player's score.
 _NET_FIGURE_RE = re.compile(
     rf"(?<![\w.])(?P<before>[{re.escape(_SIGNS)}]?\d+)\s*(?:pts?\s+|points?\s+)?net(?!\w)"
     rf"|(?<!\w)net\s+(?:(?:loss|gain|swing|return)\s+)?(?:of\s+)?(?P<after>[{re.escape(_SIGNS)}]?\d+)"
     rf"(?![\w.])(?!{_NOT_POINTS})"
     r"|(?<!\w)net(?:s|ted|ting)\s+(?:(?:him|her|them)\s+)?(?:(?:a|an)\s+)?"
-    rf"(?P<verb>[{re.escape(_SIGNS)}]\d+)(?![\w.])(?!{_NOT_POINTS})",
+    rf"(?P<verb>[{re.escape(_SIGNS)}]\d+)(?![\w.])(?!{_NOT_POINTS})"
+    rf"|(?<!\w)worth\s+(?:(?:a|an)\s+)?(?P<worth>[{re.escape(_SIGNS)}]\d+)(?![\w.])(?!{_NOT_POINTS})"
+    rf"|(?<!\w)(?:a|an)\s+(?P<swing>[{re.escape(_SIGNS)}]\d+)(?:[-\s]?(?:pts?|points?))?[-\s]+swing(?!\w)",
     re.IGNORECASE,
 )
 # Words that make a net figure the manager's whole gameweek rather than one
@@ -724,7 +730,7 @@ def _signed_value(text: str) -> int:
 
 def _net_figure_text(match: re.Match[str]) -> str:
     """The figure a `_NET_FIGURE_RE` match read, sign and all."""
-    return next(text for text in match.group("before", "after", "verb") if text)
+    return next(text for text in match.group("before", "after", "verb", "worth", "swing") if text)
 
 
 def _pick(figures: Sequence[tuple[int, str]], value: int, *, signed: bool) -> str | None:
@@ -763,6 +769,9 @@ class _MoverLine:
     # with, so the check and the prompt share one figure (#390); empty for
     # transfers.
     kind_nets: tuple[tuple[str, int], ...] = ()
+    # A draft line's chains (#501), the ones its roster line marks; empty
+    # for transfers.
+    chains: tuple[DraftMoveChain, ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -808,8 +817,18 @@ class _MoverLine:
         """Which other figure on this line `value` is, said of `move` -- the
         overall net, the swing before the hit, a kind's net, or another move's
         swing -- or None when it is none of them and so came from somewhere
-        else. A `signed` value is matched with its sign first."""
-        figures: list[tuple[int, str]] = []
+        else. A `signed` value is matched with its sign first. A move inside
+        a chain is read against the chain's effective swing first, since that
+        is the figure the roster gives for it (#501)."""
+        figures: list[tuple[int, str]] = [
+            (chain.net, (
+                f"{chain.net:+d} is the effective swing of {self.manager}'s chain {chain.path}, "
+                f"which belongs to {chain.player_in} in for {chain.player_out}"
+            ))
+            for chain in self.chains
+            if not chain.closed
+            and any((m["player_in"], m["player_out"]) == (move.player_in, move.player_out) for m in chain.moves)
+        ]
         if self.complete:
             figures.append(self._whole_gameweek())
         if len(self.moves) > 1:
@@ -852,6 +871,7 @@ def _mover_lines(managers: Sequence[RecapManagerEntry]) -> list[_MoverLine]:
             )
             lines.append(_MoverLine(
                 name, moves, len(moves), 0, "move", tuple(draft_transaction_kind_nets(transactions)),
+                tuple(draft_transaction_chains(transactions)),
             ))
     return lines
 
@@ -868,13 +888,18 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], 
 
     A clause is read only when it names exactly one move -- both its players
     -- of exactly one manager, names no other manager, and carries a figure
-    tied to the word "net". The figure is then the move's when the move is
-    the nearest thing named before it, and the manager's when the manager is
-    ("Gibbs-White for Wirtz went -4, and Alice was -6 net"). It is a problem
+    tied to the word "net", or a signed one after "worth" or before "swing"
+    ("was worth -9", "a -9 swing", #501). The figure is then the move's when
+    the move is the nearest thing named before it, and the manager's when the
+    manager is ("Gibbs-White for Wirtz went -4, and Alice was -6 net"). It is a problem
     only when it is the move's, is not that move's swing, and is another
     figure on the same line, so a number from anywhere else is never guessed
     at. A clause that marks the figure as the manager's ("overall", "across
     both", "after the hit") or states the move's own swing beside it passes.
+    A move inside a draft chain is read against the chain's effective swing
+    first (#501): "Penders in for Henderson was worth -9" gives a move that
+    only replaced a player who passed through the swing of the whole chain,
+    and the problem says which move that swing is.
     Returns one line per wrong figure, in the order the editorial states them.
     """
     lines = _mover_lines(managers)
