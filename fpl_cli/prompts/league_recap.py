@@ -23,7 +23,7 @@ from fpl_cli.cli._league_recap_types import (
     last_place_escape,
     place_label,
     points_label,
-    recap_manager_key,
+    recap_fines_ruling,
     recap_reads_whole_league,
     recap_title,
     standout_blanks_heading,
@@ -1206,37 +1206,12 @@ def _fines_roll_call(data: LeagueRecapData) -> list[str]:
     collect (a replayed or hand-built ruling): the count would then open
     "nobody was fined" above that very fine.
     """
-    managers = data.get("managers", [])
-    if not managers:
+    ruling = recap_fines_ruling(data)
+    if ruling is None:
         return []
-    fines = data.get("fines", [])
-    fined_keys = {f["manager_key"] for f in fines if "manager_key" in f}
-    # A hand-built ruling carries no key, which leaves the name to match on,
-    # as `_fines_for` does as a last resort. Two collected managers sharing
-    # that name are then both counted as fined: an overcount accepted for a
-    # ruling only a test or a replay builds by hand.
-    fined_names = {f["manager_name"] for f in fines if "manager_key" not in f}
-    if not fined_keys <= {recap_manager_key(m) for m in managers} or not (
-        fined_names <= {m["manager_name"] for m in managers}
-    ):
-        return []
-    ruled = data.get("fines_ruled_manager_keys")
-    ruled_keys = None if ruled is None else set(ruled)
+    fined, clear, unruled = ruling.fined, ruling.clear, ruling.unruled
 
-    fined: list[str] = []
-    clear: list[str] = []
-    unruled: list[str] = []
-    for m in managers:
-        key = recap_manager_key(m)
-        name = m["manager_name"]
-        if key in fined_keys or name in fined_names:
-            fined.append(name)
-        elif ruled_keys is not None and key not in ruled_keys:
-            unruled.append(name)
-        else:
-            clear.append(name)
-
-    read = len(managers)
+    read = len(data["managers"])
     scope = _unread_members_line(data, read)
     lines: list[str] = []
     if fined:
