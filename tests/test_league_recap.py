@@ -64,6 +64,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapTransfer,
     competition_rank,
     contested_draft_claims,
+    draft_transaction_chains,
     draft_transaction_kind_counts,
     format_contested_claim,
     format_move_counts,
@@ -3106,11 +3107,11 @@ class TestContractDraftTxnChains:
 
     def test_no_chain_passthrough(self):
         txns = [_txn("Truffert", 7, "Frimpong", 1), _txn("Doku", 15, "Gordon", 0)]
-        assert _contract_draft_txn_chains(txns) == txns
+        assert _contract_draft_txn_chains(txns, []) == txns
 
     def test_single_txn_passthrough(self):
         txns = [_txn("Doku", 15, "Gordon", 0)]
-        assert _contract_draft_txn_chains(txns) == txns
+        assert _contract_draft_txn_chains(txns, []) == txns
 
     def test_collapses_three_step_chain(self):
         # Trossard out → Georginio → Dango (Oliver's GW35)
@@ -3119,7 +3120,7 @@ class TestContractDraftTxnChains:
             _txn("Georginio", 1, "Trossard", 7),
             _txn("Dango", 6, "Georginio", 1, kind="f"),
         ]
-        result = _contract_draft_txn_chains(txns)
+        result = _contract_draft_txn_chains(txns, [])
         # Expect Truffert/Frimpong unchanged, plus Dango/Trossard collapsed
         assert len(result) == 2
         names = {(t["player_in"], t["player_out"]): t["net"] for t in result}
@@ -3131,7 +3132,7 @@ class TestContractDraftTxnChains:
     def test_closed_loop_contracts_to_nothing(self):
         # Drop X for Y, then drop Y for X — back where we started
         txns = [_txn("Y", 5, "X", 3), _txn("X", 3, "Y", 5)]
-        assert _contract_draft_txn_chains(txns) == []
+        assert _contract_draft_txn_chains(txns, []) == []
 
     def test_multi_hop_chain(self):
         # A→B→C→D: only A out, D in survive
@@ -3140,11 +3141,95 @@ class TestContractDraftTxnChains:
             _txn("C", 6, "B", 4),
             _txn("D", 9, "C", 6),
         ]
-        result = _contract_draft_txn_chains(txns)
+        result = _contract_draft_txn_chains(txns, [])
         assert len(result) == 1
         assert result[0]["player_in"] == "D"
         assert result[0]["player_out"] == "A"
         assert result[0]["net"] == 9 - 1
+
+
+class TestDraftTransactionChains:
+    """Issue #501: one reading of which moves form a chain, behind both the
+    awards' contraction and the roster's chain notes."""
+
+    def test_unlinked_moves_form_no_chain(self):
+        assert draft_transaction_chains([_txn("Truffert", 7, "Frimpong", 1), _txn("Doku", 15, "Gordon", 0)], []) == []
+
+    def test_an_open_chain_runs_from_the_first_player_out_to_the_last_player_in(self):
+        txns = [_txn("Henderson", 6, "Kinsky", 9), _txn("Penders", 0, "Henderson", 6, kind="f")]
+        [chain] = draft_transaction_chains(txns, [])
+        assert chain.moves == tuple(txns)
+        assert (chain.player_out, chain.passed_through, chain.player_in) == ("Kinsky", ("Henderson",), "Penders")
+        assert chain.net == -9 == sum(t["net"] for t in txns)
+        assert not chain.closed
+        assert chain.path == "Kinsky out -> Henderson -> Penders in"
+
+    def test_the_moves_are_linked_whatever_order_they_are_listed_in(self):
+        """The feed's order is not trusted; with no squad captured, the moves
+        alone link them."""
+        txns = [_txn("D", 9, "C", 6), _txn("B", 4, "A", 1), _txn("C", 6, "B", 4)]
+        [chain] = draft_transaction_chains(txns, [])
+        assert chain.path == "A out -> B -> C -> D in"
+        assert chain.net == 8
+
+    def test_a_closed_loop_ends_where_it_started_and_nets_nothing(self):
+        [chain] = draft_transaction_chains([_txn("Y", 5, "X", 3), _txn("X", 3, "Y", 5)], [])
+        assert chain.closed
+        assert chain.net == 0
+        assert chain.path == "X out -> Y -> X back in"
+
+    def test_a_player_in_the_gameweek_squad_did_not_pass_through(self):
+        """PR #522 review: the feed's order is not trusted, so "C in for B,
+        then B in for A" reads as A -> B -> C on the moves alone, though the
+        manager re-signed B and kept him. The squad that played settles it."""
+        txns = [_txn("C", 6, "B", 4), _txn("B", 4, "A", 1)]
+        assert len(draft_transaction_chains(txns, [])) == 1
+        squad = [_make_squad_player(name="B"), _make_squad_player(name="C")]
+        assert draft_transaction_chains(txns, squad) == []
+
+    def test_a_loop_whose_player_came_back_is_still_a_loop_with_the_squad_known(self):
+        txns = [_txn("Y", 5, "X", 3), _txn("X", 3, "Y", 5)]
+        [chain] = draft_transaction_chains(txns, [_make_squad_player(name="X")])
+        assert chain.closed and chain.path == "X out -> Y -> X back in"
+
+    def test_no_two_chains_share_a_move_and_the_swings_still_add_up(self):
+        """PR #522 review: B dropped and signed again gave two chains that both
+        ended on C, and a contraction worth 15 from moves worth 10."""
+        txns = [_txn("B", 4, "A", 1), _txn("C", 9, "B", 4), _txn("B", 4, "D", 2)]
+        chains = draft_transaction_chains(txns, [])
+        moves = [id(move) for chain in chains for move in chain.moves]
+        assert len(moves) == len(set(moves))
+        assert sum(t["net"] for t in _contract_draft_txn_chains(txns, [])) == sum(t["net"] for t in txns) == 10
+
+    def test_moves_link_on_code_where_both_sides_carry_one(self):
+        """PR #522 review: two players sharing a web_name are not one player,
+        and a player renamed mid-season still is."""
+        namesake = [
+            {**_txn("Henderson", 6, "Kinsky", 9), "player_in_code": 1},
+            {**_txn("Penders", 0, "Henderson", 2, kind="f"), "player_out_code": 2},
+        ]
+        assert draft_transaction_chains(namesake, []) == []
+        renamed = [
+            {**_txn("Henderson", 6, "Kinsky", 9), "player_in_code": 1},
+            {**_txn("Penders", 0, "J. Henderson", 6, kind="f"), "player_out_code": 1},
+        ]
+        [chain] = draft_transaction_chains(renamed, [])
+        assert chain.effective["player_in"] == "Penders" and chain.effective["player_out"] == "Kinsky"
+
+    def test_the_effective_move_carries_the_ends_codes(self):
+        txns = [
+            {**_txn("B", 4, "A", 1), "player_out_code": 10, "player_in_code": 20},
+            {**_txn("C", 9, "B", 4), "player_out_code": 20, "player_in_code": 30},
+        ]
+        [chain] = draft_transaction_chains(txns, [])
+        assert (chain.effective["player_out_code"], chain.effective["player_in_code"]) == (10, 30)
+        assert chain.effective["net"] == 8
+
+    def test_chains_are_ordered_by_their_first_move(self):
+        txns = [_txn("Q", 1, "P", 2), _txn("Y", 5, "X", 3), _txn("B", 4, "A", 1), _txn("X", 3, "Y", 5), _txn("C", 6, "B", 4)]
+        assert [chain.path for chain in draft_transaction_chains(txns, [])] == [
+            "X out -> Y -> X back in", "A out -> B -> C in",
+        ]
 
 
 class TestBucketDraftTxns:
@@ -4131,18 +4216,53 @@ class TestPromptFormatting:
         assert "- **Cam** (1 waiver, net -8 overall): Wood (1 pt) in for Watkins (9 pts), -8 [waiver]" in lines
         assert lines[-1] == "Made no moves and submitted no claims (1): Bob"
 
-    def test_waivers_context_lists_a_chain_as_the_raw_moves_not_the_contracted_pair(self):
+    def test_waivers_context_lists_a_chain_as_the_raw_moves_then_marks_its_effective_move(self):
         """B in for A, then C in for B, is two moves the manager made. The
         awards contract them to C-for-A so their Best/Worst line never names
         a player the manager did not end the gameweek with; the roster is a
-        record of activity, so it keeps both -- and the net is the same."""
+        record of activity, so it keeps both -- and the net is the same.
+        Issue #501: it then marks the chain, so the editorial has the one
+        move to judge it by rather than picking out a hop."""
         managers = [_make_manager_with_txns("Alice", [_txn("B", 4, "A", 1), _txn("C", 9, "B", 4)])]
         text = format_recap_waivers_context(self._draft_data(managers))
         assert (
             "- **Alice** (2 waivers, net +8 overall): "
             "B (4 pts) in for A (1 pt), +3 [waiver]; C (9 pts) in for B (4 pts), +5 [waiver]"
-        ) in text
-        assert "C (9 pts) in for A" not in text
+            " | chain: A out -> B -> C in, effective C (9 pts) in for A (1 pt), +8"
+        ) in text.splitlines()
+
+    def test_waivers_context_marks_the_reported_gw8_chain(self):
+        """Issue #501's row: Henderson came in on waivers and went for
+        Penders before he played, so the move that counted was Penders in for
+        Kinsky. Henderson scores 6 here, so the hops' swings (-3, -6) are not
+        the effective one (-9) and quoting either would mislead."""
+        managers = [_make_manager_with_txns("Alice", [
+            _txn("Henderson", 6, "Kinsky", 9), _txn("Penders", 0, "Henderson", 6, kind="f"),
+        ])]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert text.splitlines()[1] == (
+            "- **Alice** (2 moves: 1 waiver, 1 free agent; waivers -3, free agents -6, net -9 overall): "
+            "Henderson (6 pts) in for Kinsky (9 pts), -3 [waiver]; "
+            "Penders (0 pts) in for Henderson (6 pts), -6 [free agent]"
+            " | chain: Kinsky out -> Henderson -> Penders in, effective Penders (0 pts) in for Kinsky (9 pts), -9"
+        )
+
+    def test_waivers_context_says_a_closed_loop_changed_nothing(self):
+        managers = [_make_manager_with_txns("Alice", [_txn("B", 4, "A", 1), _txn("A", 1, "B", 4)])]
+        text = format_recap_waivers_context(self._draft_data(managers))
+        assert text.splitlines()[1].endswith(" | loop: A out -> B -> A back in, no net change")
+
+    def test_waivers_context_marks_each_chain_before_the_lost_claims(self):
+        managers = [_make_manager_with_txns("Alice", [
+            _txn("B", 4, "A", 1), _txn("Y", 2, "X", 5), _txn("C", 9, "B", 4), _txn("Z", 7, "Y", 2), _txn("Q", 3, "P", 3),
+        ])]
+        managers[0]["lost_claims"] = [_lost("Isak", "Wood")]
+        line = format_recap_waivers_context(self._draft_data(managers)).splitlines()[1]
+        assert line.endswith(
+            " | chain: A out -> B -> C in, effective C (9 pts) in for A (1 pt), +8"
+            " | chain: X out -> Y -> Z in, effective Z (7 pts) in for X (5 pts), +2"
+            " | also claimed and lost: Isak [waiver, priority 1]"
+        )
 
     def test_waivers_context_orders_movers_best_net_first(self):
         managers = [
@@ -7955,6 +8075,111 @@ class TestNetAttributionCheck:
         assert len(problems) == 1
         assert "-6 is Alice Lowe's net for the whole gameweek" in problems[0]
 
+    @pytest.mark.parametrize("summary", [
+        "Gibbs-White in for Wirtz was worth -6.",
+        "Gibbs-White in for Wirtz, a -6 swing, sank Alice Lowe.",
+        "Gibbs-White in for Wirtz was a -6-point swing.",
+    ])
+    def test_worth_and_swing_carry_a_figure_too(self, summary):
+        """Issue #501 comment: "netted" was read and "was worth" was not."""
+        problems = self._check(summary)
+        assert len(problems) == 1
+        assert "-6 is Alice Lowe's net for the whole gameweek" in problems[0]
+
+    @pytest.mark.parametrize("summary", [
+        # Unsigned after "worth" is as often a player's score.
+        "Gibbs-White in for Wirtz was worth 6 points to nobody.",
+        "Gibbs-White in for Wirtz was worth -4.",
+        "Gibbs-White in for Wirtz, a -4 swing.",
+    ])
+    def test_worth_and_swing_pass_a_move_s_own_swing_or_an_unsigned_score(self, summary):
+        assert self._check(summary) == []
+
+    @pytest.mark.parametrize("summary", [
+        "Bringing in Ajayi for Cash was worth a -4 hit.",
+        "Ajayi in for Cash was worth a -4.",
+        "Ajayi in for Cash was worth a -4-point hit.",
+        "Ajayi in for Cash was worth a -8.",
+    ])
+    def test_worth_a_hit_is_the_slang_not_a_move_s_swing(self, summary):
+        """PR #522 review: "worth a -4" says a hit was worth taking, and -4
+        happens to be Gibbs-White in for Wirtz's swing on the same line."""
+        assert self._check(summary) == []
+
+    def test_worth_a_figure_before_a_noun_for_a_move_is_the_move_s(self):
+        problems = self._check("Ajayi in for Cash was worth a -4 move.")
+        assert len(problems) == 1
+        assert "-4 is the swing on Gibbs-White in for Wirtz" in problems[0]
+
+    @staticmethod
+    def _gw8_chain(henderson: int) -> list[RecapManagerEntry]:
+        """Issue #501's row: Henderson came in for Kinsky and went for Penders
+        before he played, so the move that counted was Penders in for Kinsky."""
+        return [
+            _make_manager_with_txns("Alice Lowe", [
+                _txn("Henderson", henderson, "Kinsky", 9), _txn("Penders", 0, "Henderson", henderson, kind="f"),
+            ]),
+            _make_manager_with_txns("Bob Gale", [_txn("Isak", 5, "Wood", 2)], entry_id=2),
+        ]
+
+    @pytest.mark.parametrize("henderson", [0, 6])
+    @pytest.mark.parametrize("summary", [
+        "Penders in for Henderson was worth -9.",
+        "Penders in for Henderson, a -9 swing.",
+        "Penders in for Henderson netted -9.",
+    ])
+    def test_a_chain_s_swing_given_to_its_last_hop_is_named_as_the_chain_s(self, summary, henderson):
+        problems = self._check(summary, self._gw8_chain(henderson))
+        own = 0 - henderson
+        assert len(problems) == 1
+        assert problems[0].endswith(
+            "-9 is the effective swing of Alice Lowe's chain Kinsky out -> Henderson -> Penders in, "
+            f"which belongs to Penders in for Kinsky, not that move's own swing of {own:+d}"
+        )
+
+    def test_a_chain_s_swing_given_to_its_first_hop_is_caught_where_the_two_differ(self):
+        problems = self._check("Henderson in for Kinsky netted -9.", self._gw8_chain(6))
+        assert len(problems) == 1
+        assert "which belongs to Penders in for Kinsky, not that move's own swing of -3" in problems[0]
+
+    @pytest.mark.parametrize("summary", [
+        "Alice Lowe's Penders in for Kinsky netted -9.",
+        "Penders in for Kinsky, a -9 swing.",
+    ])
+    def test_the_chain_s_effective_move_carries_its_swing(self, summary):
+        assert self._check(summary, self._gw8_chain(6)) == []
+
+    @pytest.mark.parametrize("summary, figure, hop", [
+        ("Penders in for Kinsky was worth -3.", "worth -3", "-3 is the swing on Henderson in for Kinsky"),
+        ("Penders in for Kinsky, a -6 swing.", "a -6 swing", "-6 is the swing on Penders in for Henderson"),
+    ])
+    def test_a_hop_s_swing_given_to_the_effective_move_is_caught(self, summary, figure, hop):
+        """PR #522 review: the effective move is no raw move, so a clause that
+        named it was never read and the test above passed on nothing."""
+        assert self._check(summary, self._gw8_chain(6)) == [
+            f'the editorial says "{figure}" of Penders in for Kinsky, but {hop}, not that move\'s own swing of -9'
+        ]
+
+    def test_a_chain_s_swing_given_to_a_move_outside_it_is_caught(self):
+        """PR #522 review: the chain's -9 is a figure of the line, so it is one
+        a move outside the chain can be wrongly given."""
+        managers = self._gw8_chain(6)
+        managers[0]["transactions"].append(_txn("Mbeumo", 5, "Raya", 3))
+        problems = self._check("Mbeumo in for Raya was worth -9.", managers)
+        assert len(problems) == 1
+        assert "-9 is the effective swing of Alice Lowe's chain Kinsky out -> Henderson -> Penders in" in problems[0]
+
+    def test_a_chain_s_swing_given_to_a_move_outside_it_names_the_chain_when_its_first_move_shares_it(self):
+        """PR #522 A/B: on GW8 the first move's own swing is the chain's -9, and
+        the problem line named that move, handing the retry the framing the
+        rule forbids."""
+        managers = self._gw8_chain(0)
+        managers[0]["transactions"].append(_txn("Mbeumo", 5, "Raya", 3))
+        problems = self._check("Alice Lowe's Mbeumo in for Raya was a -9 swing.", managers)
+        assert len(problems) == 1
+        assert "-9 is the effective swing of Alice Lowe's chain Kinsky out -> Henderson -> Penders in" in problems[0]
+        assert "swing on Henderson in for Kinsky" not in problems[0]
+
     def test_another_move_s_swing_is_caught_and_named(self):
         problems = self._check("Gibbs-White in for Wirtz, +2 net, was a disaster.")
         # "+2" is read as the move that went +2, not the -2 the two came to.
@@ -9459,6 +9684,8 @@ class TestEditorialChecks:
         assert "never to one named move" in system
         assert "never their waivers' or their free agents'" in system
         assert 'never that they took it "to bring in"' in system
+        assert "Judge the chain only by its effective move" in system
+        assert 'only as passing through ("Penders in for Kinsky, via Henderson")' in system
         assert "may only be used where the data states the tie" in system
         assert 'never "the joint-lowest"' in system
 

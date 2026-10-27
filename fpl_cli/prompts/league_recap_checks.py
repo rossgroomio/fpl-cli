@@ -1,4 +1,4 @@
-"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486, #488, #503).
+"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486, #488, #501, #503).
 
 The prompt states every rule these read, and the model has broken each of
 them anyway: a manager named as beaten in a waiver race they won, a
@@ -30,6 +30,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 from fpl_cli.cli._league_recap_types import (
+    DraftMoveChain,
     LeagueRecapData,
     RecapContestedClaim,
     RecapFinePenalty,
@@ -37,6 +38,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapSeasonRecord,
     competition_rank,
     contested_draft_claims,
+    draft_transaction_chains,
     draft_transaction_kind_label,
     draft_transaction_kind_nets,
     format_contested_claim,
@@ -665,13 +667,20 @@ _NOT_POINTS_RE = re.compile(_NOT_POINTS, re.IGNORECASE)
 # 6 net" and "-6 net" make the same claim -- and none is ever read off a
 # place or a percentage ("a net gain of 3 places"). The verb never takes an
 # unsigned one: in a recap "Isak netted 2" is goals and "Gibbs-White netted
-# 6 points" is the player's score, not a move's (#390).
+# 6 points" is the player's score, not a move's (#390). Two more ways of
+# saying the same take a signed figure only, for the same reason: "was worth
+# -9" and "a -9 swing" (#501), where "worth 9" is as often a player's score.
+# "Worth a -4 hit", and "worth a -4" with no noun for a move after it, say
+# a hit was worth taking, so neither is a move's swing (`_worth_hit_slang`).
 _NET_FIGURE_RE = re.compile(
     rf"(?<![\w.])(?P<before>[{re.escape(_SIGNS)}]?\d+)\s*(?:pts?\s+|points?\s+)?net(?!\w)"
     rf"|(?<!\w)net\s+(?:(?:loss|gain|swing|return)\s+)?(?:of\s+)?(?P<after>[{re.escape(_SIGNS)}]?\d+)"
     rf"(?![\w.])(?!{_NOT_POINTS})"
     r"|(?<!\w)net(?:s|ted|ting)\s+(?:(?:him|her|them)\s+)?(?:(?:a|an)\s+)?"
-    rf"(?P<verb>[{re.escape(_SIGNS)}]\d+)(?![\w.])(?!{_NOT_POINTS})",
+    rf"(?P<verb>[{re.escape(_SIGNS)}]\d+)(?![\w.])(?!{_NOT_POINTS})"
+    rf"|(?<!\w)worth\s+(?:(?P<worth_a>a|an)\s+)?(?P<worth>[{re.escape(_SIGNS)}]\d+)(?![\w.])(?!{_NOT_POINTS})"
+    r"(?!\s*-?\s*(?:(?:pts?|points?)\s+)?hit(?!\w))"
+    rf"|(?<!\w)(?:a|an)\s+(?P<swing>[{re.escape(_SIGNS)}]\d+)(?:[-\s]?(?:pts?|points?))?[-\s]+swing(?!\w)",
     re.IGNORECASE,
 )
 # Words that make a net figure the manager's whole gameweek rather than one
@@ -718,13 +727,23 @@ def _hit_slang(clause: str, figure: re.Match[str]) -> bool:
     return slang is not None and (slang.group("paid") is not None or not _MOVE_NOUN_AFTER_RE.match(clause, figure.end()))
 
 
+def _worth_hit_slang(clause: str, figure: re.Match[str]) -> bool:
+    """Whether a "worth a -4" `figure` read by `_NET_FIGURE_RE` is the slang
+    for a hit worth taking: a negative multiple of 4 after "worth a", with
+    no noun for a move after it ("worth a -4 move" is the move's, #499)."""
+    if figure.group("worth_a") is None:
+        return False
+    value = _signed_value(figure.group("worth"))
+    return value < 0 and value % 4 == 0 and not _MOVE_NOUN_AFTER_RE.match(clause, figure.end())
+
+
 def _signed_value(text: str) -> int:
     return int(text.lstrip(_SIGNS)) * (-1 if text[0] in _MINUS_SIGNS else 1)
 
 
 def _net_figure_text(match: re.Match[str]) -> str:
     """The figure a `_NET_FIGURE_RE` match read, sign and all."""
-    return next(text for text in match.group("before", "after", "verb") if text)
+    return next(text for text in match.group("before", "after", "verb", "worth", "swing") if text)
 
 
 def _pick(figures: Sequence[tuple[int, str]], value: int, *, signed: bool) -> str | None:
@@ -763,6 +782,38 @@ class _MoverLine:
     # with, so the check and the prompt share one figure (#390); empty for
     # transfers.
     kind_nets: tuple[tuple[str, int], ...] = ()
+    # A draft line's chains (#501), the ones its roster line marks; empty
+    # for transfers.
+    chains: tuple[DraftMoveChain, ...] = ()
+
+    @property
+    def effective(self) -> tuple[_Move, ...]:
+        """Each open chain's effective move as a move of its own (#501), so a
+        clause that names it is read like one the roster lists."""
+        return tuple(
+            _Move(
+                self.manager, chain.player_in, chain.player_out, chain.net,
+                draft_transaction_kind_label(chain.moves[-1]["kind"]),
+            )
+            for chain in self.chains if not chain.closed
+        )
+
+    def _chain_facts(self, move: _Move) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+        """The effective swing of each open chain on the line other than the
+        one `move` is the effective move of, as (the chains `move` is a hop
+        of, the rest)."""
+        own: list[tuple[int, str]] = []
+        rest: list[tuple[int, str]] = []
+        for chain in self.chains:
+            if chain.closed or (move.player_in, move.player_out) == (chain.player_in, chain.player_out):
+                continue
+            fact = (chain.net, (
+                f"{chain.net:+d} is the effective swing of {self.manager}'s chain {chain.path}, "
+                f"which belongs to {chain.player_in} in for {chain.player_out}"
+            ))
+            hop = any((m["player_in"], m["player_out"]) == (move.player_in, move.player_out) for m in chain.moves)
+            (own if hop else rest).append(fact)
+        return own, rest
 
     @property
     def complete(self) -> bool:
@@ -808,8 +859,13 @@ class _MoverLine:
         """Which other figure on this line `value` is, said of `move` -- the
         overall net, the swing before the hit, a kind's net, or another move's
         swing -- or None when it is none of them and so came from somewhere
-        else. A `signed` value is matched with its sign first."""
-        figures: list[tuple[int, str]] = []
+        else. A `signed` value is matched with its sign first. A move inside
+        a chain is read against the chain's effective swing first, since that
+        is the figure the roster gives for it, and any other chain's ahead of
+        the moves' swings, so a chain whose first move shares its swing is
+        named as the chain, never as that move (#501)."""
+        own_chain, other_chains = self._chain_facts(move)
+        figures: list[tuple[int, str]] = list(own_chain)
         if self.complete:
             figures.append(self._whole_gameweek())
         if len(self.moves) > 1:
@@ -819,6 +875,7 @@ class _MoverLine:
                 f"{self.moves_text(len(self.moves))} before the hit"
             )))
         figures.extend(self._kind_nets())
+        figures.extend(other_chains)
         figures.extend(
             (other.net, f"{other.net:+d} is the swing on {other.label}") for other in self.moves if other != move
         )
@@ -852,6 +909,7 @@ def _mover_lines(managers: Sequence[RecapManagerEntry]) -> list[_MoverLine]:
             )
             lines.append(_MoverLine(
                 name, moves, len(moves), 0, "move", tuple(draft_transaction_kind_nets(transactions)),
+                tuple(draft_transaction_chains(transactions, m.get("squad", []))),
             ))
     return lines
 
@@ -868,13 +926,20 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], 
 
     A clause is read only when it names exactly one move -- both its players
     -- of exactly one manager, names no other manager, and carries a figure
-    tied to the word "net". The figure is then the move's when the move is
-    the nearest thing named before it, and the manager's when the manager is
-    ("Gibbs-White for Wirtz went -4, and Alice was -6 net"). It is a problem
+    tied to the word "net", or a signed one after "worth" or before "swing"
+    ("was worth -9", "a -9 swing", #501). The figure is then the move's when
+    the move is the nearest thing named before it, and the manager's when the
+    manager is ("Gibbs-White for Wirtz went -4, and Alice was -6 net"). It is a problem
     only when it is the move's, is not that move's swing, and is another
     figure on the same line, so a number from anywhere else is never guessed
     at. A clause that marks the figure as the manager's ("overall", "across
     both", "after the hit") or states the move's own swing beside it passes.
+    A draft chain's effective move is read as a move of its own, its swing
+    the chain's (#501): "Penders in for Kinsky was worth -3" gives it the
+    swing of a hop. A move inside the chain is read against the chain's
+    effective swing first: "Penders in for Henderson was worth -9" gives a
+    move that only replaced a player who passed through the swing of the
+    whole chain, and the problem says which move that swing is.
     Returns one line per wrong figure, in the order the editorial states them.
     """
     lines = _mover_lines(managers)
@@ -896,7 +961,7 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], 
         player_mentions = [m for m in mentions if m.group(0) in players]
         named_players = {m.group(0) for m in player_mentions}
         named = [
-            move for line in lines for move in line.moves
+            move for line in lines for move in (*line.moves, *line.effective)
             if {move.player_in, move.player_out} <= named_players
         ]
         if not named:
@@ -932,6 +997,8 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], 
             # swing, whatever "lost 2" would have been.
             signed = text[0] in _SIGNS
             if value == move.net if signed else abs(value) == abs(move.net):
+                continue
+            if figure.group("worth") and _worth_hit_slang(clause, figure):
                 continue
             beside = (
                 _words_before(clause, figure.start(), _NET_BESIDE_WORDS) + " "

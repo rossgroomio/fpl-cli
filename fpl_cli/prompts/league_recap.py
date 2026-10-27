@@ -7,11 +7,13 @@ import re
 from collections.abc import Sequence
 
 from fpl_cli.cli._league_recap_types import (
+    DraftMoveChain,
     LeagueRecapData,
     PriorSeasonsSummary,
     RecapDraftLostClaim,
     RecapManagerEntry,
     contested_draft_claims,
+    draft_transaction_chains,
     draft_transaction_kind_counts,
     draft_transaction_kind_label,
     draft_transaction_kind_nets,
@@ -88,6 +90,7 @@ The lines a league quotes back in its group chat are short and dry, and they are
 - A waiver is a competition, so a manager can be busy and still have no move to show for it. The "## Waivers and Free Agents" section separates the two cases and the distinction is not optional: only the managers it lists as having made no moves and submitted no claims sat the waiver wire out. A manager it lists as having claimed a player and lost him to a rival was active - they spent a claim, at the priority the line states, and were beaten to the player. Say they tried and missed, never that they did nothing, "sat it out", "stayed put", "didn't bother", "kept their powder dry" or "showed restraint", and never assign a motive - discipline, laziness, apathy - to an absence from the movers list. The same goes for a mover's "also claimed and lost" tail: it is extra activity, not a move they made.
 - The "Contested players" lines at the end of that section are the only source for who else wanted a player: each names one player, how many managers claimed him, who won him and who was beaten to him, with the priority each beaten manager gave the claim (their own ranking of the claims they submitted that week, not the league's waiver order). A player is contested, "in demand" or "wanted by half the league" only when a line lists him, and a manager wanted, chased or missed out on him only when the line names them. A race needs only its count and its winner; name a beaten manager only when that is the story (the leader missed out, or one manager lost two races), never as a roll call. Each "Contested players" line is one race with fixed roles, so give every race you write its own clause, and never fold two lines into one clause ("X and Y were beaten to A and B respectively"): a manager who won one race and lost the next is then put in the wrong role. A manager was "beaten to both A and B" only when both lines name them as beaten. Where the beaten managers carry no (free agent) or (other move) tag the race was won on the league's waiver order, which is all you may say about anyone's waiver position; a race tagged (free agent) was first come first served, so say nothing about order; and where the line says the winner could not be identified, name no winner
 - A "## Transfers" or "## Waivers and Free Agents" line holds two kinds of figure, and they are never interchangeable. The figures in its brackets - the move count, the hit and the net overall - describe the manager's whole gameweek; the swing after each move describes that move alone. Attach a move's swing only to that move, and the overall net only to the manager or to their moves taken together ("-6 net overall", "-6 across both transfers after the hit") - never to one named move, because on a line with more than one move or a hit it is a different number. A draft line whose moves are of more than one kind also gives each kind's net in its brackets ("waivers -1, free agents +4"), which is that kind's moves alone: say a figure is a manager's waivers' or free agents' only when it is that kind's own, so on such a line the net overall is their moves' net ("their moves netted +3 overall"), never their waivers' or their free agents'. The hit is charged for the gameweek's transfers together, never for any one of them: say a manager took a hit, never that they took it "to bring in", "for" or "on" a named player.
+- A "## Waivers and Free Agents" line can close on a chain note ("chain: Kinsky out -> Henderson -> Penders in, effective Penders (0 pts) in for Kinsky (9 pts), -9"). The manager brought the middle player in and dropped him again in the same gameweek, so he never played for them, and the swing of each move inside the chain is measured against a player whose points never counted for them. Judge the chain only by its effective move: that is the one move to call good, bad, costly, or the week's best or worst, and its swing is the one figure to quote for it. Mention a middle player only as passing through ("Penders in for Kinsky, via Henderson"), never as the player who replaced the one dropped or as the one replaced, and never quote the swing of a move inside a chain on its own. A loop note ("loop: Kinsky out -> Henderson -> Kinsky back in, no net change") means the manager ended where they started: say so if you mention it, and quote no swing for it.
 - Never claim a manager's bench outscored their team unless bench points are strictly greater than their GW points. Use the exact numbers provided.
 - Spell every player and manager exactly as the data does: the league knows its own names, and a misspelling reads as a mistake about the person
 - Never state a club for a player other than the club given for them in this data - the "## Player Clubs" section, or the club printed beside a name elsewhere. Players change clubs in the transfer windows and your own knowledge of who plays where goes a season out of date, so that section is the only authority. A player it does not list has no club you can state: name them alone ("Haaland's 2 points") rather than supplying one from memory.
@@ -704,6 +707,19 @@ def _format_lost_claims(claims: list[RecapDraftLostClaim]) -> str:
     )
 
 
+def _format_chain(chain: DraftMoveChain) -> str:
+    """One chain of a manager's draft moves, as their roster line closes on
+    it: the run, then the one move it amounts to and that move's swing, or
+    for a closed loop that it amounts to none."""
+    if chain.closed:
+        return f"loop: {chain.path}, no net change"
+    move = chain.effective
+    return (
+        f"chain: {chain.path}, effective {move['player_in']} ({points_label(move['player_in_points'])}) in for "
+        f"{move['player_out']} ({points_label(move['player_out_points'])}), {move['net']:+d}"
+    )
+
+
 def format_recap_waivers_context(data: LeagueRecapData) -> str:
     """Per-manager waiver and free-agent roster: every draft mover with each
     move as it was made, tagged by kind, plus the managers who claimed and
@@ -732,6 +748,14 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
     gameweek with -- a display compression, not a record of activity. The
     net is the same either way (an intermediate cancels algebraically), so
     it is the figure the two waiver awards rank on.
+
+    The raw list alone let the editorial pick one move out of a chain and
+    judge it -- "Henderson in for Kinsky" when Henderson was dropped for
+    Penders before he played (#501) -- so every chain is also marked after
+    the moves, with its effective move and the swing that move made ("chain:
+    Kinsky out -> Henderson -> Penders in, effective Penders (0 pts) in for
+    Kinsky (9 pts), -9"), and a closed loop says it changed nothing. The chains
+    are `draft_transaction_chains()`'s, the same ones the awards contract.
 
     Every move carries its kind, so the editorial can tell a waiver claim
     from a free-agent pickup instead of calling every move a waiver (#146),
@@ -788,6 +812,8 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
             if len(kind_nets) > 1 else ""
         )
         line = f"- **{name}** ({summary}{by_kind}, net {net:+d} overall): {moves_text}"
+        for chain in draft_transaction_chains(moves, m.get("squad", [])):
+            line += f" | {_format_chain(chain)}"
         if lost:
             line += f" | also claimed and lost: {_format_lost_claims(lost)}"
         movers.append((net, name, line))

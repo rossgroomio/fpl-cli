@@ -80,6 +80,7 @@ from fpl_cli.cli._league_recap_types import (
     RecapTransfer,
     StandoutBlanksOrder,
     contested_draft_claims,
+    draft_transaction_chains,
     draft_transaction_kind_counts,
     format_contested_claim,
     format_move_counts,
@@ -2022,52 +2023,30 @@ def _compute_transfer_awards(
 
 
 def _contract_draft_txn_chains(
-    txns: list[RecapDraftTransaction],
+    txns: list[RecapDraftTransaction], squad: list[RecapManagerPlayer],
 ) -> list[RecapDraftTransaction]:
     """Collapse chain rebuilds within a single manager-GW into endpoint pairs.
 
     If a manager swaps A→B then B→C in the same GW, B is an intermediate and
     the effective move is A→C. Contracting these prevents the best/worst-move
     detail from naming an intermediate the manager didn't end the GW with.
+    The chains are `draft_transaction_chains()`'s, the same ones the
+    editorial's waiver roster marks (#501).
 
     Sum of effective nets equals sum of raw nets (intermediates cancel
     algebraically). Closed loops (A→B then B→A) contract to nothing.
     """
-    if len(txns) < 2:
-        return list(txns)
-
-    by_out = {t["player_out"]: t for t in txns}
-    in_names = {t["player_in"] for t in txns}
-    out_names = {t["player_out"] for t in txns}
-    intermediates = in_names & out_names
-
-    if not intermediates:
-        return list(txns)
+    chains = draft_transaction_chains(txns, squad)
+    by_start = {id(chain.moves[0]): chain for chain in chains}
+    in_chain = {id(move) for chain in chains for move in chain.moves}
 
     contracted: list[RecapDraftTransaction] = []
-    for start in txns:
-        # Chain starts at a txn whose dropped player isn't also picked up
-        # elsewhere in the same GW.
-        if start["player_out"] in in_names:
-            continue
-        current = start
-        while current["player_in"] in intermediates:
-            current = by_out[current["player_in"]]
-        if current is start:
-            contracted.append(start)
-        else:
-            contracted.append(RecapDraftTransaction(
-                player_in=current["player_in"],
-                player_in_team=current["player_in_team"],
-                player_in_team_name=current.get("player_in_team_name"),
-                player_in_points=current["player_in_points"],
-                player_out=start["player_out"],
-                player_out_team=start["player_out_team"],
-                player_out_team_name=start.get("player_out_team_name"),
-                player_out_points=start["player_out_points"],
-                net=current["player_in_points"] - start["player_out_points"],
-                kind=current["kind"],
-            ))
+    for t in txns:
+        if (chain := by_start.get(id(t))) is not None:
+            if not chain.closed:
+                contracted.append(chain.effective)
+        elif id(t) not in in_chain:
+            contracted.append(t)
     return contracted
 
 
@@ -2083,7 +2062,7 @@ def _compute_waiver_awards(
 
     # Contract once per manager so ranking and display read the same list.
     effective_by_manager: dict[int, list[RecapDraftTransaction]] = {
-        id(m): _contract_draft_txn_chains(m.get("transactions", []))
+        id(m): _contract_draft_txn_chains(m.get("transactions", []), m.get("squad", []))
         for m in managers_with_txns
     }
 
