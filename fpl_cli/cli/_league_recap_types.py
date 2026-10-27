@@ -1115,7 +1115,7 @@ def recap_reads_whole_league(data: LeagueRecapData) -> bool:
 
 
 @dataclass(frozen=True)
-class RecapFinesRuling:
+class RecapFinesRollCall:
     """Who this gameweek's fines reached, who they cleared and who was never
     ruled on, each in collected order, with every manager's own fine lines.
 
@@ -1130,8 +1130,17 @@ class RecapFinesRuling:
     # Each fined manager's fines, one per line the Fines section prints.
     lines: dict[str, list[RecapFineResult]]
 
+    @property
+    def not_fined_line(self) -> str | None:
+        """The Fines section's "Not fined this gameweek" line, or None on a
+        week it prints none: nobody was fined (the count line then says so)
+        or nobody was cleared."""
+        if not self.fined or not self.clear:
+            return None
+        return f"Not fined this gameweek ({len(self.clear)}): {', '.join(sorted(self.clear))}"
 
-def recap_fines_ruling(data: LeagueRecapData) -> RecapFinesRuling | None:
+
+def recap_fines_roll_call(data: LeagueRecapData) -> RecapFinesRollCall | None:
     """This gameweek's fines sorted against the managers the recap collected
     (#502), or None when there are no managers to sort, or a fine names a
     manager the recap did not collect (a replayed or hand-built ruling).
@@ -1156,20 +1165,20 @@ def recap_fines_ruling(data: LeagueRecapData) -> RecapFinesRuling | None:
     ruled = data.get("fines_ruled_manager_keys")
     ruled_keys = None if ruled is None else set(ruled)
 
-    ruling = RecapFinesRuling(fined=[], clear=[], unruled=[], lines={})
+    roll = RecapFinesRollCall(fined=[], clear=[], unruled=[], lines={})
     for m in managers:
         key = recap_manager_key(m)
         name = m["manager_name"]
         if key in fined_keys or name in fined_names:
-            ruling.fined.append(name)
-            ruling.lines.setdefault(name, []).extend(
+            roll.fined.append(name)
+            roll.lines.setdefault(name, []).extend(
                 f for f in fines if (f["manager_key"] == key if "manager_key" in f else f["manager_name"] == name)
             )
         elif ruled_keys is not None and key not in ruled_keys:
-            ruling.unruled.append(name)
+            roll.unruled.append(name)
         else:
-            ruling.clear.append(name)
-    return ruling
+            roll.clear.append(name)
+    return roll
 
 
 # ---------------------------------------------------------------------------

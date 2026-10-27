@@ -23,7 +23,7 @@ from fpl_cli.cli._league_recap_types import (
     last_place_escape,
     place_label,
     points_label,
-    recap_fines_ruling,
+    recap_fines_roll_call,
     recap_reads_whole_league,
     recap_title,
     standout_blanks_heading,
@@ -1169,8 +1169,8 @@ def format_recap_fines_context(
         # its own, stated so "the only one" has a count to be held to (#502).
         if not data.get("fine_rules_evaluated"):
             return ""
-        return "\n".join(_fines_roll_call(data))
-    roll_call = _fines_roll_call(data)
+        return "\n".join(format_recap_fines_roll_call(data))
+    roll_call = format_recap_fines_roll_call(data)
     lines = roll_call[:1]
     lines.extend(f"- {f['manager_name']}: {f['message']}" for f in fines)
     lines.extend(roll_call[1:])
@@ -1190,7 +1190,7 @@ def format_recap_fines_context(
     return "\n".join(lines)
 
 
-def _fines_roll_call(data: LeagueRecapData) -> list[str]:
+def format_recap_fines_roll_call(data: LeagueRecapData) -> list[str]:
     """How many managers this gameweek's fines reached, then who they did
     not (#502): the count first, the rest after the fines themselves.
 
@@ -1206,10 +1206,10 @@ def _fines_roll_call(data: LeagueRecapData) -> list[str]:
     collect (a replayed or hand-built ruling): the count would then open
     "nobody was fined" above that very fine.
     """
-    ruling = recap_fines_ruling(data)
-    if ruling is None:
+    roll = recap_fines_roll_call(data)
+    if roll is None:
         return []
-    fined, clear, unruled = ruling.fined, ruling.clear, ruling.unruled
+    fined, clear, unruled = roll.fined, roll.clear, roll.unruled
 
     read = len(data["managers"])
     scope = _unread_members_line(data, read)
@@ -1222,8 +1222,8 @@ def _fines_roll_call(data: LeagueRecapData) -> list[str]:
         else:
             of = f"{read}"
         lines.append(f"Total managers fined this gameweek: {len(fined)} of {of}")
-        if clear:
-            lines.append(f"Not fined this gameweek ({len(clear)}): {', '.join(sorted(clear))}")
+        if roll.not_fined_line is not None:
+            lines.append(roll.not_fined_line)
     elif not clear:
         lines.append("No manager could be ruled on this gameweek, so nobody is fined or cleared")
     elif unruled:
