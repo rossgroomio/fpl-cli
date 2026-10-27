@@ -8537,15 +8537,19 @@ class TestSharedScoreTieClaims:
             'the editorial says "shared the top", but 1st place in the table is Manager A\'s alone'
         ]
 
-    @pytest.mark.parametrize("summary", [
+    @pytest.mark.parametrize(("summary", "managers"), [
         # No gameweek score at all...
-        "Manager A won the week with 61 points, 15 clear of Manager B and Manager C, who shared second on 48.",
-        "Manager A and Manager B shared the top spot on 57 points.",
-        # ...or a shared score, but not the one at the tie's rank.
-        "Manager B and Manager C shared the top spot on 46 points.",
+        (
+            "Manager A won the week with 61 points, 15 clear of Manager B and Manager C, who shared second on 48.",
+            _shared_scores_table(),
+        ),
+        ("Manager A and Manager B shared the top spot on 57 points.", _shared_scores_table(top=55, second=55)),
+        # ...or a shared score, but not the one at the tie's rank...
+        ("Manager B and Manager C shared the top spot on 46 points.", _shared_scores_table()),
+        # ...or the shared score, said of the table by name (PR #521 review).
+        ("Manager B and Manager C are joint-second in the table on 46.", _shared_scores_table()),
     ])
-    def test_a_figure_that_is_no_shared_score_at_the_rank_keeps_the_table_reading(self, summary):
-        managers = _shared_scores_table(top=55, second=55) if "top spot on 57" in summary else _shared_scores_table()
+    def test_a_figure_that_is_no_shared_score_at_the_rank_keeps_the_table_reading(self, summary, managers):
         assert len(self._check(summary, managers)) == 1
 
 
@@ -8848,8 +8852,13 @@ class TestPlacingBesideAStatedWeekRank:
         # #483's shape, with no week rank stated, still gives the code...
         ("Manager A has taken first with 52.", "Manager A"),
         ("Manager B had a shocker. He arrived as leader and left second, with 27 points.", "Manager B"),
-        # ...and so does a week rank said of someone else's score.
+        # ...and so does a week rank said of someone else's score...
         ("Manager A has taken first with 52, and Manager C's 70 was the week's best.", "Manager A"),
+        # ...a finishing verb into a placing the score is attached to, the
+        # #483 shape however true the week rank beside it (PR #521 review)...
+        ("Manager B finished fifth on 27, the week's lowest.", "Manager B"),
+        # ...and a rank word with nothing setting it off from the score.
+        ("Manager A has taken first with 52 the week's fourth.", "Manager A"),
     ])
     def test_a_placing_beside_the_score_alone_is_still_caught(self, summary, placed):
         problems = self._check(summary)
@@ -8871,6 +8880,16 @@ class TestPlacingBesideAStatedWeekRank:
         """A wrong week rank says nothing about the placing beside it, so the
         #483 reading stands."""
         assert len(self._check(summary)) == 1
+
+    def test_a_bare_ordinal_is_the_gameweek_rank_alone(self):
+        """PR #521 review: as for a placing, only a "-best" also counts the
+        distinct scores. With Manager D's 60 raised level with Manager C's
+        70, 52 is third among them but fourth on the week."""
+        managers = _week_rank_table()
+        managers[3]["gw_points"] = 70
+        problems = self._check("Manager A has taken first with 52, only third on the week.", managers)
+        assert any('"first" beside their gameweek score' in problem for problem in problems)
+        assert self._check("Manager A has taken first with 52, the third-best on the week.", managers) == []
 
     @pytest.mark.xfail(
         strict=True,
