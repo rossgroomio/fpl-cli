@@ -4719,7 +4719,7 @@ class TestSeasonFinesSurfaces:
         assert f"Season fine totals, GW{CHIP_SPLIT_GW} through GW{CHIP_SPLIT_GW}" in text
         assert "- Bob: 1 (1 last-place)" in text
         assert "fined in" not in text
-        assert "Not fined so far: Alice" in text
+        assert "Not fined so far (1): Alice" in text
         assert "Coverage:" in text
 
     def test_the_prompt_section_is_empty_without_configured_rules(self):

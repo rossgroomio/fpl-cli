@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import Sequence
 
+from fpl_cli.cli._league_recap_data import recap_manager_key
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     PriorSeasonsSummary,
@@ -30,7 +31,7 @@ from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
 from fpl_cli.utils.gameweek import format_gameweek_list, is_opening_gameweek
 from fpl_cli.utils.markdown import fence_flags, parse_heading, unwrap_emphasis
-from fpl_cli.utils.text import ordinal_word
+from fpl_cli.utils.text import join_and, ordinal_word
 
 # =============================================================================
 # SYNTHESIS PROMPT (Stage 2: League-wide editorial)
@@ -75,6 +76,7 @@ The editorial is pasted into the league's WhatsApp group and read on phones. Sho
 - A fine's forfeit is the league's own rule, so it never changes in your telling: never more of it, a different drink or forfeit, or a part of it dropped, unless a line in the data says it doubles or escalates. The "## Fines" section names each forfeit under "Naming the forfeit". Write a forfeit word for word at most once in the whole editorial, headline included; every other mention says the same forfeit in other words. Where that section gives the league's own phrasings for it, every other mention in the prose that names the forfeit is one of those, varied rather than repeated, and nothing else, and a bare "the forfeit" is such a mention. A short aside that only alludes to it - what it involves, where it happens or who sees it - may be in your own words, as long as it keeps the forfeit as it is. The headline is the one place you may play on the forfeit in words of your own, as long as it stays the same forfeit: never more of it than one per fine (a single fine is never a pub crawl or a long night at the bar), and never a different act in its place, such as paying, buying or standing a round
 - The "## Season Fines" section is optional colour, not a required beat. Use it when a season total sharpens what already happened this gameweek ("Bob's fourth last-place of the season"), and leave it out entirely when it adds nothing - do not open or close on the season table, do not list it out, and never pad the recap with it. A gameweek where nobody was fined rarely needs it at all
 - Season fine totals come from the "## Season Fines" section exactly, never from adding up the "## Fines" section, which covers this gameweek alone, and a total that section qualifies as incomplete carries its qualification or stays out. Where this gameweek's fine sits in a manager's season - their first, their third, their "another" or "again" - is stated for you under the "## Fines" section; use that placement and no other, and never count a fine ("second", "twice", "back-to-back", "in a row", "still") beyond what it says. A bare total of 1 is one fine, this gameweek: two managers each on 1 are two first offences, not a repeat, and the league-wide total is nobody's running count
+- Call a manager "the only one", "the only manager", "alone in" or "the one exception", or say "nobody else" did what they did, only where a section says so of them outright, or the group it puts them in holds that one manager, and that goes for every section, this gameweek's and the season's alike. The "## Fines" section counts the managers fined this gameweek and names the ones who were not, and the "## Season Fines" section names who holds the season's most fines and who has none: "the only one without a fine" needs one of those not-fined lists to hold that manager alone, and "the only manager on three fines" needs the most-fines line to name them alone. Never count a section's list yourself to make a manager the only one in it; where the group holds more than one manager, say they were one of the number the section gives, or leave the claim out
 - The biggest bench haul is always funny - lean into it
 - If a manager played a chip, that's a big narrative hook. A chip that flopped deserves mockery; a chip that paid off deserves grudging respect. When referencing chip users, treat the "Chips Played" section as the source of truth - it includes an explicit total count; use that number verbatim. Do not count tags in the standings table. Do not name a subset as "the X wildcards" - either name all users of that chip or none.
 - When referencing captain choices, treat the "## Captains" section as the source of truth. It lists every manager grouped by their intended captain pick, with an explicit total count. Use those counts verbatim. Never name a captain "outlier", "dissenter", or "the manager(s) who picked Y" unless they appear under that captain in the section. If you describe N managers as picking the modal captain, it must match the section's group size for that player. Do not infer captain choices from the awards or standings - they are compressed and miss managers whose pick was neither the best nor the worst.
@@ -1127,11 +1129,22 @@ def format_recap_fines_context(
     beside the fine it describes, rather than left as a sum over two
     sections -- the same "give the model the sentence, not the sum" call the
     standings section's explicit previous-leader line makes.
+
+    The count of managers fined and the names of those who were not are
+    stated the same way (#502), and on a week the rules were ruled on and
+    nobody was caught the section is that statement alone.
     """
     fines = data.get("fines", [])
     if not fines:
-        return ""
-    lines = [f"- {f['manager_name']}: {f['message']}" for f in fines]
+        # A week the rules were ruled on and nobody was caught is a fact of
+        # its own, stated so "the only one" has a count to be held to (#502).
+        if not data.get("fine_rules_evaluated"):
+            return ""
+        return "\n".join(_fines_roll_call(data))
+    roll_call = _fines_roll_call(data)
+    lines = roll_call[:1]
+    lines.extend(f"- {f['manager_name']}: {f['message']}" for f in fines)
+    lines.extend(roll_call[1:])
     placements = _season_fine_placements(data, tally)
     if placements:
         lines.append("")
@@ -1146,6 +1159,59 @@ def format_recap_fines_context(
         lines.append("Naming the forfeit:")
         lines.extend(penalties)
     return "\n".join(lines)
+
+
+def _fines_roll_call(data: LeagueRecapData) -> list[str]:
+    """How many managers this gameweek's fines reached, then who they did
+    not (#502): the count first, the rest after the fines themselves.
+
+    The Transfers and Waivers sections' enumerate-and-lock shape. Given only
+    the fined, the model worked out the rest itself: with 11 of 19 fined it
+    miscounted, and called one of the 8 left over "the only one in the league"
+    without a forfeit. So the count and the names are handed over finished.
+
+    A manager whose own evaluation raised was never ruled on, so they are
+    named apart, neither fined nor cleared, rather than listed as clean.
+    Empty when there are no managers to count.
+    """
+    managers = data.get("managers", [])
+    if not managers:
+        return []
+    fines = data.get("fines", [])
+    fined_keys = {f["manager_key"] for f in fines if "manager_key" in f}
+    # A hand-built ruling carries no key, which leaves the name to match on.
+    fined_names = {f["manager_name"] for f in fines if "manager_key" not in f}
+    ruled = data.get("fines_ruled_manager_keys")
+    ruled_keys = None if ruled is None else set(ruled)
+
+    fined: list[str] = []
+    clear: list[str] = []
+    unruled: list[str] = []
+    for m in managers:
+        key = recap_manager_key(m)
+        name = m["manager_name"]
+        if key in fined_keys or name in fined_names:
+            fined.append(name)
+        elif ruled_keys is not None and key not in ruled_keys:
+            unruled.append(name)
+        else:
+            clear.append(name)
+
+    lines: list[str] = []
+    if fined:
+        lines.append(f"Total managers fined this gameweek: {len(fined)} of {len(managers)}")
+        if clear:
+            lines.append(f"Not fined this gameweek ({len(clear)}): {', '.join(sorted(clear))}")
+    elif unruled:
+        lines.append(f"No manager ruled on was fined this gameweek (0 of {len(clear)})")
+    else:
+        lines.append(f"Nobody was fined this gameweek (0 of {len(managers)} managers)")
+    if unruled:
+        lines.append(
+            f"Not ruled on this gameweek, so neither fined nor cleared ({len(unruled)}): "
+            f"{', '.join(sorted(unruled))}",
+        )
+    return lines
 
 
 def _fine_penalty_lines(data: LeagueRecapData) -> list[str]:
@@ -1236,12 +1302,22 @@ def format_recap_season_fines_context(tally: SeasonFinesTally | None) -> str:
                 f"- {manager.manager_name}: {manager.total} "
                 f"({format_fine_breakdown(manager)})",
             )
+        # The season's top total and every manager on it, so "the only
+        # manager with three fines" is read off a line rather than a scan of
+        # the totals above: with two managers level on 3, 2 of 10 drafts in
+        # the A/B for #507 still gave the 3 to one of them alone (#502).
+        most = max(manager.total for manager in fined)
+        holders = [manager.manager_name for manager in fined if manager.total == most]
+        held = f"{holders[0]} alone" if len(holders) == 1 else (
+            f"shared by {len(holders)} managers, {join_and(holders)}"
+        )
+        lines.append(f"Most fines this season: {most}, {held}")
     else:
         lines.append("- Nobody has been fined this season.")
 
     unfined = [manager.manager_name for manager in tally.managers if not manager.total]
     if unfined and fined:
-        lines.append(f"Not fined so far: {', '.join(unfined)}")
+        lines.append(f"Not fined so far ({len(unfined)}): {', '.join(unfined)}")
 
     if tally.qualifiers:
         lines.append("")

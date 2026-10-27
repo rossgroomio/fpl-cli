@@ -10544,6 +10544,128 @@ class TestRulingNamesTheForfeitsThatFired:
         assert evaluate_league_fines(self._managers(80, 20), {}, "classic").penalties == []
 
 
+class TestFinesContextCountsTheUnfined:
+    """The Fines section says how many managers were fined and names the
+    rest (#502). Handed only the fined, the editorial counted the rest itself,
+    got it wrong with 11 of 19 fined, and called one of the 8 left "the only
+    one in the league" without a forfeit."""
+
+    @staticmethod
+    def _fine(name: str, key: int | None, rule: str = "red-card") -> RecapFineResult:
+        fine = RecapFineResult(manager_name=name, rule_type=rule, message=f"{name} was fined")
+        if key is not None:
+            fine["manager_key"] = key
+        return fine
+
+    @staticmethod
+    def _managers(*names: str) -> list[RecapManagerEntry]:
+        return [_make_manager(name=name, entry_id=i) for i, name in enumerate(names, start=1)]
+
+    def test_the_count_opens_and_the_unfined_are_named(self):
+        data = _make_recap_data(
+            managers=self._managers("Ada", "Bob", "Cy", "Dee", "Eve"),
+            # Bob's two fines are one manager fined, not two.
+            fines=[
+                self._fine("Bob", 2), self._fine("Bob", 2, rule="last-place"),
+                self._fine("Dee", 4), self._fine("Ada", 1),
+            ],
+        )
+
+        lines = format_recap_fines_context(data).splitlines()
+
+        assert lines[0] == "Total managers fined this gameweek: 3 of 5"
+        assert "Not fined this gameweek (2): Cy, Eve" in lines
+        assert lines.index("Not fined this gameweek (2): Cy, Eve") > lines.index("- Ada: Ada was fined")
+
+    def test_a_week_with_rules_and_no_fines_says_nobody_was_fined(self):
+        data = _make_recap_data(managers=self._managers("Ada", "Bob", "Cy"))
+        data["fine_rules_evaluated"] = ["last-place"]
+
+        assert format_recap_fines_context(data) == "Nobody was fined this gameweek (0 of 3 managers)"
+
+    def test_a_league_without_fine_rules_still_gets_no_section(self):
+        data = _make_recap_data(managers=self._managers("Ada", "Bob"))
+        data["fine_rules_evaluated"] = []
+
+        assert format_recap_fines_context(data) == ""
+
+    def test_a_manager_never_ruled_on_is_neither_fined_nor_cleared(self):
+        """Their evaluation raised, so they may have earned a fine nobody
+        recorded: listing them as clean would be the false acquittal the
+        ledger already refuses (#136)."""
+        data = _make_recap_data(
+            managers=self._managers("Ada", "Bob", "Cy"),
+            fines=[self._fine("Ada", 1)],
+        )
+        data["fines_ruled_manager_keys"] = [1, 2]
+
+        text = format_recap_fines_context(data)
+
+        assert "Not fined this gameweek (1): Bob" in text
+        assert "Not ruled on this gameweek, so neither fined nor cleared (1): Cy" in text
+
+    def test_nobody_fined_among_the_ruled_leaves_out_the_unruled(self):
+        data = _make_recap_data(managers=self._managers("Ada", "Bob", "Cy"))
+        data["fine_rules_evaluated"] = ["last-place"]
+        data["fines_ruled_manager_keys"] = [1, 2]
+
+        assert format_recap_fines_context(data).splitlines() == [
+            "No manager ruled on was fined this gameweek (0 of 2)",
+            "Not ruled on this gameweek, so neither fined nor cleared (1): Cy",
+        ]
+
+    def test_a_keyless_fine_is_matched_by_name(self):
+        data = _make_recap_data(
+            managers=self._managers("Ada", "Bob"), fines=[self._fine("Bob", None)],
+        )
+
+        text = format_recap_fines_context(data)
+
+        assert "Total managers fined this gameweek: 1 of 2" in text
+        assert "Not fined this gameweek (1): Ada" in text
+
+    def test_the_season_section_names_the_most_fines_and_who_holds_them(self):
+        """2 of 10 drafts in the A/B for #507 called one of two managers level
+        on three fines "the only manager with three fines"."""
+        tally = SeasonFinesTally(
+            season="2025-26", fpl_format="classic", league_id=1,
+            through_gameweek=8, start_gameweek=1, rule_types=["last-place"],
+            managers=[
+                ManagerFineTally(manager_key=1, manager_name="Kim", counts={"last-place": 3}),
+                ManagerFineTally(manager_key=2, manager_name="Ada", counts={"last-place": 3}),
+                ManagerFineTally(manager_key=3, manager_name="Bob", counts={"last-place": 1}),
+                ManagerFineTally(manager_key=4, manager_name="Cy"),
+                ManagerFineTally(manager_key=5, manager_name="Dee"),
+            ],
+        )
+
+        text = format_recap_season_fines_context(tally)
+
+        assert "Most fines this season: 3, shared by 2 managers, Kim and Ada" in text
+        assert "Not fined so far (2): Cy, Dee" in text
+
+    def test_a_single_top_total_is_named_as_one_managers_alone(self):
+        tally = SeasonFinesTally(
+            season="2025-26", fpl_format="classic", league_id=1,
+            through_gameweek=8, start_gameweek=1, rule_types=["last-place"],
+            managers=[
+                ManagerFineTally(manager_key=1, manager_name="Kim", counts={"last-place": 3}),
+                ManagerFineTally(manager_key=2, manager_name="Ada", counts={"last-place": 1}),
+            ],
+        )
+
+        assert "Most fines this season: 3, Kim alone" in format_recap_season_fines_context(tally)
+
+    def test_the_system_prompt_holds_sole_holder_claims_to_a_section(self):
+        system, _ = get_recap_synthesis_prompt(
+            gw=8, league_name="Test", fpl_format="classic",
+            awards_text="x", standings_text="| t |", fines_text="Bob fined",
+        )
+
+        assert '"the only one", "the only manager", "alone in" or "the one exception"' in system
+        assert "Never count a section's list yourself to make a manager the only one in it" in system
+
+
 class TestFinesContextNamesTheForfeit:
     @staticmethod
     def _data(phrasings):
