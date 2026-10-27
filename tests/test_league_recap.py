@@ -10614,6 +10614,57 @@ class TestFinesContextCountsTheUnfined:
             "Not ruled on this gameweek, so neither fined nor cleared (1): Cy",
         ]
 
+    def test_a_league_read_one_page_short_never_passes_for_the_whole_league(self):
+        """Classic standings stop at one page of 50. In a bigger league the
+        count covers the managers read, and says so, rather than reading as
+        the league's own."""
+        data = _make_recap_data(
+            managers=self._managers("Ada", "Bob", "Cy"), fines=[self._fine("Ada", 1)],
+        )
+        data["standings_truncated"] = True
+        data["league_size"] = 120
+
+        lines = format_recap_fines_context(data).splitlines()
+
+        assert lines[0] == "Total managers fined this gameweek: 1 of the 3 this recap read"
+        assert lines[-1] == (
+            "This recap read 3 of the league's 120 members, so these counts cover "
+            "those 3 alone and say nothing of the other 117"
+        )
+
+    def test_nobody_fined_in_a_partly_read_league_acquits_only_those_read(self):
+        data = _make_recap_data(managers=self._managers("Ada", "Bob"))
+        data["fine_rules_evaluated"] = ["last-place"]
+        data["standings_truncated"] = True
+
+        assert format_recap_fines_context(data).splitlines() == [
+            "Nobody this recap read was fined this gameweek (0 of 2)",
+            "This recap read only 2 of the league's members, so these counts cover "
+            "those 2 alone and say nothing of the rest",
+        ]
+
+    def test_a_member_whose_picks_never_came_back_is_outside_the_count(self):
+        data = _make_recap_data(
+            managers=self._managers("Ada", "Bob"), fines=[self._fine("Ada", 1)],
+        )
+        data["standings_cohort"] = [{"manager_name": n} for n in ("Ada", "Bob", "Cy")]  # type: ignore[typeddict-item]
+
+        text = format_recap_fines_context(data)
+
+        assert "1 of the 2 this recap read" in text
+        assert "say nothing of the other 1" in text
+
+    def test_a_whole_league_read_carries_no_scope_line(self):
+        data = _make_recap_data(
+            managers=self._managers("Ada", "Bob"), fines=[self._fine("Ada", 1)],
+        )
+        data["standings_cohort"] = [{"manager_name": n} for n in ("Ada", "Bob")]  # type: ignore[typeddict-item]
+
+        text = format_recap_fines_context(data)
+
+        assert "Total managers fined this gameweek: 1 of 2" in text
+        assert "this recap read" not in text
+
     def test_a_keyless_fine_is_matched_by_name(self):
         data = _make_recap_data(
             managers=self._managers("Ada", "Bob"), fines=[self._fine("Bob", None)],

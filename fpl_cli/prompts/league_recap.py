@@ -1197,21 +1197,55 @@ def _fines_roll_call(data: LeagueRecapData) -> list[str]:
         else:
             clear.append(name)
 
+    read = len(managers)
+    scope = _unread_members_line(data, read)
     lines: list[str] = []
     if fined:
-        lines.append(f"Total managers fined this gameweek: {len(fined)} of {len(managers)}")
+        of = f"{read}" if scope is None else f"the {read} this recap read"
+        lines.append(f"Total managers fined this gameweek: {len(fined)} of {of}")
         if clear:
             lines.append(f"Not fined this gameweek ({len(clear)}): {', '.join(sorted(clear))}")
     elif unruled:
         lines.append(f"No manager ruled on was fined this gameweek (0 of {len(clear)})")
+    elif scope is None:
+        lines.append(f"Nobody was fined this gameweek (0 of {read} managers)")
     else:
-        lines.append(f"Nobody was fined this gameweek (0 of {len(managers)} managers)")
+        lines.append(f"Nobody this recap read was fined this gameweek (0 of {read})")
     if unruled:
         lines.append(
             f"Not ruled on this gameweek, so neither fined nor cleared ({len(unruled)}): "
             f"{', '.join(sorted(unruled))}",
         )
+    if scope is not None:
+        lines.append(scope)
     return lines
+
+
+def _unread_members_line(data: LeagueRecapData, read: int) -> str | None:
+    """What the fines count leaves out when the recap did not read the whole
+    league, or None when it did (#502).
+
+    Classic standings come one page of 50 at a time and only the first is
+    read, and a member whose picks never came back is in the table but not
+    in `managers`. Either way nobody past the managers read was ruled on, so
+    "11 of 50" must not pass for the league and "nobody was fined" must not
+    acquit members it never looked at. The same test the Standout Players
+    section uses before it says "all" or "everyone but".
+    """
+    cohort = data.get("standings_cohort")
+    truncated = data.get("standings_truncated", False)
+    if not truncated and (cohort is None or read >= len(cohort)):
+        return None
+    size = data.get("league_size") or (None if truncated or cohort is None else len(cohort))
+    if size is not None and size > read:
+        return (
+            f"This recap read {read} of the league's {size} members, so these counts cover "
+            f"those {read} alone and say nothing of the other {size - read}"
+        )
+    return (
+        f"This recap read only {read} of the league's members, so these counts cover "
+        f"those {read} alone and say nothing of the rest"
+    )
 
 
 def _fine_penalty_lines(data: LeagueRecapData) -> list[str]:
