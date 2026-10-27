@@ -609,12 +609,15 @@ def _manager_aliases(names: RecapNames) -> dict[str, str]:
 
 
 # A manager the clause measures someone else against -- "a point clear of Gus
-# Peel's 30", "one cruel point over Hal Penn (31)", "a point behind Hal
-# Penn" -- is the yardstick, not who the clause is about, so a pronoun is
-# never carried to them (#524). A verb is no yardstick: "beat Eve Ray to
-# Isak" is a waiver race.
+# Peel's 30", "one cruel point over Hal Penn (31)", "one more than Gus Peel"
+# -- is the yardstick, not who the clause is about (#524). A bare "over",
+# "behind" or "than" is one only after a margin: "the row over Hal Penn's
+# captaincy" and "the man behind Hal Penn's team" are about Hal Penn. A verb
+# is never one: "beat Eve Ray to Isak" is a waiver race.
 _MEASURED_AGAINST_RE = re.compile(
-    r"(?<!\w)(?:(?:clear|ahead|short)\s+of|over|above|behind|below|than)\s+$", re.IGNORECASE,
+    r"(?<!\w)(?:(?:clear|ahead|short)\s+of"
+    r"|(?:pts?|points?|more|fewer|less|better|worse|higher|lower)\s+(?:over|above|below|behind|than))\s+$",
+    re.IGNORECASE,
 )
 
 
@@ -633,9 +636,9 @@ class _ReadClause:
     has. `opener` is the first manager that clause named, whoever else it
     named: the subject a reader takes the next "he" for (#488). None where
     the clause opens on a list of managers ("Alice and Bob both struggled"),
-    which has no one subject. A manager a clause only measures someone
-    against ("clear of Gus Peel") is neither (#524): a clause naming no one
-    else passes its own antecedent and opener on."""
+    which has no one subject. A manager the clause only measures someone
+    against ("a point clear of Gus Peel") is none of these (#524): see
+    `subjects`."""
 
     text: str
     mentions: list[re.Match[str]]
@@ -644,12 +647,20 @@ class _ReadClause:
     opener: str | None
 
     @property
+    def subjects(self) -> list[tuple[int, int, str]]:
+        """The managers the clause names, less any it only measures someone
+        against: the ones it can be about. A clause naming nobody else passes
+        its antecedent and opener on (#524)."""
+        return [mention for mention in self.named if not _measured_against(self.text, mention[0])]
+
+    @property
     def manager(self) -> str | None:
         """The one manager the clause is about: the one it names, or its
         antecedent when it names none. None when it names two."""
-        if not self.named:
+        subjects = self.subjects
+        if not subjects:
             return self.antecedent
-        distinct = {name for *_, name in self.named}
+        distinct = {name for *_, name in subjects}
         return next(iter(distinct)) if len(distinct) == 1 else None
 
 
@@ -662,13 +673,11 @@ def _read_clauses(summary: str, names: RecapNames, aliases: Mapping[str, str]) -
         for clause in _clauses(paragraph):
             mentions = names.find(clause)
             named = [(m.start(), m.end(), aliases[m.group(0)]) for m in mentions if m.group(0) in aliases]
-            yield _ReadClause(clause, mentions, named, antecedent, opener)
-            subjects = [mention for mention in named if not _measured_against(clause, mention[0])]
-            if subjects:
+            read = _ReadClause(clause, mentions, named, antecedent, opener)
+            yield read
+            if subjects := read.subjects:
                 listed = len(subjects) > 1 and _LIST_JOIN_RE.match(_plain(clause[subjects[0][1]:subjects[1][0]]))
-                distinct = {who for *_, who in subjects}
-                antecedent = next(iter(distinct)) if len(distinct) == 1 else None
-                opener = None if listed else subjects[0][2]
+                antecedent, opener = read.manager, None if listed else subjects[0][2]
 
 
 # =============================================================================
@@ -1241,7 +1250,9 @@ def check_kind_net_scopes(summary: str, managers: Sequence[RecapManagerEntry], n
     ("with Dunk's +1 on waivers he finished +7", #465). Whose moves they are is the one manager
     the clause names, or, in a clause that names none ("his waiver moves"),
     the one manager the nearest earlier clause of the paragraph named; a
-    clause naming two managers, or following one that did, is left alone.
+    clause naming two managers, or following one that did, is left alone. A
+    manager a clause only measures someone against ("a point clear of Bob")
+    does not count as named (#524).
     The figure is then a problem only when it is not that kind's net nor the
     swing of a move of that kind, and is another figure on the manager's
     line: the net overall, another kind's net, or another kind's move's
@@ -1771,20 +1782,21 @@ def _claim_subject(
     of a claim's subject, so the placing and escape checks carry a pronoun
     the same way (#488).
 
-    It is the manager named nearest before it; where the clause names two or
-    more before it, only the one its own stretch names ("Alice won the week,
-    and Bob was third on the week"). A claim nobody is named before, or only
-    a manager the clause measures someone against ("His 31 was one point
-    clear of Gus Peel's 30, so he avoided last place", #524), goes to the
-    clause's antecedent when a pronoun before it points back ("He
+    It is the manager named nearest before it, never one the clause only
+    measures someone against ("Gus Peel finished a point behind Hal Penn and
+    escaped the wooden spoon" is Gus Peel's, #524); where the clause names two
+    or more before it, only the one its own stretch names ("Alice won the
+    week, and Bob was third on the week"). A claim nobody is named before
+    goes to the clause's antecedent when a pronoun before it points back ("He
     finished eighth on 31", "it left him eighth on 31", "He escaped the
     wooden spoon"), or, with `opener`, to the first manager that clause
     named even where it named two. A pronoun between the name and the claim
     in a clause naming two managers could be either's, so it says neither.
     """
     text = clause.text
-    before = [mention for mention in clause.named if mention[1] <= start]
-    if all(_measured_against(text, mention_start) for mention_start, *_ in before):
+    subjects = clause.subjects
+    before = [mention for mention in subjects if mention[1] <= start]
+    if not before:
         carried = clause.opener if opener else clause.antecedent
         if carried is not None and _PRONOUN_RE.search(text[:start]):
             return carried, 0
@@ -1794,7 +1806,7 @@ def _claim_subject(
         if len({who for *_, who in before}) != 1:
             return None
     _, end, name = before[-1]
-    if len({who for *_, who in clause.named}) > 1 and _PRONOUN_RE.search(text[end:start]):
+    if len({who for *_, who in subjects}) > 1 and _PRONOUN_RE.search(text[end:start]):
         return None
     return name, end
 
@@ -2171,7 +2183,7 @@ def _escape_from(
     if named is None and (pronoun := _OBJECT_PRONOUN_RE.match(text, agent.end())):
         # A "him" goes to the one manager the clause named before it, as in
         # `_claim_subject()`, and only with nobody named to the clause before.
-        earlier = {who for start, _, who in clause.named if start < agent.end() and not _measured_against(text, start)}
+        earlier = {who for start, _, who in clause.subjects if start < agent.end()}
         carried = next(iter(earlier)) if len(earlier) == 1 else None if earlier else clause.opener
         named = (carried, pronoun.end()) if carried is not None else None
     return leading[-1], named, named[1] if named else agent.end(), False
@@ -2197,12 +2209,11 @@ def check_escape_claims(summary: str, managers: Sequence[RecapManagerEntry], nam
     wooden spoon, the worst week, the lowest score, the foot of the table.
     Whose escape it is comes from `_escape_from()`: a name before it, a
     pronoun carried from the first manager the clause before named (the
-    subject a reader takes it for, even where that clause named two, and
-    past a manager only measured against: "a point clear of Gus Peel",
-    #524), or the name or pronoun after a passive's "by". It is the week's
-    unless the words
-    naming where from name the table, the table's too where a holding verb or
-    a copula leads into it, and wrong when every reading it allows is: the
+    subject a reader takes it for, even where that clause named two), or the
+    name or pronoun after a passive's "by", never a manager the escape is
+    only measured against (#524). It is the week's unless the words naming
+    where from name the table, the table's too where a holding verb or a
+    copula leads into it, and wrong when every reading it allows is: the
     week's when that manager's gameweek score was the week's lowest, the
     table's when they are bottom of the table. An escape that says nothing
     happened -- hedged, negated, a base form or a gerund after a preposition

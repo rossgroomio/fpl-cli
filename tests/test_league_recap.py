@@ -8324,6 +8324,9 @@ class TestKindNetScopeCheck:
         "Dan Ford's waiver work paid off to the tune of +3.",
         # A determiner after a bare comma opens a new phrase, not a list.
         "Dan Ford made two moves, his waivers netting +3 overall.",
+        # Issue #524: a manager the clause only measures him against is not
+        # a second manager it could be about.
+        "Dan Ford, a point clear of Eve Ray, saw his waiver moves net +3 overall.",
     ])
     def test_the_net_overall_said_of_one_kind_is_caught(self, summary):
         problems = self._check(summary)
@@ -8902,6 +8905,7 @@ class TestGameweekPlacingCheck:
         # Issue #524: a pronoun passes over the manager it is measured against.
         ("Gus Peel had a shocker. His 30 was a point behind Hal Penn's 31, so he finished seventh on the week.",
          "Gus Peel"),
+        ("Gus Peel, a point behind Hal Penn, was seventh on the week.", "Gus Peel"),
     ])
     def test_a_placing_the_week_does_not_bear_out_is_caught(self, summary, placed):
         problems = self._check(summary)
@@ -8988,6 +8992,9 @@ class TestGameweekPlacingCheck:
         # one it is measured against.
         "Hal Penn had a quiet week. His 31 was one point clear of Gus Peel's 30, so he finished seventh on the week.",
         "Hal Penn had a quiet week. His 31 was one point clear of Gus Peel's 30. He finished seventh on the week.",
+        # PR #526 review: a clause naming two managers neither of whom is
+        # measured against still carries nobody to the next.
+        "Gus Peel watched Hal Penn edge him by a point. He finished seventh on the week.",
     ])
     def test_a_placing_the_check_cannot_pin_to_the_week_is_left_alone(self, summary):
         managers = _placings_table()
@@ -9229,6 +9236,13 @@ class TestEscapeClaimCheck:
         # against to the one it is about, who finished last.
         ("Gus Peel had a shocker. His 30 was a point behind Hal Penn's 31, so he avoided last place.", "Gus Peel"),
         ("Gus Peel had a shocker. He was a point short of Hal Penn, so he dodged the wooden spoon.", "Gus Peel"),
+        # PR #526 review: the subject named in the same clause as the
+        # manager it is measured against, with or without a pronoun...
+        ("Gus Peel finished one point behind Hal Penn and escaped the wooden spoon.", "Gus Peel"),
+        ("Gus Peel was a point behind Hal Penn, and he escaped the wooden spoon.", "Gus Peel"),
+        # ...and a bare "over" with no margin before it measures nobody.
+        ("Hal Penn had a quiet week. The banter over Gus Peel's wildcard was loud, and he dodged the wooden spoon.",
+         "Gus Peel"),
     ])
     def test_an_escape_the_data_contradicts_is_caught(self, summary, escaped):
         problems = self._check(summary)
