@@ -1254,13 +1254,13 @@ _TIE_TABLE_RE = re.compile(
 # season") also reads against the season's record, which the League History
 # section states with every score that reached it (#494).
 _TIE_SEASON_RE = re.compile(r"(?<!\w)season\w*(?!\w)", re.IGNORECASE)
-# The figure a season tie is said of, attached to it the way a placing's
-# figure is: straight before it, joined by a copula or a comma ("Bob's 65
-# was the joint-highest score of the season", "hit 65, the joint-highest"),
-# or straight after it ("the joint-highest score of the season is 72"). A
-# figure further off makes some other comparison ("65, short of the
-# joint-highest score of the season"), and a gameweek's own number
-# ("gameweek 4 was the joint-highest") is no score.
+# The figure a tie is said of, attached to it the way a placing's figure
+# is: straight before it, joined by a copula or a comma ("Bob's 65 was the
+# joint-highest score of the season", "hit 65, the joint-highest"), or
+# straight after it ("the joint-highest score of the season is 72", "shared
+# the top spot on 55 points"). A figure further off makes some other
+# comparison ("65, short of the joint-highest score of the season"), and a
+# gameweek's own number ("gameweek 4 was the joint-highest") is no score.
 _TIE_FIGURE_BEFORE_RE = re.compile(
     r"(?<![\w.£+−–-])(?P<figure>\d+)(?:\s*(?:pts?|points?))?"
     r"(?:\s*,|\s+(?:was|is|were|are|as|makes?|made|marks?|marked|stands?|stood)(?:\s+(?:also|now|still))?)"
@@ -1268,7 +1268,8 @@ _TIE_FIGURE_BEFORE_RE = re.compile(
     re.IGNORECASE,
 )
 _TIE_FIGURE_AFTER_RE = re.compile(
-    r"(?:[\s-]+(?:gameweek\s+)?(?:scores?|totals?|tally|week|return))?(?:\s+(?:of|this|in)\s+(?:the\s+)?season\w*)?"
+    r"(?:[\s-]+(?:gameweek\s+)?(?:scores?|totals?|tally|week|return|spot|place|position))?"
+    r"(?:\s+(?:of|this|in)\s+(?:the\s+)?season\w*)?"
     r"(?:\s*[,(]|\s+(?:on|at|with|of|is|was))\s*(?P<figure>\d+)(?![\w.%])",
     re.IGNORECASE,
 )
@@ -1324,7 +1325,10 @@ def check_tie_claims(
     captain, a bench, a player) is left alone, as is a negated one, a word
     that is not a rank where it stands ("tied last week"), and a numbered
     rank among gameweek scores ("joint-third highest"), which the prompt
-    never states. Returns one line per unsupported tie, in the order the
+    never states. A figure attached to the tie (`_tie_figures`) that is the
+    gameweek score at its rank, held by more than one manager, bears it out
+    on the week whatever words are or are not around it ("who shared second
+    on 46", #511). Returns one line per unsupported tie, in the order the
     editorial claims them.
 
     `season_records` is the season's highest ("top") and lowest ("bottom")
@@ -1428,11 +1432,17 @@ def check_tie_claims(
                     continue
                 else:
                     about_table = True
+            figures = _tie_figures(clause, match.start(), match.end())
+            # A figure attached to the tie that is the gameweek score at its
+            # rank, held by more than one manager, bears it out on the week,
+            # whatever scope words sit nearby or none: "who shared second on
+            # 46", "shared the top spot on 55 points" (#511). Any other
+            # figure leaves the reading to the words.
+            _, holders = _rank_holders(gameweek, rank)
+            if len(holders) > 1 and points[holders[0]] in figures:
+                continue
             if isinstance(rank, str) and rank in records and about_week and _TIE_SEASON_RE.search(window):
-                readings = (
-                    gameweek_fact(rank), table_fact(rank),
-                    season_fact(rank, _tie_figures(clause, match.start(), match.end())),
-                )
+                readings = (gameweek_fact(rank), table_fact(rank), season_fact(rank, figures))
                 fact = None if None in readings else "no reading holds: " + "; ".join(
                     reading for reading in readings if reading is not None
                 )
@@ -1584,6 +1594,18 @@ _FIGURE_AFTER_PLACING_RE = re.compile(
 _FIGURE_BEFORE_PLACING_RE = re.compile(
     r"(?<![\w.£+−–-])(?P<figure>\d+)(?:\s*(?:pts?|points?)|-point\w*)?\s+for\s+(?:an?\s+)?$", re.IGNORECASE,
 )
+# A score's own rank on the week, stated straight after the figure: "52,
+# which was 4th best on the week", "27 points, the week's lowest", "52, only
+# seventh on the week". Where it is the score's true rank, any other placing
+# the clause gives that manager is the table's (#518).
+_WEEK_RANK_AFTER_SCORE_RE = re.compile(
+    r"(?:\s*(?:pts?|points?))?\s*(?:[,(–—]|\s-)?\s*(?:(?:which|that|it)\s+)?"
+    r"(?:(?:was|is|ranked|ranks|came|comes)\s+)?(?:(?:only|just|merely)\s+)?(?:(?:the|a)\s+)?"
+    rf"(?P<owner>{_PLACING_WEEK}['’]s\s+)?(?:(?:joint|equal)[-\s]+)?"
+    rf"(?P<rank>highest|lowest|best|worst|{_RANK_WORDS})(?:[-\s]+(?P<direction>best|highest|lowest|worst))?(?![\w-])"
+    rf"(?(owner)|(?:[-\s]+(?:score|return|tally))?\s+{_PLACING_WEEK_AFTER_RE.pattern})",
+    re.IGNORECASE,
+)
 # A word for the table or for holding a place before a placing gives way to
 # a score attached to the placing and the week named straight after it:
 # "sits 5th on 39 for the week" ranks the week. The week alone does not
@@ -1692,8 +1714,9 @@ def check_gameweek_placings(
     finishing verb leads into it in a clause that gives that score and names
     nobody else ("scored 31 and finished eighth"): the #483 shape, which the
     prompt forbids whatever the placing was meant as. A score clause that
-    also gives the manager's season total is about the table. A stretch with
-    any word for the table, a season, holding a place or a span longer than
+    also gives the manager's season total, or the score's own rank on the
+    week ("first with 52, which was 4th best on the week", #518), is about
+    the table. A stretch with any word for the table, a season, holding a place or a span longer than
     the week ("in the league", "kept top spot", "this campaign") is left
     alone, unless the word comes before the placing and its score and the
     week straight after it ("sits 5th on 39 for the week"). So is a placing a move lands
@@ -1749,6 +1772,33 @@ def check_gameweek_placings(
             said += f"; {place_label(claimed)} is {name}'s place in the table"
         return said
 
+    def states_week_rank(text: str, manager: RecapManagerEntry) -> bool:
+        """Whether `text` follows the manager's gameweek score with its true
+        rank on the week (`_WEEK_RANK_AFTER_SCORE_RE`). A rank the score does
+        not hold says nothing about the placing beside it."""
+        score = manager["gw_points"]
+        if not is_score(score, manager):
+            return False
+        for figure in _FIGURE_RE.finditer(text):
+            stated = _WEEK_RANK_AFTER_SCORE_RE.match(text, figure.end()) if int(figure.group(0)) == score else None
+            if stated is None:
+                continue
+            word = stated.group("rank").lower()
+            direction = (stated.group("direction") or "").lower()
+            if not direction and word in _TOP_RANK_WORDS | _BOTTOM_RANK_WORDS:
+                held = score == (scores[0] if word in _TOP_RANK_WORDS else scores[-1])
+            elif word in _TOP_RANK_WORDS | _BOTTOM_RANK_WORDS:
+                held = False
+            else:
+                claimed = _ORDINAL_NUMBERS.get(word) or int(word[:-2])
+                if direction in _BOTTOM_RANK_WORDS:
+                    held = claimed in (1 + sum(m["gw_points"] < score for m in managers), scores[::-1].index(score) + 1)
+                else:
+                    held = claimed in (ranks[manager["manager_name"].strip()], scores.index(score) + 1)
+            if held:
+                return True
+        return False
+
     aliases = _manager_aliases(names)
     problems: list[str] = []
     for clause in _read_clauses(summary, names, aliases):
@@ -1803,6 +1853,9 @@ def check_gameweek_placings(
             else:
                 total = manager.get("total_points")
                 if total is not None and not totals_are_scores and _states(text, total):
+                    continue
+                # So is one that states the score's own rank on the week.
+                if states_week_rank(text, manager):
                     continue
                 attached = _FIGURE_AFTER_PLACING_RE.match(text, end) or _FIGURE_BEFORE_PLACING_RE.search(text[:start])
                 if attached and is_score(int(attached.group("figure")), manager) and not (

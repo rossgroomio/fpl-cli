@@ -8492,6 +8492,63 @@ class TestTieClaimCheck:
         assert self._check("The joint-lowest score of the week.", _reported_table()[:1]) == []
 
 
+def _shared_scores_table(*, second: int = 46, top: int = 61) -> list[RecapManagerEntry]:
+    """Issue #511's shape: Manager A tops the week on `top` and the table;
+    Manager B and Manager C score `second` and 46, second and third in the
+    table on different totals, so the table's second place is one manager's
+    alone and only the week can bear out a tie between them."""
+    rows = [
+        ("Manager A", top, 400), ("Manager B", second, 380), ("Manager C", 46, 360),
+        ("Manager D", 40, 340), ("Manager E", 35, 320), ("Manager F", 30, 300),
+    ]
+    return [
+        _make_manager(
+            name=name, entry_id=pos, gw_points=pts, overall_rank=pos, previous_rank=pos, total_points=total,
+        )
+        for pos, (name, pts, total) in enumerate(rows, start=1)
+    ]
+
+
+class TestSharedScoreTieClaims:
+    """Issue #511: a tie said of a figure that is a shared gameweek score was
+    read as the table's when no week word stood within six words of it ("who
+    shared second on 46") or a table word did ("shared the top spot on 55
+    points"), and flagged a true sentence."""
+
+    _SHARED_SECOND = "Manager A won the week with 61 points, 15 clear of Manager B and Manager C, who shared second on 46."
+    _SHARED_TOP = "Manager A and Manager B shared the top spot on 55 points."
+
+    def _check(self, summary: str, managers: list[RecapManagerEntry]) -> list[str]:
+        return check_tie_claims(summary, managers, RecapNames.of(managers))
+
+    def test_a_shared_second_highest_score_bears_out_the_tie(self):
+        assert self._check(self._SHARED_SECOND, _shared_scores_table()) == []
+
+    def test_a_shared_highest_score_bears_out_the_tie_beside_a_table_word(self):
+        assert self._check(self._SHARED_TOP, _shared_scores_table(top=55, second=55)) == []
+
+    def test_a_second_highest_score_one_manager_holds_is_still_the_table_s(self):
+        assert self._check(self._SHARED_SECOND, _shared_scores_table(second=47)) == [
+            'the editorial says "shared second", but 2nd place in the table is Manager B\'s alone'
+        ]
+
+    def test_a_highest_score_one_manager_holds_is_still_the_table_s(self):
+        assert self._check(self._SHARED_TOP, _shared_scores_table(top=55, second=54)) == [
+            'the editorial says "shared the top", but 1st place in the table is Manager A\'s alone'
+        ]
+
+    @pytest.mark.parametrize("summary", [
+        # No gameweek score at all...
+        "Manager A won the week with 61 points, 15 clear of Manager B and Manager C, who shared second on 48.",
+        "Manager A and Manager B shared the top spot on 57 points.",
+        # ...or a shared score, but not the one at the tie's rank.
+        "Manager B and Manager C shared the top spot on 46 points.",
+    ])
+    def test_a_figure_that_is_no_shared_score_at_the_rank_keeps_the_table_reading(self, summary):
+        managers = _shared_scores_table(top=55, second=55) if "top spot on 57" in summary else _shared_scores_table()
+        assert len(self._check(summary, managers)) == 1
+
+
 class TestCompetitionRank:
     """Issue #486: one definition of a recap rank, read by the GW Rank column,
     the report's standings block, the tie check and the placing check."""
@@ -8750,6 +8807,92 @@ class TestGameweekPlacingCheck:
             "The editorial gives a manager a placing on the week their gameweek score does not earn. "
             'The editorial places Hal Penn "eighth"'
         )
+
+
+def _week_rank_table() -> list[RecapManagerEntry]:
+    """Issue #518's classic shape, in league order: the leader, Manager A,
+    scored 52, 4th on the week, and Manager B, second in the table, scored
+    the week's lowest 27."""
+    rows = [
+        ("Manager A", 52, 420), ("Manager B", 27, 400), ("Manager C", 70, 380), ("Manager D", 60, 360),
+        ("Manager E", 55, 340), ("Manager F", 40, 320), ("Manager G", 31, 300),
+    ]
+    return [
+        _make_manager(
+            name=name, entry_id=pos, gw_points=pts, overall_rank=pos, previous_rank=pos, total_points=total,
+        )
+        for pos, (name, pts, total) in enumerate(rows, start=1)
+    ]
+
+
+class TestPlacingBesideAStatedWeekRank:
+    """Issue #518: a placing with the manager's own gameweek score attached
+    was read as the week's (#483) even where the sentence went on to state
+    that score's own week rank, which leaves the placing only the table."""
+
+    def _check(self, summary: str, managers: list[RecapManagerEntry] | None = None) -> list[str]:
+        managers = managers or _week_rank_table()
+        return check_gameweek_placings(summary, managers, RecapNames.of(managers))
+
+    @pytest.mark.parametrize("summary", [
+        "Manager A has taken first with 52, which was 4th best on the week.",
+        "Manager B had a shocker. He arrived as leader and left second, with 27 points, the week's lowest.",
+        "Manager A has taken first with 52, only fourth on the week.",
+        "Manager B left second on 27, the week's lowest score.",
+        "Manager B scored 27, the lowest of the week, and finished second.",
+    ])
+    def test_a_stated_week_rank_puts_the_placing_in_the_table(self, summary):
+        assert self._check(summary) == []
+
+    @pytest.mark.parametrize(("summary", "placed"), [
+        # #483's shape, with no week rank stated, still gives the code...
+        ("Manager A has taken first with 52.", "Manager A"),
+        ("Manager B had a shocker. He arrived as leader and left second, with 27 points.", "Manager B"),
+        # ...and so does a week rank said of someone else's score.
+        ("Manager A has taken first with 52, and Manager C's 70 was the week's best.", "Manager A"),
+    ])
+    def test_a_placing_beside_the_score_alone_is_still_caught(self, summary, placed):
+        problems = self._check(summary)
+        assert len(problems) == 1
+        assert problems[0].startswith(f"the editorial places {placed} ")
+        assert "beside their gameweek score" in problems[0]
+
+    def test_finished_eighth_on_31_with_no_week_rank_is_still_caught(self):
+        """#483 itself, against the table it was reported on."""
+        managers = _placings_table()
+        assert len(check_gameweek_placings("Hal Penn finished eighth on 31.", managers, RecapNames.of(managers))) == 1
+
+    @pytest.mark.parametrize("summary", [
+        "Manager A has taken first with 52, which was 3rd best on the week.",
+        "Manager B had a shocker. He arrived as leader and left second, with 27 points, the week's highest.",
+        "Manager A has taken first with 52, the week's second-lowest.",
+    ])
+    def test_a_week_rank_the_score_does_not_hold_lets_nothing_off(self, summary):
+        """A wrong week rank says nothing about the placing beside it, so the
+        #483 reading stands."""
+        assert len(self._check(summary)) == 1
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="#518's missed half: reading 'finished it' as the week needs new pronoun handling, left out",
+    )
+    def test_finished_it_after_an_earlier_score_is_the_week(self):
+        summary = (
+            "Manager A had a shocker. He started the week top of the table, scored 30, "
+            "and finished it second with a red card."
+        )
+        managers = _week_rank_table()
+        managers[0]["gw_points"] = 30
+        assert len(self._check(summary, managers)) == 1
+
+    def test_finished_it_second_passes_when_the_score_was_second(self):
+        summary = (
+            "Manager A had a shocker. He started the week top of the table, scored 65, "
+            "and finished it second with a red card."
+        )
+        managers = _week_rank_table()
+        managers[0]["gw_points"] = 65
+        assert self._check(summary, managers) == []
 
 
 class TestEscapeClaimCheck:
