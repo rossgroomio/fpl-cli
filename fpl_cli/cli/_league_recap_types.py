@@ -955,6 +955,31 @@ class LeagueRecapData(TypedDict):
     prior_seasons_coverage_lines: NotRequired[list[str]]
 
 
+def recap_manager_key(m: RecapManagerEntry) -> int:
+    """The ledger key for a collected manager.
+
+    Draft keys on the league-local `league_entry` id, which is always present;
+    the site-wide `entry_id` is null for an unclaimed team and two of them
+    would collide on 0 (KTD11). Classic has no league-local id and keys on
+    `entry_id`, which the collector always populates.
+    """
+    return m.get("league_entry_id", m["entry_id"])
+
+
+def recap_reads_whole_league(data: LeagueRecapData) -> bool:
+    """Whether `managers` is the whole league, so a section may say "all",
+    "everyone but" or "N of M" of it.
+
+    Not when the standings were cut short (classic reads one page of 50) or
+    a member in the table has no collected entry because their picks never
+    came back.
+    """
+    cohort = data.get("standings_cohort")
+    return not data.get("standings_truncated", False) and (
+        cohort is None or len(data["managers"]) >= len(cohort)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Prior seasons (issue #131)
 # ---------------------------------------------------------------------------
