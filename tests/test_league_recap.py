@@ -8527,6 +8527,19 @@ class TestSharedScoreTieClaims:
     def test_a_shared_highest_score_bears_out_the_tie_beside_a_table_word(self):
         assert self._check(self._SHARED_TOP, _shared_scores_table(top=55, second=55)) == []
 
+    @pytest.mark.parametrize("summary", [
+        "Manager A's 61 points was the week's best by a mile, 15 clear of the 46 that Manager B and Manager C"
+        " shared for second.",
+        "Manager A's 61 points was the week's best by a mile, 15 clear of the 46 that Manager B and Manager C"
+        " shared in second.",
+    ])
+    def test_a_shared_score_before_the_tie_bears_it_out(self, summary):
+        """PR #521 replay: the same #511 sentence with the figure before the tie."""
+        assert self._check(summary, _shared_scores_table()) == []
+        # 46 one manager's alone, or no gameweek score at all, keeps the table reading.
+        assert len(self._check(summary, _shared_scores_table(second=47))) == 1
+        assert len(self._check(summary.replace("46", "48"), _shared_scores_table())) == 1
+
     def test_a_second_highest_score_one_manager_holds_is_still_the_table_s(self):
         assert self._check(self._SHARED_SECOND, _shared_scores_table(second=47)) == [
             'the editorial says "shared second", but 2nd place in the table is Manager B\'s alone'

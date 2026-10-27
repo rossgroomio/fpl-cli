@@ -1280,6 +1280,13 @@ _TIE_FIGURE_AFTER_RE = re.compile(
     re.IGNORECASE,
 )
 _GAMEWEEK_NUMBER_BEFORE_RE = re.compile(r"(?<!\w)(?:(?:game)?week|gw)\s*$", re.IGNORECASE)
+# A figure the tie's own holders are said to share, before it: "the 46 that
+# Manager B and Manager C shared for second" (#511). Read only as a gameweek
+# score the tie's rank holds, never against a season record.
+_TIE_HELD_FIGURE_BEFORE_RE = re.compile(
+    r"(?<![\w.£+−–-])(?P<figure>\d+)(?:\s*(?:pts?|points?))?\s+(?:that|which)\s+(?:[^\s\d,;:–—]+\s+){1,8}$",
+    re.IGNORECASE,
+)
 _TIE_WINDOW_WORDS = 6
 _TIE_NEGATION_WORDS = 5
 
@@ -1442,11 +1449,14 @@ def check_tie_claims(
             # A figure attached to the tie that is the gameweek score at its
             # rank, held by more than one manager, bears it out on the week
             # where no word names the table or the season: "who shared second
-            # on 46", "shared the top spot on 55 points" (#511). Any other
+            # on 46", "shared the top spot on 55 points", "the 46 that Manager
+            # B and Manager C shared for second" (#511). Any other
             # figure, or "joint-second in the table on 46", leaves the reading
             # to the words.
             _, holders = _rank_holders(gameweek, rank)
-            if len(holders) > 1 and points[holders[0]] in figures and not _TIE_TABLE_NAMED_RE.search(window):
+            held = _TIE_HELD_FIGURE_BEFORE_RE.search(clause, 0, match.start())
+            week_figures = [*figures, int(held.group("figure"))] if held else figures
+            if len(holders) > 1 and points[holders[0]] in week_figures and not _TIE_TABLE_NAMED_RE.search(window):
                 continue
             if isinstance(rank, str) and rank in records and about_week and _TIE_SEASON_RE.search(window):
                 readings = (gameweek_fact(rank), table_fact(rank), season_fact(rank, figures))
