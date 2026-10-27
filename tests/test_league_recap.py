@@ -7028,6 +7028,55 @@ class TestPriorSeasonsPromptSection:
         assert "Never derive a trajectory the section does not state" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
 
+class TestToneDrawnFromWhatLanded:
+    """Issue #505: the tone was four generic lines and the rest of the prompt
+    rules about what not to say, so an editorial that passed every check could
+    still read as the awards in sentence form. The tone now says what lands,
+    as patterns described rather than lines quoted."""
+
+    @staticmethod
+    def _tone() -> str:
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        start = RECAP_SYNTHESIS_SYSTEM_PROMPT.index("<tone>")
+        return RECAP_SYNTHESIS_SYSTEM_PROMPT[start:RECAP_SYNTHESIS_SYSTEM_PROMPT.index("</tone>", start)]
+
+    def test_the_tone_says_what_lands(self):
+        tone = self._tone()
+
+        assert "a deadpan undercut beats an adjective" in tone
+        assert "a verdict of two or three words after a fact beats a sentence explaining why the move was bad" in tone
+        assert "neither does a sentence saying who won which award" in tone
+        assert "a sentence of scores and totals is the awards table again" in tone
+        assert "Celebrate in the same register you roast" in tone
+        assert "Save mock-solemn escalation for the week's one big story" in tone
+        assert "lands better than a third jab at the same target" in tone
+        assert "Drier never means meaner" in tone
+
+    def test_a_funnier_line_never_needs_a_fact_the_data_does_not_give(self):
+        assert "a joke that needs a fact the data does not give is the wrong joke" in self._tone()
+
+    def test_a_shorter_line_keeps_the_league_place_apart_from_the_weeks_score(self):
+        """A/B round pr515-gw8 (var2): the drier, shorter sentences folded the
+        new leader's top spot into their week's score ("takes top spot on 46
+        points"), and synthesis_wrong_gameweek_placing caught it in 8 of 40
+        draft first drafts."""
+        assert "a league place keeps a clause of its own, apart from the week's score" in self._tone()
+
+    def test_the_patterns_are_described_never_quoted(self):
+        """A/B round pr515-gw8: with three lines that landed quoted as
+        illustrations, marked never to copy, the editorial wrote the first one
+        nearly word for word in 21 of 40 classic recaps once the week's table
+        gave its facts, and named the illustration's player more often. So the
+        tone describes each pattern and quotes no line."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "These are patterns, not lines to fill in" in self._tone()
+        assert "<illustrations>" not in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        for copied in ("which is still", "Bold, and wrong", "feral", "João Pedro"):
+            assert copied not in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+
 class TestRecapTitleIsTheReportsNotTheModels:
     """Issue #349: every recap used to land under a different H1. The
     editorial invented one, restyled the gameweek, dropped or rewrote the
