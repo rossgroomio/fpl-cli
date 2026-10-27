@@ -34,6 +34,8 @@ The four product skills (gw-prep, squad-builder, update-gw-prep, preview-ingest)
 
 These levels are a judgement, not a measurement. `max` is untested here and probably not worth its time and cost; a gameweek of gw-prep run twice, once at these levels and once with classic at `max`, is the experiment that would settle it. Change a level in the block and in its row together: `tests/test_skill_effort_levels.py` reads each skill's frontmatter and every `Agent tool parameters` block, and holds each row of this table to the block its Where cell names (`orchestrator` is the frontmatter; the other labels are the sub-agent blocks in document order), so a swapped, missing or misspelt row fails there rather than being dropped.
 
+The maintainer skills (release, release-notes, create-pr, build-test-plan, ab-brief) set no effort level and are not held to this table: they run once per release or PR, interactively, and follow the session's effort. ab-brief is the exception worth knowing, since the effort that matters is the vault session's, not its own, and it says in its brief which level that session should start at.
+
 How far each key reaches, quoted from the Claude Code docs as read on 14 October 2026:
 
 - `model` in the frontmatter ([skills, Frontmatter reference](https://code.claude.com/docs/en/skills#frontmatter-reference)): "The override applies for the rest of the current turn and isn't saved to settings. The session model resumes when you send your next prompt." So a follow-up question about the output ("why sell X?") is answered on the session model.

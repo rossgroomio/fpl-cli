@@ -74,6 +74,12 @@ Bad: "## Summary\nThis PR updates the changelog job's authentication."
   FPL credentials, none of which a web session has.
 - **Include stats when relevant.** Test counts, performance numbers,
   migration sizes — plainly stated, at the end.
+- **Say when the change needs an A/B.** When the diff touches
+  `fpl_cli/prompts/` or a data section the model is shown (what a
+  `format_recap_*` function emits, or the recap data it reads), one
+  sentence in the prose says the change needs an A/B in a vault session
+  before merge. A sentence, not a section: the A/B's numbers replace it
+  once the round is back.
 
 ### Structure and length
 
@@ -148,7 +154,13 @@ draft to keep working on the branch.
 
 ### Step 5: Report
 
-Print the PR URL. If the user asked for auto-merge, arm it (`gh pr merge
+Print the PR URL. If the diff touches `fpl_cli/prompts/` or a data
+section the model is shown, tell the user the next step: once the PR has
+been through code review, run the `ab-brief` skill, which subscribes this
+session to the PR and writes the brief for a fresh vault session. Don't
+arm auto-merge on such a PR: the A/B is its merge gate.
+
+If the user asked for auto-merge, arm it (`gh pr merge
 --auto --squash`, or the MCP `enable_pr_auto_merge` tool) — it merges once
 the required `check` and `lint` checks pass.
 
@@ -186,4 +198,7 @@ rebase onto main before review continues.
 - `Closes #N` appears when the PR resolves an issue; caveats and
   verification gaps are in italics; any stats are plainly stated at the
   end.
+- A PR touching a prompt or a data section the model is shown says in
+  one sentence that it needs an A/B before merge, and the user was told
+  the next step is `ab-brief` after review.
 - The PR URL was reported to the user.

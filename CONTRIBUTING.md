@@ -158,7 +158,12 @@ corpus through both builds' checks, never by new model runs. The harness's
 check whose retry wording changed, which only fresh runs show the model reading; the
 corpus lives in the vault at `.claude/scripts/recap_ab/corpus/`, each round's drafts beside
 the recap data they were judged against, so a replay needs neither a model call nor the
-FPL API. The October 2026 prompt audit and its A/B record live in the private
+FPL API. The A/B always runs in its own fpl-workspace session, never from the fpl-cli
+session that wrote the change: once the PR has been reviewed, the `ab-brief` skill writes
+the brief that session runs and subscribes the fpl-cli session to the PR. The vault session
+never changes fpl-cli; it posts its results as one comment on the PR, opening with an
+`<!-- ab-handback ... -->` marker, and the fpl-cli session makes the fixes. The October 2026
+prompt audit and its A/B record live in the private
 `fpl-cli-docs` repo under `docs/audits/`; re-run it at the next change of the default
 synthesis model.
 
