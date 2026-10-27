@@ -7032,8 +7032,7 @@ class TestToneDrawnFromWhatLanded:
     """Issue #505: the tone was four generic lines and the rest of the prompt
     rules about what not to say, so an editorial that passed every check could
     still read as the awards in sentence form. The tone now says what lands,
-    with lines that did as illustrations, marked as a register rather than a
-    template because each week's recap is written with no memory of the last."""
+    as patterns described rather than lines quoted."""
 
     @staticmethod
     def _tone() -> str:
@@ -7046,7 +7045,9 @@ class TestToneDrawnFromWhatLanded:
         tone = self._tone()
 
         assert "a deadpan undercut beats an adjective" in tone
-        assert "a short verdict after a fact beats a sentence explaining why the move was bad" in tone
+        assert "a verdict of two or three words after a fact beats a sentence explaining why the move was bad" in tone
+        assert "neither does a sentence saying who won which award" in tone
+        assert "a sentence of scores and totals is the awards table again" in tone
         assert "Celebrate in the same register you roast" in tone
         assert "Save mock-solemn escalation for the week's one big story" in tone
         assert "lands better than a third jab at the same target" in tone
@@ -7055,13 +7056,18 @@ class TestToneDrawnFromWhatLanded:
     def test_a_funnier_line_never_needs_a_fact_the_data_does_not_give(self):
         assert "a joke that needs a fact the data does not give is the wrong joke" in self._tone()
 
-    def test_the_illustrations_sit_in_the_tone_as_a_register_not_a_template(self):
-        tone = self._tone()
-        illustrations = tone[tone.index("<illustrations>"):tone.index("</illustrations>")]
+    def test_the_patterns_are_described_never_quoted(self):
+        """A/B round pr515-gw8: with three lines that landed quoted as
+        illustrations, marked never to copy, the editorial wrote the first one
+        nearly word for word in 21 of 40 classic recaps once the week's table
+        gave its facts, and named the illustration's player more often. So the
+        tone describes each pattern and quotes no line."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
 
-        assert "They show the register, not a template" in illustrations
-        assert "with no memory of the last" in illustrations
-        assert "Take the pattern, never the line." in illustrations
+        assert "These are patterns, not lines to fill in" in self._tone()
+        assert "<illustrations>" not in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        for copied in ("which is still", "Bold, and wrong", "feral", "João Pedro"):
+            assert copied not in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
 
 class TestRecapTitleIsTheReportsNotTheModels:
