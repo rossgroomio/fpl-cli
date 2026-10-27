@@ -3107,11 +3107,11 @@ class TestContractDraftTxnChains:
 
     def test_no_chain_passthrough(self):
         txns = [_txn("Truffert", 7, "Frimpong", 1), _txn("Doku", 15, "Gordon", 0)]
-        assert _contract_draft_txn_chains(txns) == txns
+        assert _contract_draft_txn_chains(txns, []) == txns
 
     def test_single_txn_passthrough(self):
         txns = [_txn("Doku", 15, "Gordon", 0)]
-        assert _contract_draft_txn_chains(txns) == txns
+        assert _contract_draft_txn_chains(txns, []) == txns
 
     def test_collapses_three_step_chain(self):
         # Trossard out → Georginio → Dango (Oliver's GW35)
@@ -3120,7 +3120,7 @@ class TestContractDraftTxnChains:
             _txn("Georginio", 1, "Trossard", 7),
             _txn("Dango", 6, "Georginio", 1, kind="f"),
         ]
-        result = _contract_draft_txn_chains(txns)
+        result = _contract_draft_txn_chains(txns, [])
         # Expect Truffert/Frimpong unchanged, plus Dango/Trossard collapsed
         assert len(result) == 2
         names = {(t["player_in"], t["player_out"]): t["net"] for t in result}
@@ -3132,7 +3132,7 @@ class TestContractDraftTxnChains:
     def test_closed_loop_contracts_to_nothing(self):
         # Drop X for Y, then drop Y for X — back where we started
         txns = [_txn("Y", 5, "X", 3), _txn("X", 3, "Y", 5)]
-        assert _contract_draft_txn_chains(txns) == []
+        assert _contract_draft_txn_chains(txns, []) == []
 
     def test_multi_hop_chain(self):
         # A→B→C→D: only A out, D in survive
@@ -3141,7 +3141,7 @@ class TestContractDraftTxnChains:
             _txn("C", 6, "B", 4),
             _txn("D", 9, "C", 6),
         ]
-        result = _contract_draft_txn_chains(txns)
+        result = _contract_draft_txn_chains(txns, [])
         assert len(result) == 1
         assert result[0]["player_in"] == "D"
         assert result[0]["player_out"] == "A"
@@ -3153,11 +3153,11 @@ class TestDraftTransactionChains:
     awards' contraction and the roster's chain notes."""
 
     def test_unlinked_moves_form_no_chain(self):
-        assert draft_transaction_chains([_txn("Truffert", 7, "Frimpong", 1), _txn("Doku", 15, "Gordon", 0)]) == []
+        assert draft_transaction_chains([_txn("Truffert", 7, "Frimpong", 1), _txn("Doku", 15, "Gordon", 0)], []) == []
 
     def test_an_open_chain_runs_from_the_first_player_out_to_the_last_player_in(self):
         txns = [_txn("Henderson", 6, "Kinsky", 9), _txn("Penders", 0, "Henderson", 6, kind="f")]
-        [chain] = draft_transaction_chains(txns)
+        [chain] = draft_transaction_chains(txns, [])
         assert chain.moves == tuple(txns)
         assert (chain.player_out, chain.passed_through, chain.player_in) == ("Kinsky", ("Henderson",), "Penders")
         assert chain.net == -9 == sum(t["net"] for t in txns)
@@ -3165,20 +3165,69 @@ class TestDraftTransactionChains:
         assert chain.path == "Kinsky out -> Henderson -> Penders in"
 
     def test_the_moves_are_linked_whatever_order_they_are_listed_in(self):
+        """The feed's order is not trusted; with no squad captured, the moves
+        alone link them."""
         txns = [_txn("D", 9, "C", 6), _txn("B", 4, "A", 1), _txn("C", 6, "B", 4)]
-        [chain] = draft_transaction_chains(txns)
+        [chain] = draft_transaction_chains(txns, [])
         assert chain.path == "A out -> B -> C -> D in"
         assert chain.net == 8
 
     def test_a_closed_loop_ends_where_it_started_and_nets_nothing(self):
-        [chain] = draft_transaction_chains([_txn("Y", 5, "X", 3), _txn("X", 3, "Y", 5)])
+        [chain] = draft_transaction_chains([_txn("Y", 5, "X", 3), _txn("X", 3, "Y", 5)], [])
         assert chain.closed
         assert chain.net == 0
         assert chain.path == "X out -> Y -> X back in"
 
+    def test_a_player_in_the_gameweek_squad_did_not_pass_through(self):
+        """PR #522 review: the feed's order is not trusted, so "C in for B,
+        then B in for A" reads as A -> B -> C on the moves alone, though the
+        manager re-signed B and kept him. The squad that played settles it."""
+        txns = [_txn("C", 6, "B", 4), _txn("B", 4, "A", 1)]
+        assert len(draft_transaction_chains(txns, [])) == 1
+        squad = [_make_squad_player(name="B"), _make_squad_player(name="C")]
+        assert draft_transaction_chains(txns, squad) == []
+
+    def test_a_loop_whose_player_came_back_is_still_a_loop_with_the_squad_known(self):
+        txns = [_txn("Y", 5, "X", 3), _txn("X", 3, "Y", 5)]
+        [chain] = draft_transaction_chains(txns, [_make_squad_player(name="X")])
+        assert chain.closed and chain.path == "X out -> Y -> X back in"
+
+    def test_no_two_chains_share_a_move_and_the_swings_still_add_up(self):
+        """PR #522 review: B dropped and signed again gave two chains that both
+        ended on C, and a contraction worth 15 from moves worth 10."""
+        txns = [_txn("B", 4, "A", 1), _txn("C", 9, "B", 4), _txn("B", 4, "D", 2)]
+        chains = draft_transaction_chains(txns, [])
+        moves = [id(move) for chain in chains for move in chain.moves]
+        assert len(moves) == len(set(moves))
+        assert sum(t["net"] for t in _contract_draft_txn_chains(txns, [])) == sum(t["net"] for t in txns) == 10
+
+    def test_moves_link_on_code_where_both_sides_carry_one(self):
+        """PR #522 review: two players sharing a web_name are not one player,
+        and a player renamed mid-season still is."""
+        namesake = [
+            {**_txn("Henderson", 6, "Kinsky", 9), "player_in_code": 1},
+            {**_txn("Penders", 0, "Henderson", 2, kind="f"), "player_out_code": 2},
+        ]
+        assert draft_transaction_chains(namesake, []) == []
+        renamed = [
+            {**_txn("Henderson", 6, "Kinsky", 9), "player_in_code": 1},
+            {**_txn("Penders", 0, "J. Henderson", 6, kind="f"), "player_out_code": 1},
+        ]
+        [chain] = draft_transaction_chains(renamed, [])
+        assert chain.effective["player_in"] == "Penders" and chain.effective["player_out"] == "Kinsky"
+
+    def test_the_effective_move_carries_the_ends_codes(self):
+        txns = [
+            {**_txn("B", 4, "A", 1), "player_out_code": 10, "player_in_code": 20},
+            {**_txn("C", 9, "B", 4), "player_out_code": 20, "player_in_code": 30},
+        ]
+        [chain] = draft_transaction_chains(txns, [])
+        assert (chain.effective["player_out_code"], chain.effective["player_in_code"]) == (10, 30)
+        assert chain.effective["net"] == 8
+
     def test_chains_are_ordered_by_their_first_move(self):
         txns = [_txn("Q", 1, "P", 2), _txn("Y", 5, "X", 3), _txn("B", 4, "A", 1), _txn("X", 3, "Y", 5), _txn("C", 6, "B", 4)]
-        assert [chain.path for chain in draft_transaction_chains(txns)] == [
+        assert [chain.path for chain in draft_transaction_chains(txns, [])] == [
             "X out -> Y -> X back in", "A out -> B -> C in",
         ]
 
@@ -8046,6 +8095,22 @@ class TestNetAttributionCheck:
     def test_worth_and_swing_pass_a_move_s_own_swing_or_an_unsigned_score(self, summary):
         assert self._check(summary) == []
 
+    @pytest.mark.parametrize("summary", [
+        "Bringing in Ajayi for Cash was worth a -4 hit.",
+        "Ajayi in for Cash was worth a -4.",
+        "Ajayi in for Cash was worth a -4-point hit.",
+        "Ajayi in for Cash was worth a -8.",
+    ])
+    def test_worth_a_hit_is_the_slang_not_a_move_s_swing(self, summary):
+        """PR #522 review: "worth a -4" says a hit was worth taking, and -4
+        happens to be Gibbs-White in for Wirtz's swing on the same line."""
+        assert self._check(summary) == []
+
+    def test_worth_a_figure_before_a_noun_for_a_move_is_the_move_s(self):
+        problems = self._check("Ajayi in for Cash was worth a -4 move.")
+        assert len(problems) == 1
+        assert "-4 is the swing on Gibbs-White in for Wirtz" in problems[0]
+
     @staticmethod
     def _gw8_chain(henderson: int) -> list[RecapManagerEntry]:
         """Issue #501's row: Henderson came in for Kinsky and went for Penders
@@ -8079,11 +8144,30 @@ class TestNetAttributionCheck:
 
     @pytest.mark.parametrize("summary", [
         "Alice Lowe's Penders in for Kinsky netted -9.",
-        "Penders in for Kinsky via Henderson was worth -9.",
         "Penders in for Kinsky, a -9 swing.",
     ])
     def test_the_chain_s_effective_move_carries_its_swing(self, summary):
         assert self._check(summary, self._gw8_chain(6)) == []
+
+    @pytest.mark.parametrize("summary, figure, hop", [
+        ("Penders in for Kinsky was worth -3.", "worth -3", "-3 is the swing on Henderson in for Kinsky"),
+        ("Penders in for Kinsky, a -6 swing.", "a -6 swing", "-6 is the swing on Penders in for Henderson"),
+    ])
+    def test_a_hop_s_swing_given_to_the_effective_move_is_caught(self, summary, figure, hop):
+        """PR #522 review: the effective move is no raw move, so a clause that
+        named it was never read and the test above passed on nothing."""
+        assert self._check(summary, self._gw8_chain(6)) == [
+            f'the editorial says "{figure}" of Penders in for Kinsky, but {hop}, not that move\'s own swing of -9'
+        ]
+
+    def test_a_chain_s_swing_given_to_a_move_outside_it_is_caught(self):
+        """PR #522 review: the chain's -9 is a figure of the line, so it is one
+        a move outside the chain can be wrongly given."""
+        managers = self._gw8_chain(6)
+        managers[0]["transactions"].append(_txn("Mbeumo", 5, "Raya", 3))
+        problems = self._check("Mbeumo in for Raya was worth -9.", managers)
+        assert len(problems) == 1
+        assert "-9 is the effective swing of Alice Lowe's chain Kinsky out -> Henderson -> Penders in" in problems[0]
 
     def test_another_move_s_swing_is_caught_and_named(self):
         problems = self._check("Gibbs-White in for Wirtz, +2 net, was a disaster.")

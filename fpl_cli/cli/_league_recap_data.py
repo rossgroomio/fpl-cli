@@ -2023,7 +2023,7 @@ def _compute_transfer_awards(
 
 
 def _contract_draft_txn_chains(
-    txns: list[RecapDraftTransaction],
+    txns: list[RecapDraftTransaction], squad: list[RecapManagerPlayer],
 ) -> list[RecapDraftTransaction]:
     """Collapse chain rebuilds within a single manager-GW into endpoint pairs.
 
@@ -2036,30 +2036,17 @@ def _contract_draft_txn_chains(
     Sum of effective nets equals sum of raw nets (intermediates cancel
     algebraically). Closed loops (A→B then B→A) contract to nothing.
     """
-    chains = {id(chain.moves[0]): chain for chain in draft_transaction_chains(txns)}
-    linked = {id(move) for chain in chains.values() for move in chain.moves}
+    chains = draft_transaction_chains(txns, squad)
+    by_start = {id(chain.moves[0]): chain for chain in chains}
+    in_chain = {id(move) for chain in chains for move in chain.moves}
 
     contracted: list[RecapDraftTransaction] = []
     for t in txns:
-        if id(t) not in linked:
+        if (chain := by_start.get(id(t))) is not None:
+            if not chain.closed:
+                contracted.append(chain.effective)
+        elif id(t) not in in_chain:
             contracted.append(t)
-            continue
-        chain = chains.get(id(t))
-        if chain is None or chain.closed:
-            continue
-        start, end = chain.moves[0], chain.moves[-1]
-        contracted.append(RecapDraftTransaction(
-            player_in=end["player_in"],
-            player_in_team=end["player_in_team"],
-            player_in_team_name=end.get("player_in_team_name"),
-            player_in_points=end["player_in_points"],
-            player_out=start["player_out"],
-            player_out_team=start["player_out_team"],
-            player_out_team_name=start.get("player_out_team_name"),
-            player_out_points=start["player_out_points"],
-            net=chain.net,
-            kind=end["kind"],
-        ))
     return contracted
 
 
@@ -2075,7 +2062,7 @@ def _compute_waiver_awards(
 
     # Contract once per manager so ranking and display read the same list.
     effective_by_manager: dict[int, list[RecapDraftTransaction]] = {
-        id(m): _contract_draft_txn_chains(m.get("transactions", []))
+        id(m): _contract_draft_txn_chains(m.get("transactions", []), m.get("squad", []))
         for m in managers_with_txns
     }
 

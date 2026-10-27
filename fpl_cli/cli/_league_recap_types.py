@@ -242,6 +242,15 @@ def draft_transaction_kind_nets(
     return [(label, nets[label]) for label in DRAFT_TRANSACTION_LABEL_ORDER if label in nets]
 
 
+def _same_player(name_a: str, code_a: int | None, name_b: str, code_b: int | None) -> bool:
+    """Whether two sides of the recap's moves or squad are one player: by
+    `code` where both carry one, since a web_name is neither unique nor
+    stable across a mid-season rename, and by name only where one does not."""
+    if code_a is not None and code_b is not None:
+        return code_a == code_b
+    return name_a == name_b
+
+
 @dataclass(frozen=True)
 class DraftMoveChain:
     """A run of one manager's draft moves linked through players brought in
@@ -249,9 +258,9 @@ class DraftMoveChain:
 
     B never played for the manager, so each move's own swing along the run
     is measured against a player whose points never counted for them. Only
-    the ends compare: C in for A, its swing `net`, which the swings along the
-    run add up to. A closed loop brings back the player its first move
-    dropped, so it ends where it started and nets nothing.
+    the ends compare: C in for A, the `effective` move, whose swing the
+    swings along the run add up to. A closed loop brings back the player its
+    first move dropped, so it ends where it started and nets nothing.
     """
 
     moves: tuple[RecapDraftTransaction, ...]
@@ -270,11 +279,37 @@ class DraftMoveChain:
 
     @property
     def closed(self) -> bool:
-        return self.player_in == self.player_out
+        start, end = self.moves[0], self.moves[-1]
+        return _same_player(
+            end["player_in"], end.get("player_in_code"), start["player_out"], start.get("player_out_code"),
+        )
 
     @property
     def net(self) -> int:
         return self.moves[-1]["player_in_points"] - self.moves[0]["player_out_points"]
+
+    @property
+    def effective(self) -> RecapDraftTransaction:
+        """The one move the chain amounts to, as a move of its own: the last
+        player in for the first player out, of the last move's kind."""
+        start, end = self.moves[0], self.moves[-1]
+        move = RecapDraftTransaction(
+            player_in=end["player_in"],
+            player_in_team=end["player_in_team"],
+            player_in_team_name=end.get("player_in_team_name"),
+            player_in_points=end["player_in_points"],
+            player_out=start["player_out"],
+            player_out_team=start["player_out_team"],
+            player_out_team_name=start.get("player_out_team_name"),
+            player_out_points=start["player_out_points"],
+            net=self.net,
+            kind=end["kind"],
+        )
+        if (code := end.get("player_in_code")) is not None:
+            move["player_in_code"] = code
+        if (code := start.get("player_out_code")) is not None:
+            move["player_out_code"] = code
+        return move
 
     @property
     def path(self) -> str:
@@ -283,47 +318,62 @@ class DraftMoveChain:
         return " -> ".join([f"{self.player_out} out", *self.passed_through, end])
 
 
-def draft_transaction_chains(txns: Sequence[RecapDraftTransaction]) -> list[DraftMoveChain]:
+def draft_transaction_chains(
+    txns: Sequence[RecapDraftTransaction], squad: Sequence[RecapManagerPlayer],
+) -> list[DraftMoveChain]:
     """Every chain in one manager's raw draft moves for a gameweek, ordered by
     where its first move sits in `txns`. A move linked to no other is in none.
 
-    The links are by player name, the same key the moves are printed with.
-    An open chain starts at a move whose dropped player nobody brought in;
-    whatever stays linked after those is a closed loop, which starts at its
-    earliest move. The awards contract every chain to its ends
+    A move links to one that drops the player it brought in -- the same
+    player by `code` where both sides carry one, by name where not. Nothing
+    links through a player in `squad`, the gameweek squad that played: he
+    stayed, so he did not pass through whatever order the moves came in (the
+    feed's order is not trusted to be the order they were made), and a
+    player dropped and signed again is not mistaken for one who came and
+    went. Each move has at most one move linked to it, so no two chains
+    share a tail and the chains' swings still add up to the raw moves'. An
+    empty `squad` (one that was not captured) links on the moves alone.
+
+    The awards contract every chain to its effective move
     (`_contract_draft_txn_chains`) and the editorial's waiver roster marks
     each one beside the raw moves, both from this, so the two never disagree
     about which moves form one.
     """
-    by_out: dict[str, RecapDraftTransaction] = {}
-    for t in txns:
-        by_out.setdefault(t["player_out"], t)
-    in_names = {t["player_in"] for t in txns}
-    position = {id(t): i for i, t in enumerate(txns)}
+    def kept(move: RecapDraftTransaction) -> bool:
+        return any(
+            _same_player(move["player_in"], move.get("player_in_code"), p["name"], p.get("code")) for p in squad
+        )
 
-    def walk(start: RecapDraftTransaction) -> list[RecapDraftTransaction]:
-        run = [start]
-        while (nxt := by_out.get(run[-1]["player_in"])) is not None and all(nxt is not m for m in run):
-            run.append(nxt)
+    def links(move: RecapDraftTransaction, nxt: RecapDraftTransaction) -> bool:
+        return _same_player(
+            move["player_in"], move.get("player_in_code"), nxt["player_out"], nxt.get("player_out_code"),
+        )
+
+    succ: dict[int, int] = {}
+    for i, move in enumerate(txns):
+        if kept(move):
+            continue
+        claimed = set(succ.values())
+        nxt = next((j for j, other in enumerate(txns) if j != i and j not in claimed and links(move, other)), None)
+        if nxt is not None:
+            succ[i] = nxt
+
+    def run_from(i: int) -> list[int]:
+        run = [i]
+        while (j := succ.get(run[-1])) is not None and j not in run:
+            run.append(j)
         return run
 
-    chains: list[DraftMoveChain] = []
-    linked: set[int] = set()
-    for start in txns:
-        if start["player_out"] in in_names or start["player_in"] not in by_out:
-            continue
-        run = walk(start)
-        linked.update(id(m) for m in run)
-        chains.append(DraftMoveChain(tuple(run)))
-    for start in txns:
-        if id(start) in linked or start["player_in"] not in by_out:
-            continue
-        run = walk(start)
-        if len(run) < 2 or run[-1]["player_in"] != start["player_out"]:
-            continue
-        linked.update(id(m) for m in run)
-        chains.append(DraftMoveChain(tuple(run)))
-    return sorted(chains, key=lambda chain: position[id(chain.moves[0])])
+    has_pred = set(succ.values())
+    runs = [run_from(i) for i in sorted(succ) if i not in has_pred]
+    # A move with a predecessor on no open run sits on a cycle, which only an
+    # uncaptured squad lets form: a closed loop, read from its earliest move.
+    seen = {i for run in runs for i in run}
+    for i in sorted(succ):
+        if i not in seen:
+            runs.append(run_from(i))
+            seen.update(runs[-1])
+    return [DraftMoveChain(tuple(txns[i] for i in run)) for run in sorted(runs)]
 
 
 def format_move_counts(breakdown: list[tuple[str, int]]) -> str:

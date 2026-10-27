@@ -713,10 +713,10 @@ def _format_chain(chain: DraftMoveChain) -> str:
     for a closed loop that it amounts to none."""
     if chain.closed:
         return f"loop: {chain.path}, no net change"
-    start, end = chain.moves[0], chain.moves[-1]
+    move = chain.effective
     return (
-        f"chain: {chain.path}, effective {chain.player_in} ({points_label(end['player_in_points'])}) in for "
-        f"{chain.player_out} ({points_label(start['player_out_points'])}), {chain.net:+d}"
+        f"chain: {chain.path}, effective {move['player_in']} ({points_label(move['player_in_points'])}) in for "
+        f"{move['player_out']} ({points_label(move['player_out_points'])}), {move['net']:+d}"
     )
 
 
@@ -812,7 +812,7 @@ def format_recap_waivers_context(data: LeagueRecapData) -> str:
             if len(kind_nets) > 1 else ""
         )
         line = f"- **{name}** ({summary}{by_kind}, net {net:+d} overall): {moves_text}"
-        for chain in draft_transaction_chains(moves):
+        for chain in draft_transaction_chains(moves, m.get("squad", [])):
             line += f" | {_format_chain(chain)}"
         if lost:
             line += f" | also claimed and lost: {_format_lost_claims(lost)}"
