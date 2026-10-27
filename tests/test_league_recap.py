@@ -7056,6 +7056,13 @@ class TestToneDrawnFromWhatLanded:
     def test_a_funnier_line_never_needs_a_fact_the_data_does_not_give(self):
         assert "a joke that needs a fact the data does not give is the wrong joke" in self._tone()
 
+    def test_a_shorter_line_keeps_the_league_place_apart_from_the_weeks_score(self):
+        """A/B round pr515-gw8 (var2): the drier, shorter sentences folded the
+        new leader's top spot into their week's score ("takes top spot on 46
+        points"), and synthesis_wrong_gameweek_placing caught it in 8 of 40
+        draft first drafts."""
+        assert "a league place keeps a clause of its own, apart from the week's score" in self._tone()
+
     def test_the_patterns_are_described_never_quoted(self):
         """A/B round pr515-gw8: with three lines that landed quoted as
         illustrations, marked never to copy, the editorial wrote the first one
