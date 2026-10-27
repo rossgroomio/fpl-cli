@@ -312,7 +312,7 @@ $ fpl init
 ```console
 $ ruff check fpl_cli/    # Lint
 $ pyright fpl_cli/       # Type check
-$ pytest tests/          # Tests
+$ pytest tests/ -n auto  # Tests, one worker per core
 ```
 
 > [!NOTE]

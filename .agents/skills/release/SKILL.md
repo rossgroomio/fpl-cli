@@ -63,7 +63,7 @@ or stale build.
 ```bash
 ruff check fpl_cli/
 pyright fpl_cli/
-pytest
+pytest -n auto           # one worker per core, as CI runs it
 python -m build          # or: hatch build — confirms sdist+wheel build
 ```
 
