@@ -1301,13 +1301,13 @@ and `round`, `pick`, `overall_pick` and `auto_pick` are then null. Classic rows 
 ruling against the gameweek. A backfilled gameweek is ruled too — the detailed replay rules every configured rule, the coarse tier rules the ones
 derivable from cohort points (`last-place`, `below-threshold`) and records that it could not
 rule `red-card`, which needs a squad the manager-history endpoint does not return. See
-[Season Fines](#season-fines) for the table this builds up. On the console and in the saved
-report, managers who took the same fine (same rule, same red-carded player, same penalty) share
-one line led by the fine and naming every one of them, the penalty as configured. Shared lines
-come first, biggest first and then in the order the rules are configured; a fine only one manager
-took follows, reading `Manager: fine. penalty` as before. Two managers sharing a display name keep
-a line each, since one line could not tell them apart. The ledger and `--format json` still hold
-one record per manager per fine.
+[Season Fines](#season-fines) for the table this builds up. On the console, in the saved
+report and in the `--summarise` editorial's prompt, managers who took the same fine (same rule,
+same red-carded player, same penalty) share one line led by the fine and naming every one of
+them, the penalty as configured. Shared lines come first, biggest first and then in the order the
+rules are configured; a fine only one manager took follows, reading `Manager: fine. penalty` as
+before. Two managers sharing a display name keep a line each, since one line could not tell them
+apart. The ledger and `--format json` still hold one record per manager per fine.
 
 **Season fines:** the season-to-date *table* appears on console and in the saved report only
 at the two milestone gameweeks — GW19 (the chip-availability boundary, which is also the

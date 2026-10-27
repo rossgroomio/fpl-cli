@@ -91,7 +91,6 @@ from fpl_cli.services.fixture_predictions import had_fixture
 from fpl_cli.services.league_history_drafts import draft_snapshot_path
 from fpl_cli.services.player_clubs import gameweek_club
 from fpl_cli.services.scoring.constants import VALID_FORMATIONS
-from fpl_cli.utils.text import join_and
 
 logger = logging.getLogger(__name__)
 
@@ -1327,99 +1326,6 @@ def _recap_fine_message(result: FineResult, manager_name: str) -> str:
         return result.message
     trigger, penalty = parts
     return f"{trigger}. {penalty}" if penalty else f"{trigger}."
-
-
-@dataclass(frozen=True)
-class RecapFineLine:
-    """One line of the week's Fines section, as the console and the saved
-    report both print it (issue #504).
-
-    A fine one manager alone took reads as it always has, the manager leading
-    (`grouped` False). Several managers taking the same fine collapse into one
-    line led by the fine itself, every name listed: fines are personal, so
-    nobody is folded into "and 7 others".
-    """
-
-    lead: str
-    detail: str
-    grouped: bool
-
-
-def _fine_group_detail(names: Sequence[str], penalty: str) -> str:
-    """"3 managers: A, B and C. Pint on video" -- the penalty as configured.
-
-    Never suffixed "each": the penalty is free text, and a shared forfeit
-    ("Team buys a round") would read as one per manager. Punctuated like a
-    single fine's message, a full stop only where no penalty follows.
-    """
-    named = f"{len(names)} managers: {join_and(names)}."
-    return f"{named} {penalty}" if penalty else named
-
-
-def _can_share_a_line(members: Sequence[RecapFineResult]) -> bool:
-    """Two or more managers, each told apart from the rest by name.
-
-    The same manager twice (two identically worded rules of one type) or two
-    managers sharing a display name would read "2 managers: Sam and Sam",
-    which says nothing a reader can act on -- so those keep a line each, the
-    way they always printed.
-    """
-    names = [f["manager_name"] for f in members]
-    managers = {f.get("manager_key", f["manager_name"]) for f in members}
-    return len(members) > 1 and len(managers) == len(set(names)) == len(members)
-
-
-def recap_fine_lines(
-    fines: Sequence[RecapFineResult], rule_order: Sequence[str] = (),
-) -> list[RecapFineLine]:
-    """The week's fines grouped by the fine rather than listed per manager.
-
-    Fines group when they share a rule, a trigger (which carries the
-    red-carded player) and a penalty, so a red card for Palmer and one for
-    Rice stay two lines, and so do two rules of one type with different
-    penalties. A ruling with no `trigger` -- a rule the recap does not word
-    itself, or one built by hand -- never groups.
-
-    Every shared line comes before every single one: biggest first, then in
-    config rule order (`rule_order`, the gameweek's `fine_rules_evaluated`),
-    then by first appearance. Single fines follow in the order they were
-    ruled, the order the section always had, so a week where every fine
-    differs reads exactly as before.
-
-    Presentation only: the ruling, the ledger and `--format json` keep one
-    record per manager per fine.
-    """
-    groups: dict[tuple[str, str, str], list[int]] = {}
-    for i, fine in enumerate(fines):
-        trigger = fine.get("trigger")
-        if trigger is not None:
-            groups.setdefault((fine["rule_type"], trigger, fine.get("penalty", "")), []).append(i)
-
-    # First index wins: two rules of one type list it twice.
-    rank: dict[str, int] = {}
-    for i, rule_type in enumerate(rule_order):
-        rank.setdefault(rule_type, i)
-    shared = [
-        (key, members) for key, members in groups.items()
-        if _can_share_a_line([fines[i] for i in members])
-    ]
-    # Stable, so equal groups keep their first-appearance order.
-    shared.sort(key=lambda g: (-len(g[1]), rank.get(g[0][0], len(rank))))
-
-    lines = [
-        RecapFineLine(
-            lead=trigger,
-            detail=_fine_group_detail([fines[i]["manager_name"] for i in members], penalty),
-            grouped=True,
-        )
-        for (_, trigger, penalty), members in shared
-    ]
-    on_shared_line = {i for _, members in shared for i in members}
-    lines.extend(
-        RecapFineLine(lead=fine["manager_name"], detail=fine["message"], grouped=False)
-        for i, fine in enumerate(fines) if i not in on_shared_line
-    )
-    return lines
 
 
 @dataclass(frozen=True)

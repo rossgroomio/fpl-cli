@@ -38,6 +38,7 @@ from fpl_cli.cli._league_recap_types import (
     PriorSeasonsSummary,
     RecapSeasonRecord,
     RecapStandoutPlayers,
+    recap_fine_lines,
     recap_reads_whole_league,
     standout_blanks_heading,
     standout_players_lines,
@@ -1050,8 +1051,6 @@ def _render_console_highlights(
     # manager names, which Rich would otherwise read as markup.
     fines = data.get("fines", [])
     if fines:
-        from fpl_cli.cli._league_recap_data import recap_fine_lines
-
         console.print("\n[bold]Fines:[/bold]")
         for line in recap_fine_lines(fines, data.get("fine_rules_evaluated", [])):
             lead, detail = rich_escape(line.lead), rich_escape(line.detail)

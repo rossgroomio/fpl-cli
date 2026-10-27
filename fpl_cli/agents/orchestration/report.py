@@ -12,11 +12,11 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.cli._helpers import performer_score, rec_in_options, waiver_superseded_reason, your_gw_rank_line
-from fpl_cli.cli._league_recap_data import recap_fine_lines
 from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
     draft_transaction_kind_label,
     gameweek_rank,
+    recap_fine_lines,
     recap_title,
 )
 from fpl_cli.paths import TEMPLATE_DIR

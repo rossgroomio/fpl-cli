@@ -21,6 +21,7 @@ from fpl_cli.cli._league_recap_types import (
     last_place_escape,
     place_label,
     points_label,
+    recap_fine_lines,
     recap_manager_key,
     recap_reads_whole_league,
     recap_title,
@@ -1134,6 +1135,14 @@ def format_recap_fines_context(
     The count of managers fined and the names of those who were not are
     stated the same way (#502), and on a week the rules were ruled on and
     nobody was caught the section is that statement alone.
+
+    The fines themselves are the lines the console and the saved report
+    print (#504): managers who took the same fine share one line led by the
+    fine, so the forfeit is printed once per fine rather than once per fined
+    manager. At GW8 one league's prompt carried the same forfeit eleven times
+    over, in a week readers already found the editorial's forfeit wording
+    wearing thin. The placements stay one per manager, since each is a fact
+    about that manager's season alone.
     """
     fines = data.get("fines", [])
     if not fines:
@@ -1144,7 +1153,10 @@ def format_recap_fines_context(
         return "\n".join(_fines_roll_call(data))
     roll_call = _fines_roll_call(data)
     lines = roll_call[:1]
-    lines.extend(f"- {f['manager_name']}: {f['message']}" for f in fines)
+    lines.extend(
+        f"- {line.lead} - {line.detail}" if line.grouped else f"- {line.lead}: {line.detail}"
+        for line in recap_fine_lines(fines, data.get("fine_rules_evaluated", []))
+    )
     lines.extend(roll_call[1:])
     placements = _season_fine_placements(data, tally)
     if placements:

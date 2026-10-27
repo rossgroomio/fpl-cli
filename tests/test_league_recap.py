@@ -42,7 +42,6 @@ from fpl_cli.cli._league_recap_data import (
     fetch_manager_histories,
     find_standout_players,
     is_league_opening_gameweek,
-    recap_fine_lines,
     recap_fine_player_names,
     restate_recap_fine_players,
     shape_prior_seasons,
@@ -69,6 +68,7 @@ from fpl_cli.cli._league_recap_types import (
     format_move_counts,
     format_prior_seasons_line,
     last_place_escape,
+    recap_fine_lines,
     standout_blanks_heading,
     standout_players_lines,
     summarise_prior_seasons,
@@ -3611,6 +3611,62 @@ class TestFinesReport:
             "Pint on video",
             "- **Manager K:** Finished last in the gameweek. Pint on video",
         ]
+
+
+class TestFinesContextGroupsByFine:
+    """#504: the editorial's Fines section reads the same grouped lines, so the
+    forfeit reaches the model once per fine rather than once per manager."""
+
+    def test_gw8_hands_the_model_two_fine_lines_not_eleven(self):
+        managers = _gw8_week() + [
+            _make_manager(name=name, entry_id=entry_id, gw_points=70)
+            for name, entry_id in (("Manager L", 100), ("Manager M", 101))
+        ]
+        data = _make_recap_data(managers=managers, fines=_ruled(managers))
+        data["fine_rules_evaluated"] = ["red-card", "last-place"]
+
+        text = format_recap_fines_context(data)
+
+        assert text.splitlines() == [
+            "Total managers fined this gameweek: 11 of 13",
+            "- Red card in starting XI (Palmer) - 10 managers: Manager A, Manager B, Manager C, "
+            "Manager D, Manager E, Manager F, Manager G, Manager H, Manager I and Manager J. "
+            "Pint on video",
+            "- Manager K: Finished last in the gameweek. Pint on video",
+            "Not fined this gameweek (2): Manager L, Manager M",
+        ]
+
+    def test_a_week_where_every_fine_differs_reads_exactly_as_before(self):
+        fines = [
+            _fine("Bob", "last-place", _LAST), _fine("Alice", "red-card", _PALMER), _fine("Cam", "red-card", _RICE),
+        ]
+
+        text = format_recap_fines_context(_make_recap_data(fines=fines))
+
+        assert text.splitlines() == [f"- {f['manager_name']}: {f['message']}" for f in fines]
+
+    def test_each_manager_on_a_shared_line_is_still_placed_in_their_own_season(self):
+        fines = [_fine("Ada", "red-card", _PALMER, key=1), _fine("Bob", "red-card", _PALMER, key=2)]
+        tally = SeasonFinesTally(
+            season="2025-26", fpl_format="classic", league_id=1,
+            through_gameweek=10, start_gameweek=1, rule_types=["red-card"],
+            managers=[
+                ManagerFineTally(
+                    manager_key=key, manager_name=name, counts={"red-card": count},
+                    fined_gameweeks=fined, ruled_gameweeks_by_rule={"red-card": _ALL_TEN},
+                )
+                for key, name, count, fined in ((1, "Ada", 1, [10]), (2, "Bob", 2, [3, 10]))
+            ],
+        )
+
+        lines = format_recap_fines_context(_make_recap_data(fines=fines), tally).splitlines()
+
+        assert lines[0] == "- Red card in starting XI (Palmer) - 2 managers: Ada and Bob. Pint on video"
+        assert (
+            "- Ada: this gameweek's red-card fine is Ada's first of the season. "
+            "No earlier gameweek carries a red-card fine against Ada."
+        ) in lines
+        assert "- Bob: this gameweek's red-card fine is Bob's second of the season, this one included." in lines
 
 
 class TestConfiguredFineRuleTypes:
