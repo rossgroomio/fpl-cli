@@ -3579,6 +3579,27 @@ class TestRecapFineLines:
 
         assert (line.lead, line.detail) == ("Red card in starting XI (Gabriel (ARS))", "2 managers: A and B. Pint")
 
+    def test_the_same_red_carded_players_group_whatever_order_each_squad_lists_them(self):
+        """The handler names offenders in squad order, so two managers who
+        started the same pair read them in whichever order each picked them."""
+        def squad(*first: str) -> list[RecapManagerPlayer]:
+            return [_make_squad_player(name=n, red_cards=1) for n in first] + [
+                _make_squad_player(name=f"P{i}") for i in range(9)
+            ]
+
+        fines = _ruled([
+            _make_manager(name="A", entry_id=1, squad=squad("Palmer", "Rice")),
+            _make_manager(name="B", entry_id=2, squad=squad("Rice", "Palmer")),
+            _make_manager(name="C", entry_id=3, squad=squad("Palmer")),
+        ], [{"type": "red-card", "penalty": "Pint"}])
+
+        lines = recap_fine_lines(fines)
+
+        assert [(line.lead, line.detail) for line in lines] == [
+            ("Red card in starting XI (Palmer, Rice)", "2 managers: A and B. Pint"),
+            ("C", "Red card in starting XI (Palmer). Pint"),
+        ]
+
     def test_the_ruling_carries_the_message_it_was_written_from(self):
         fines = _ruled(_gw8_week())
 

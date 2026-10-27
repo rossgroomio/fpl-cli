@@ -819,6 +819,20 @@ def _can_share_a_line(members: Sequence[RecapFineResult]) -> bool:
     return len(members) > 1 and len(managers) == len(set(names)) == len(members)
 
 
+def _trigger_key(fine: RecapFineResult, trigger: str) -> tuple[str, ...]:
+    """What two fines' triggers must share to be the same fine.
+
+    The red-card handler names its offenders in squad order, so two managers
+    who both started Palmer and Rice read "(Palmer, Rice)" and "(Rice,
+    Palmer)" by where each picked them. A trigger naming players is compared
+    on those names, sorted; one naming nobody is compared as written.
+    """
+    players = fine.get("players")
+    if not players:
+        return (trigger,)
+    return tuple(sorted(p["name"] for p in players))
+
+
 def recap_fine_lines(
     fines: Sequence[RecapFineResult], rule_order: Sequence[str] = (),
 ) -> list[RecapFineLine]:
@@ -828,7 +842,9 @@ def recap_fine_lines(
     red-carded player) and a penalty, so a red card for Palmer and one for
     Rice stay two lines, and so do two rules of one type with different
     penalties. A ruling with no `trigger` -- a rule the recap does not word
-    itself, or one built by hand -- never groups.
+    itself, or one built by hand -- never groups. Triggers naming the same
+    players match in any order (`_trigger_key`), and the line leads with the
+    first ruling's own wording.
 
     Every shared line comes before every single one: biggest first, then in
     config rule order (`rule_order`, the gameweek's `fine_rules_evaluated`),
@@ -839,11 +855,14 @@ def recap_fine_lines(
     Presentation only: the ruling, the ledger and `--format json` keep one
     record per manager per fine.
     """
-    groups: dict[tuple[str, str, str], list[int]] = {}
+    groups: dict[tuple[str, tuple[str, ...], str], list[int]] = {}
+    leads: dict[tuple[str, tuple[str, ...], str], str] = {}
     for i, fine in enumerate(fines):
         trigger = fine.get("trigger")
         if trigger is not None:
-            groups.setdefault((fine["rule_type"], trigger, fine.get("penalty", "")), []).append(i)
+            key = (fine["rule_type"], _trigger_key(fine, trigger), fine.get("penalty", ""))
+            groups.setdefault(key, []).append(i)
+            leads.setdefault(key, trigger)
 
     # First index wins: two rules of one type list it twice.
     rank: dict[str, int] = {}
@@ -858,11 +877,11 @@ def recap_fine_lines(
 
     lines = [
         RecapFineLine(
-            lead=trigger,
-            detail=_fine_group_detail([fines[i]["manager_name"] for i in members], penalty),
+            lead=leads[key],
+            detail=_fine_group_detail([fines[i]["manager_name"] for i in members], key[2]),
             grouped=True,
         )
-        for (_, trigger, penalty), members in shared
+        for key, members in shared
     ]
     on_shared_line = {i for _, members in shared for i in members}
     lines.extend(

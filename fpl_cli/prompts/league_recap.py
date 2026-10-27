@@ -1282,7 +1282,8 @@ def _fine_penalty_lines(data: LeagueRecapData) -> list[str]:
     """One line per forfeit this gameweek's fines carry: the words the
     editorial may write out once, and the league's own others (#503).
 
-    The forfeit is printed on every fine above, so by GW8 one league's
+    The forfeit is printed on every line of the Fines list above, which until
+    #504 grouped them was once per fined manager, so by GW8 one league's
     editorials were writing it out two and three times a week as filler. Said
     once here, beside the league's phrasings where it set any, so the model
     varies the wording from a list the league chose rather than one it makes
