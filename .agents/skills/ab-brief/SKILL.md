@@ -3,12 +3,12 @@ name: ab-brief
 description: >
   Write the brief a fresh fpl-workspace (vault) session runs to A/B a
   league-recap prompt or editorial-check change, once its fpl-cli PR has
-  been through code review, and act on the handback comment that session
+  been through code review, and act on the handback review that session
   posts on the PR. Use when the user says "A/B brief", "prompt for a vault
   session", "give me a prompt for a fresh vault session to A/B this", or
   "write the brief for the A/B"; as the step the create-pr skill names
   after review for a PR touching fpl_cli/prompts/ or a data section the
-  model is shown; and when a comment carrying the ab-handback marker lands
+  model is shown; and when a review carrying the ab-handback marker lands
   on the PR.
 model: opus
 compatibility:
@@ -37,8 +37,8 @@ splits across two sessions, and this skill is the seam between them:
   keys, real leagues and the drafts corpus, and it never changes fpl-cli.
 
 The forward leg is copy and paste: this skill prints a brief, the user
-pastes it into a fresh vault session. The return leg is a PR comment: the
-vault session posts one handback comment on the fpl-cli PR, which wakes
+pastes it into a fresh vault session. The return leg is a PR review: the
+vault session posts one comment-only review on the fpl-cli PR, which wakes
 this session because Step 6 subscribed it to the PR first.
 
 **This session never runs the A/B or the replay, not even "just to
@@ -67,7 +67,8 @@ the vault session then spends a round on code nobody will ship.
    `get_review_comments`, or `gh api graphql`). An unresolved thread whose
    last comment is a reply counts as answered. A thread deliberately left
    open as the A/B merge gate is fine: name it, because Step 5 resolves it
-   when the gate clears.
+   when the gate clears. A review carrying the ab-handback marker is an
+   earlier round's result, not a code review, and does not satisfy this.
 3. **The head you will pin includes the review fixes.** Each fix reply
    names a commit; check every one is in the head
    (`git merge-base --is-ancestor <fix sha> <head sha>`). A reply saying
@@ -262,9 +263,14 @@ it.
 
 ## The handback
 
-One comment on the fpl-cli PR, posted once, after the vault PR is open if
-the round has one. Its first line is the marker, an HTML comment GitHub
-does not render:
+One comment-only pull request review on the fpl-cli PR (event `COMMENT`,
+no inline comments, never `APPROVE` or `REQUEST_CHANGES`), posted once,
+after the vault PR is open if the round has one. It is a review rather than
+a plain comment because only the review reaches the fpl-cli session: in
+#507's first round a plain handback comment landed and the subscribed
+session never woke, while in its second the same text posted as a
+comment-only review woke it. Its first line is the marker, an HTML comment
+GitHub does not render:
 
 ```
 <!-- ab-handback pr=<N> head=<40-char sha the round tested> round=<round> -->
@@ -272,8 +278,8 @@ does not render:
 
 Both sessions post as the same GitHub identity, and a session watching a
 PR is told to skip echoes of what it posted itself. The marker is how this
-session tells the handback apart from its own comments: it never writes
-one, so a comment carrying it is an A/B result to act on. It also carries
+session tells the handback apart from its own reviews and comments: it
+never writes one, so a review carrying it is an A/B result to act on. It also carries
 the head the round actually tested, which Step 5 checks.
 
 Then a heading, `## A/B handback for <round>, from the fpl-workspace
@@ -289,39 +295,45 @@ session`, and two blocks:
   the sentence shape in full with managers as Manager A, Manager B; what
   should have happened; and the test shape to add.
 
-The comment lands in a public repo, and GitHub keeps edit history and
+The review lands in a public repo, and GitHub keeps edit history and
 sends notification emails, so a name in it cannot be taken back. The vault
 session writes it to a file under `data/debug/`, runs the vault's
 `.claude/scripts/recap_ab/handback_check.py` over it, and posts that
-exact file only on exit 0. The script reads every manager the vault's
+exact file as the review body only on exit 0 (the GitHub MCP
+`pull_request_review_write`, or `gh pr review <N> --comment --body-file`).
+The script reads every manager the vault's
 ledger has recorded and fails (exit 1) on any spelling of a full name, any
 part of one no other manager shares, an entry ID, manager_key or league
 ID, and on a footballer who shares a manager's name, which has to be
 reworded by club and position; there is no allow-list. Exit 2 means it
 could not check, which is not a pass. If the script is missing or exits 2,
-the vault session does not post; it prints the comment in chat and says
-why, and the user carries it across. It never edits the comment once posted: a
-correction is a second short comment, through the same check.
+the vault session does not post; it prints the handback in chat and says
+why, and the user carries it across. It never edits the review once
+posted: a correction is a second short comment-only review, opening with
+the same marker and a heading that says it corrects the first, through the
+same check.
 
 ## Step 5: Closing the loop
 
-When the handback lands (found by a check-in, a wake, or the user saying
-it has been posted; read it from the PR's comments):
+When the handback lands (a review event wakes this session; otherwise
+the check-in finds it or the user says it has been posted; read it from
+the PR's reviews, and its comments too in case an older brief's session
+posted a plain comment):
 
 1. **Check the marker.** Its `pr` is this PR and its `head` is the head
    the brief pinned, or a later head the brief allowed ("if the PR has
    moved on, use its current head and say so"). For a later head, read
    what changed between the two: if it changes what the model sees or the
    checks, the round tested something other than what was briefed, so say
-   so to the user before acting on the numbers. A comment with no marker
-   is not a handback, whoever wrote it.
+   so to the user before acting on the numbers. A review or comment with
+   no marker is not a handback, whoever wrote it.
 2. **Put Block A into the PR body**, replacing whatever caveat said the
    A/B had not run, keeping the body inside the create-pr style.
 3. **Treat each Block B finding like a review comment.** Fix and push
    (`chore(review): ...` commits, per CLAUDE.md), or say on the PR why
    not, in one comment covering every finding you are not fixing. Never
-   reply to the handback comment itself as if it were a thread: it is not
-   one, and the vault session is not listening.
+   reply to the handback review itself: the vault session is not
+   listening, and a reply there reads as a thread for nobody.
 4. **Re-run Step 2 on the new head.** If the fixes change what the model
    sees, write a fresh-run brief for the new head; if they touch only the
    checks, a replay brief; either way the next round's handback comes back
@@ -347,18 +359,13 @@ the approach is wrong, which is their decision, not a fix to push.
 
 ## Step 6: Deliver
 
-1. **Subscribe this session to the PR's activity, and arm a check-in,
-   before printing.** The subscription catches the reviews and CI on any
-   fixes; it has not been seen to deliver the handback. In the first real
-   round the comment landed and the subscribed session did not wake: both
-   sessions post as one account, and either a comment from that account is
-   filtered out as the session's own, or a plain PR comment is not an event
-   the subscription delivers. One miss cannot tell which, so the skill does
-   not rely on the wake. Arm a `send_later` check-in about an hour after
-   delivery, and on firing read the PR's comments for the marker; if none
-   is there, re-arm two hours out, and stop after four empty check-ins,
-   telling the user once that the next message from them will bring you
-   back. Say both are set. Where either tool is missing (a local session,
+1. **Subscribe this session to the PR's activity before printing**
+   (`subscribe_pr_activity`), so the handback review wakes it, and say so.
+   Subscribing after printing races a fast replay round. The wake has
+   worked once, so also arm one backstop `send_later` check-in about two
+   hours after delivery that reads the PR's reviews for the marker; re-arm
+   it twice at most, then tell the user once that the next message from
+   them will bring you back. Where either tool is missing (a local session,
    another agent), tell the user to come back here and say when the
    handback is posted.
 2. **Print the brief in one fenced block** for copy and paste, with a
@@ -376,10 +383,11 @@ the approach is wrong, which is their decision, not a fix to push.
 - A placeholder or hand-typed SHA, or a short one
 - A sentence shape trimmed to the fragment a test matches
 - "Don't commit anything" in place of the landing rules
-- Printing the brief before subscribing to the PR and arming the check-in
-- Relying on the subscription alone to deliver the handback
+- Printing the brief before subscribing to the PR
+- A brief that asks for the handback as a plain comment, which does not
+  wake the subscribed session
 - An expectation built from a preview, a diffstat or a guess at a count
-- Treating the handback as an echo of this session's own comment, or
+- Treating the handback as an echo of this session's own review, or
   editing the PR body with the vault session's transcript instead of
   Block A
 - A manager name in the skill, the brief, the PR or a commit

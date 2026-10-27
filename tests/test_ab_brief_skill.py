@@ -1,13 +1,13 @@
 """The A/B handback contract between the ab-brief skill and the instructions every session loads.
 
 An A/B of a league-recap prompt runs in a separate fpl-workspace session, which
-posts its results as one comment on the fpl-cli PR. Both sessions post as the
+posts its results as one comment-only review on the fpl-cli PR. Both sessions post as the
 same GitHub identity, and a session watching a PR is told to skip echoes of its
-own comments, so the fpl-cli session recognises the handback by its marker
+own posts, so the fpl-cli session recognises the handback by its marker
 alone. The marker is written in three places: the skill that defines it, the
 brief template that tells the vault session to write it, and CLAUDE.md /
 AGENTS.md, which tell every fpl-cli session (including one whose checkout has
-no copy of the skill yet loaded) that a comment carrying it is a result to act
+no copy of the skill yet loaded) that a review carrying it is a result to act
 on. If they drift apart, the handback lands and nobody acts on it.
 """
 

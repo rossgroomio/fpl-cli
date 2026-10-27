@@ -160,8 +160,8 @@ corpus lives in the vault at `.claude/scripts/recap_ab/corpus/`, each round's dr
 the recap data they were judged against, so a replay needs neither a model call nor the
 FPL API. The A/B always runs in its own fpl-workspace session, never from the fpl-cli
 session that wrote the change: once the PR has been reviewed, the `ab-brief` skill writes
-the brief that session runs, subscribes the fpl-cli session to the PR and arms a check-in for the result. The vault session
-never changes fpl-cli; it posts its results as one comment on the PR, opening with an
+the brief that session runs and subscribes the fpl-cli session to the PR. The vault session
+never changes fpl-cli; it posts its results as one comment-only review on the PR, opening with an
 `<!-- ab-handback ... -->` marker, and the fpl-cli session makes the fixes. The October 2026
 prompt audit and its A/B record live in the private
 `fpl-cli-docs` repo under `docs/audits/`; re-run it at the next change of the default
