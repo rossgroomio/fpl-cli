@@ -1,4 +1,4 @@
-"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486, #488, #501, #503).
+"""Checks the league-recap editorial against the data its prompt carried (#357, #359, #390, #486, #488, #501, #503, #517).
 
 The prompt states every rule these read, and the model has broken each of
 them anyway: a manager named as beaten in a waiver race they won, a
@@ -12,13 +12,14 @@ has already ignored once.
 Each check is narrow by design. It reads only the clauses it can pin down
 and lets everything else pass, so a problem it returns is a sentence the
 data contradicts, never a guess -- a false alarm costs a retry and puts a
-warning above a correct editorial. Two checks break that wording, the roll
-call of beaten managers (#459) and the forfeit written out word for word
-more than once (#503), since each fires on true sentences: their contract
-is the mechanical analogue, a count of known strings and never a judgement
-of tone. Both are registered as a broken brief rather than a contradiction,
-so the retry, stderr and the saved report say the draft broke its brief
-instead of claiming the data contradicts it.
+warning above a correct editorial. Three checks break that wording, the
+roll call of beaten managers (#459), the forfeit written out word for word
+more than once (#503) and the brief's own wording read out to the league
+(#517), since each fires on true sentences: their contract is the
+mechanical analogue, a count of known strings and never a judgement of
+tone. All three are registered as a broken brief rather than a
+contradiction, so the retry, stderr and the saved report say the draft
+broke its brief instead of claiming the data contradicts it.
 `EDITORIAL_CHECKS` is the one registry: each check's warning code, the prose
 its JSON warning opens with, what the retry is told, and the checker itself.
 """
@@ -60,6 +61,7 @@ RECAP_WARNING_WRONG_PLACING = "synthesis_wrong_gameweek_placing"
 RECAP_WARNING_ESCAPE_MISATTRIBUTION = "synthesis_escape_misattribution"
 RECAP_WARNING_CONTESTED_ROLL_CALL = "synthesis_contested_roll_call"
 RECAP_WARNING_PENALTY_REPEATED = "synthesis_penalty_repeated"
+RECAP_WARNING_BRIEF_ECHOED = "synthesis_brief_echoed"
 
 
 # =============================================================================
@@ -2380,6 +2382,107 @@ def check_penalty_repetitions(summary: str, penalties: Sequence[RecapFinePenalty
 
 
 # =============================================================================
+# The brief's own wording read out to the league (#517)
+# =============================================================================
+
+# The sections the user prompt hands the editorial, as its "## " headings name
+# them. The editorial has no sections of its own, so one of these called a
+# section is the brief talking: "the Fines section" is never the league's
+# English. A heading's parenthetical ("GW Context (from research)") is left
+# off, since a draft naming the section would leave it off too.
+_BRIEF_SECTIONS = (
+    "Awards", "GW Standings", "Standout Players", "Captains", "Chips Played", "Transfers",
+    "Waivers and Free Agents", "Player Clubs", "Fines", "Season Fines", "League History",
+    "Prior Seasons", "GW Context",
+)
+# Quote marks and emphasis a section's name may be wrapped in, as the brief
+# quotes it ('the "## Fines" section') or a draft bolds it.
+_BRIEF_QUOTE_MARKS = "\"“”'‘’"
+_BRIEF_NAME_WRAP = rf"[{_BRIEF_QUOTE_MARKS}*_]*"
+_BRIEF_UNQUOTE = str.maketrans("", "", _BRIEF_QUOTE_MARKS)
+# Longest first, so "Season Fines section" is one echo and not "Fines section"
+# inside it.
+_BRIEF_SECTION_NAMES = "|".join(
+    r"\s+".join(map(re.escape, name.split())) for name in sorted(_BRIEF_SECTIONS, key=len, reverse=True)
+)
+_BRIEF_SECTION_RE = re.compile(
+    rf"(?<!\w){_BRIEF_NAME_WRAP}(?:##\s*)?(?:{_BRIEF_SECTION_NAMES}){_BRIEF_NAME_WRAP}\s+sections?(?!\w)",
+    re.IGNORECASE,
+)
+# The rules' own words for counting what the editorial may say. Each has no
+# meaning in football, which is the whole test for a place on this list:
+# "word for word" ("copied his rival's XI word for word") and a bare "once"
+# ("once again bottom") are the league's English as much as the brief's.
+_BRIEF_PHRASE_RE = re.compile(r"(?<!\w)(?:exact\s+phrases?|at\s+most\s+once)(?!\w)", re.IGNORECASE)
+# The label the Fines section lists each forfeit under. Only as the brief
+# writes it, capital and all, and never opening a sentence: "naming the
+# forfeit" is ordinary English about a fine, and "Naming the forfeit is half
+# the fun" is that sentence's first word capitalised. Quoted, or capitalised
+# mid-sentence ("its Naming the forfeit line"), it is the label.
+_FORFEIT_LABEL_RE = re.compile(r"(?<!\w)Naming\s+the\s+forfeit(?!\w)")
+_SENTENCE_OPENERS = ".!?:(#\n"
+# How many words either side of an echo its quote carries, inside its sentence.
+_BRIEF_QUOTE_WORDS = 6
+
+
+def _opens_sentence(text: str, start: int) -> bool:
+    """Whether `text[start:]` opens a sentence, emphasis and a heading's
+    marks aside."""
+    before = text[:start].rstrip(" \t*_")
+    return not before or before[-1] in _SENTENCE_OPENERS
+
+
+def _sentence_quote(text: str, start: int, end: int) -> str:
+    """`text[start:end]` with up to `_BRIEF_QUOTE_WORDS` words either side,
+    never past the sentence it sits in."""
+    sentence_start = max(text.rfind(mark, 0, start) for mark in ".!?\n") + 1
+    ends = [found for mark in ".!?\n" if (found := text.find(mark, end)) != -1]
+    sentence = text[sentence_start:min(ends, default=len(text))]
+    start -= sentence_start
+    end -= sentence_start
+    window = sentence[_window_start(sentence, start, _BRIEF_QUOTE_WORDS):_window_end(sentence, end, _BRIEF_QUOTE_WORDS)]
+    return " ".join(_plain(window).split()).rstrip(",;")
+
+
+def check_brief_echoes(summary: str) -> list[str]:
+    """Every place the editorial reads its brief's own wording out to the
+    league (#517).
+
+    A shipped draft wrote "The pint-on-video fine (that's the exact phrase,
+    once) landed on ...": the forfeit rule's instruction, said to the group
+    chat. Like the roll call and the forfeit count this fires on a sentence
+    that may be true, so it holds itself to known strings: a section of the
+    prompt named as a section, the rules' phrases for counting ("exact
+    phrase", "at most once") and the Fines section's "Naming the forfeit"
+    label. It never judges whether a sentence is about the instructions, so
+    "write for the league" in other words passes; a phrase the league could
+    use of its own week stays off the list, since a false alarm here costs a
+    retry and a warning above a draft that broke nothing.
+
+    Returns one line per echo, in the order the editorial reaches them, each
+    quoting the words around it.
+    """
+    found = sorted(
+        (match.start(), match.end())
+        for match in (
+            *_BRIEF_SECTION_RE.finditer(summary),
+            *_BRIEF_PHRASE_RE.finditer(summary),
+            *(m for m in _FORFEIT_LABEL_RE.finditer(summary) if not _opens_sentence(summary, m.start())),
+        )
+    )
+    problems: list[str] = []
+    for start, end in found:
+        echo = " ".join(_plain(summary[start:end]).translate(_BRIEF_UNQUOTE).split())
+        problem = (
+            f'the editorial reads its brief\'s own wording, "{echo}", out to the league '
+            f'("{_sentence_quote(summary, start, end)}")'
+        )
+        if problem not in problems:
+            problems.append(problem)
+    return problems
+
+
+# =============================================================================
 # The registry, the retry and the warning
 # =============================================================================
 
@@ -2395,11 +2498,11 @@ class EditorialCheck:
     # What the retry is told to do about it.
     retry_instruction: str
     run: Callable[[str, LeagueRecapData, RecapNames], list[str]]
-    # False for a claim the data contradicts, which every check but one
-    # reads. True for a draft that said nothing false and still broke the
-    # brief (#459): the words that name it to the retry, to the reader on
-    # stderr and in the saved report change with it, because "contradicted
-    # the data" would not be true of it.
+    # False for a claim the data contradicts, which most checks read. True
+    # for a draft that said nothing false and still broke the brief (#459):
+    # the words that name it to the retry, to the reader on stderr and in the
+    # saved report change with it, because "contradicted the data" would not
+    # be true of it.
     broken_brief: bool = False
 
 
@@ -2503,6 +2606,17 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
             "own phrasings where that line gives them, without changing what the forfeit is."
         ),
         run=lambda summary, data, names: check_penalty_repetitions(summary, data.get("fine_penalties", [])),
+        broken_brief=True,
+    ),
+    EditorialCheck(
+        code=RECAP_WARNING_BRIEF_ECHOED,
+        lead="The editorial reads its own instructions out to the league",
+        retry_instruction=(
+            "Write every sentence for the league, never about your instructions: the reader never sees "
+            "the sections, labels or rules you were given, so never name one, quote its wording or say "
+            "how many times a rule lets you write something; just write it."
+        ),
+        run=lambda summary, data, names: check_brief_echoes(summary),
         broken_brief=True,
     ),
 )
