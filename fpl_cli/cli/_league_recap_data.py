@@ -84,6 +84,7 @@ from fpl_cli.cli._league_recap_types import (
     format_contested_claim,
     format_move_counts,
     format_standout_player,
+    recap_manager_key,
 )
 from fpl_cli.models.player import usable_code
 from fpl_cli.services.fixture_predictions import had_fixture
@@ -93,17 +94,6 @@ from fpl_cli.services.scoring.constants import VALID_FORMATIONS
 from fpl_cli.utils.text import join_and
 
 logger = logging.getLogger(__name__)
-
-
-def recap_manager_key(m: RecapManagerEntry) -> int:
-    """The ledger key for a collected manager.
-
-    Draft keys on the league-local `league_entry` id, which is always present;
-    the site-wide `entry_id` is null for an unclaimed team and two of them
-    would collide on 0 (KTD11). Classic has no league-local id and keys on
-    `entry_id`, which the collector always populates.
-    """
-    return m.get("league_entry_id", m["entry_id"])
 
 
 class RecapReconciliationError(RuntimeError):

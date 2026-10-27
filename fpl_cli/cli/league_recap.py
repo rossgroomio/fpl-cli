@@ -38,6 +38,7 @@ from fpl_cli.cli._league_recap_types import (
     PriorSeasonsSummary,
     RecapSeasonRecord,
     RecapStandoutPlayers,
+    recap_reads_whole_league,
     standout_blanks_heading,
     standout_players_lines,
     summarise_prior_seasons,
@@ -833,9 +834,7 @@ def _standout_players_or_none(
 
     managers = data["managers"]
     cohort = data.get("standings_cohort")
-    whole_league = not data.get("standings_truncated", False) and (
-        cohort is None or len(managers) >= len(cohort)
-    )
+    whole_league = recap_reads_whole_league(data)
     try:
         return find_standout_players(
             managers, fpl_format=data["fpl_format"], gameweek=gw,
