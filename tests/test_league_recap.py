@@ -8169,6 +8169,17 @@ class TestNetAttributionCheck:
         assert len(problems) == 1
         assert "-9 is the effective swing of Alice Lowe's chain Kinsky out -> Henderson -> Penders in" in problems[0]
 
+    def test_a_chain_s_swing_given_to_a_move_outside_it_names_the_chain_when_its_first_move_shares_it(self):
+        """PR #522 A/B: on GW8 the first move's own swing is the chain's -9, and
+        the problem line named that move, handing the retry the framing the
+        rule forbids."""
+        managers = self._gw8_chain(0)
+        managers[0]["transactions"].append(_txn("Mbeumo", 5, "Raya", 3))
+        problems = self._check("Alice Lowe's Mbeumo in for Raya was a -9 swing.", managers)
+        assert len(problems) == 1
+        assert "-9 is the effective swing of Alice Lowe's chain Kinsky out -> Henderson -> Penders in" in problems[0]
+        assert "swing on Henderson in for Kinsky" not in problems[0]
+
     def test_another_move_s_swing_is_caught_and_named(self):
         problems = self._check("Gibbs-White in for Wirtz, +2 net, was a disaster.")
         # "+2" is read as the move that went +2, not the -2 the two came to.

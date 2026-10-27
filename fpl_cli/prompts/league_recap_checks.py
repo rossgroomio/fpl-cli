@@ -861,8 +861,9 @@ class _MoverLine:
         swing -- or None when it is none of them and so came from somewhere
         else. A `signed` value is matched with its sign first. A move inside
         a chain is read against the chain's effective swing first, since that
-        is the figure the roster gives for it, and any other chain's after
-        the moves' swings (#501)."""
+        is the figure the roster gives for it, and any other chain's ahead of
+        the moves' swings, so a chain whose first move shares its swing is
+        named as the chain, never as that move (#501)."""
         own_chain, other_chains = self._chain_facts(move)
         figures: list[tuple[int, str]] = list(own_chain)
         if self.complete:
@@ -874,10 +875,10 @@ class _MoverLine:
                 f"{self.moves_text(len(self.moves))} before the hit"
             )))
         figures.extend(self._kind_nets())
+        figures.extend(other_chains)
         figures.extend(
             (other.net, f"{other.net:+d} is the swing on {other.label}") for other in self.moves if other != move
         )
-        figures.extend(other_chains)
         return _pick(figures, value, signed=signed)
 
     def misplaced_kind(self, value: int, kind: str, *, signed: bool) -> str | None:
