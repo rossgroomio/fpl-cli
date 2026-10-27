@@ -256,11 +256,15 @@ session`, and two blocks:
 The comment lands in a public repo, and GitHub keeps edit history and
 sends notification emails, so a name in it cannot be taken back. The vault
 session writes it to a file under `data/debug/`, runs the vault's
-`.claude/scripts/recap_ab/handback_check.py` over it (it fails on any
-manager's full name, unique surname or unique first name, entry ID or
-league ID), and posts only on exit 0. If the script is missing it does not
-post; it prints the comment in chat and says the check is missing, and the
-user carries it across. It never edits the comment once posted: a
+`.claude/scripts/recap_ab/handback_check.py` over it, and posts that
+exact file only on exit 0. The script reads every manager the vault's
+ledger has recorded and fails (exit 1) on any spelling of a full name, any
+part of one no other manager shares, an entry ID, manager_key or league
+ID, and on a footballer who shares a manager's name, which has to be
+reworded by club and position; there is no allow-list. Exit 2 means it
+could not check, which is not a pass. If the script is missing or exits 2,
+the vault session does not post; it prints the comment in chat and says
+why, and the user carries it across. It never edits the comment once posted: a
 correction is a second short comment, through the same check.
 
 ## Step 5: Closing the loop
