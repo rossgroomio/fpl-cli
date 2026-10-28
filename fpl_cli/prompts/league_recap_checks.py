@@ -1131,9 +1131,9 @@ _SCOPE_NOUNS = (
 # "her waivers", "the free-agent pickups", "his free agency". Only the kind
 # word scopes the figure, and "the waiver wire" is the pool of unowned
 # players, free agents included. The league's Waiver Genius and Waiver
-# Disaster are awards, not a kind of move (#543).
+# Disaster are awards, not a kind of move, however they are cased (#543).
 _KIND_SCOPE_RE = re.compile(
-    r"(?<!\w)(?:(?P<waiver>waivers?(?![-\s]+wire)(?![-\s]+(?-i:Genius|Disaster)(?!\w)))"
+    r"(?<!\w)(?:(?P<waiver>waivers?(?![-\s]+wire)(?![-\s]+(?:genius(?:es)?|disasters?)(?!\w)))"
     r"|(?P<free_agent>free[-\s]+agen(?:ts?|cy)))"
     rf"(?:[-\s]+{_SCOPE_NOUNS}|[-\s]+market)?(?!\w)",
     re.IGNORECASE,
@@ -1157,9 +1157,11 @@ _WAIVER_CLAIMS_RE = re.compile(r"claims?$", re.IGNORECASE)
 _WAIVER_ONE_RE = re.compile(r"waiver", re.IGNORECASE)
 _NEXT_WORD_RE = re.compile(r"[-\s]+([a-z]+)", re.IGNORECASE)
 _WAIVER_NOUN_FOLLOWERS = frozenset({"and", "or", "but", "which", "that", "who"})
+# The number words a count of moves may use, each regex adding its own extras.
+_COUNT_WORDS = r"one|two|three|four|five|six|seven|eight|nine|ten"
 # A number is a count only unsigned: "-9 waiver ledger" is a figure.
 _WAIVER_COUNT_BEFORE_RE = re.compile(
-    r"(?<!\w)(?:(?<![+\-−–])\d+|one|two|three|four|five|six|seven|eight|nine|ten|both|each|either|several|few"
+    rf"(?<!\w)(?:(?<![+\-−–])\d+|{_COUNT_WORDS}|both|each|either|several|few"
     r"|(?:couple|pair|handful)\s+of)\s+$",
     re.IGNORECASE,
 )
@@ -1168,7 +1170,7 @@ _WAIVER_COUNT_BEFORE_RE = re.compile(
 # "both free agents". "Manzambi arrived as a free agent" and "with a free
 # agent doing the heavy lifting" name a player's status, not a contrast.
 _FREE_AGENTS_OWNED_BEFORE_RE = re.compile(
-    r"(?:(?<!\w)(?:his|her|their|its|the|(?<![+\-−–])\d+|one|two|three|four|five|six|seven|eight|nine|ten|both|each"
+    rf"(?:(?<!\w)(?:his|her|their|its|the|(?<![+\-−–])\d+|{_COUNT_WORDS}|both|each"
     r"|either)|['’]s)\s+$",
     re.IGNORECASE,
 )
@@ -1195,7 +1197,7 @@ _KIND_JOIN_RE = re.compile(
 # kinds join, and how it closes, an appositive on its comma ("one a free
 # agent netting -7" says it of the free agent); it must name more than one
 # kind.
-_BREAKDOWN_COUNT = r"(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+|both|all)"
+_BREAKDOWN_COUNT = rf"(?:a|an|{_COUNT_WORDS}|\d+|both|all)"
 _BREAKDOWN_SHAPES = (
     (
         re.compile(rf"^\s*\(\s*(?:{_BREAKDOWN_COUNT}\s+)?$", re.IGNORECASE),
@@ -1448,22 +1450,26 @@ def check_kind_net_scopes(summary: str, managers: Sequence[RecapManagerEntry], n
     few words of verb ("netted", "came to", "left him", ", which netted")
     with nothing between them that names or counts anything else -- and the
     scope names one kind. Kind-neutral scopes ("moves", "claims", "pickups",
-    "the waiver wire", "one waiver and one free agent") pass, and so does a figure whose own subject is one of them, whatever
-    kind trails after it. A breakdown of a neutral noun into kinds, in
-    brackets ("four moves (three waivers, one free agent) netted -7") or
-    as an appositive ("four moves, three of them waivers and one a free
-    agent, netting -7"), is that noun: the figure stays the moves', and the
-    free agents it names set nothing apart from the waivers (#543). The
-    league's Waiver Genius and Waiver Disaster are awards, never a kind.
-    A figure after a kind that is only an aside passes too: one that
-    already has its own figure, with a new subject opening the gap to the
-    next ("with Dunk's +1 on waiver claims he finished +7", #465). Whose moves they are is the one manager the clause names, or, in
-    a clause that names none ("his waiver claims"), the one manager the
-    nearest earlier clause of the paragraph named; a clause naming two
-    managers, or following one that did, is left alone. A manager a clause
-    only measures someone against ("a point clear of Bob") does not count
-    as named (#524), nor does one named only as the owner of a player's
-    squad ("on Bob's bench", #537).
+    "the waiver wire", "one waiver and one free agent") pass, and so does a
+    figure whose own subject is one of them, whatever kind trails after it.
+    So does a figure after a kind that is only an aside: one that already
+    has its own figure, with a new subject opening the gap to the next
+    ("with Dunk's +1 on waiver claims he finished +7", #465). Whose moves
+    they are is the one manager the clause names, or, in a clause that
+    names none ("his waiver claims"), the one manager the nearest earlier
+    clause of the paragraph named; a clause naming two managers, or
+    following one that did, is left alone. A manager a clause only measures
+    someone against ("a point clear of Bob") does not count as named (#524),
+    nor does one named only as the owner of a player's squad ("on Bob's
+    bench", #537).
+
+    A breakdown of a neutral noun into kinds, in brackets ("four moves
+    (three waivers, one free agent) netted -7") or as an appositive closed
+    by its comma ("four moves, three of them waivers and one a free agent,
+    netting -7"), is that noun: the figure stays the moves', and the free
+    agents it names set nothing apart from the waivers (#543). The league's
+    Waiver Genius and Waiver Disaster are awards, never a kind.
+
     The figure is then a problem only when it is not that kind's net nor the
     swing of a move of that kind, and is another figure on the manager's
     line: the net overall, another kind's net, or another kind's move's

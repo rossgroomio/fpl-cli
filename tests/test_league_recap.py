@@ -8750,7 +8750,6 @@ class TestGenericWaiverWordIsEveryMove:
         assert "+0 is the net across Manager D's 2 waivers, not the free agents' own net of -9" in problems[0]
 
 
-
 def _breakdown_mover() -> list[RecapManagerEntry]:
     """Issue #543's shape: Manager A's three waivers Gordon for Barnes (-2),
     Elanga for Isak (-3) and Wood for Watkins (-2) net -7, and free agent
@@ -8823,14 +8822,31 @@ class TestKindBreakdownOfANeutralNoun:
         summary = "Manager D had a week to forget. " + sentence
         assert check_kind_net_scopes(summary, managers, RecapNames.of(managers)) == []
 
+    def test_a_figure_after_the_appositive_s_comma_is_the_moves(self):
+        """PR #544 review: past its closing comma the participle is the
+        moves', as it is after a bracketed breakdown, so a waiver's -2 said
+        there is never the free agent's."""
+        for sentence in (
+            "He made four moves, three of them waivers and one a free agent, netting -2.",
+            "He made four moves (three waivers, one free agent), netting -2.",
+        ):
+            assert self._kind(self._LEAD + sentence) == []
+
     def test_the_waiver_disaster_is_no_kind(self):
         assert self._kind("Manager A won the week's Waiver Disaster at -7 net overall.") == []
-        # In a sentence whose waivers are set against the free agents, an
-        # award read as a waiver word would be given the overall -9.
+
+    @pytest.mark.parametrize("award", [
+        "Waiver Disaster", "Waiver Genius",
+        # PR #544 review: however it is cased, and in the plural.
+        "waiver disaster", "WAIVER GENIUS", "Waiver Disasters", "waiver geniuses",
+    ])
+    def test_an_award_is_never_a_waiver_word(self, award):
+        """In a sentence whose waivers are set against the free agents, an
+        award read as a waiver word would be given the overall -9."""
         managers = _lost_net_mover()
-        for award in ("Waiver Disaster", "Waiver Genius"):
-            summary = f"Manager D took -9 net in the {award}, his free agents doing the damage."
-            assert check_kind_net_scopes(summary, managers, RecapNames.of(managers)) == []
+        summary = f"Manager D took -9 net in the {award}, his free agents doing the damage."
+        assert check_kind_net_scopes(summary, managers, RecapNames.of(managers)) == []
+
 
 def _reported_table() -> list[RecapManagerEntry]:
     """The reported gameweek's shape: the outright lowest score (29) belongs
