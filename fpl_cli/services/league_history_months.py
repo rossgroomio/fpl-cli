@@ -209,6 +209,16 @@ def _store_gap_reason(uncaptured: list[int], unreadable: list[int]) -> str:
     return join_and(parts)
 
 
+def capped_managers(named: Sequence[str]) -> str:
+    """Managers as a reason clause lists them: the first `DETAIL_CAP` of
+    `named`, one entry each, and the rest counted ("Alice in GW4, Bob in GW3,
+    Cy in GW5 and 2 other managers")."""
+    shown = list(named[:DETAIL_CAP])
+    if omitted := len(named) - len(shown):
+        shown.append(f"{omitted} other manager{'s' if omitted != 1 else ''}")
+    return join_and(shown)
+
+
 def _score_gap_reason(missing: Mapping[str, Mapping[int, list[int]]], names: Mapping[int, str]) -> str:
     """"no score is recorded for Alice in GW4 and Bob in GW3-4", with "no
     transfer cost is recorded for ..." beside it when a classic hit is what
@@ -217,11 +227,8 @@ def _score_gap_reason(missing: Mapping[str, Mapping[int, list[int]]], names: Map
     clauses: list[str] = []
     for lacking, gaps in sorted(missing.items()):
         ordered = sorted(gaps.items(), key=lambda item: (names[item[0]], item[0]))
-        named = [f"{names[key]} in {format_gameweek_list(gameweeks)}" for key, gameweeks in ordered[:DETAIL_CAP]]
-        omitted = len(ordered) - len(named)
-        if omitted:
-            named.append(f"{omitted} other manager{'s' if omitted != 1 else ''}")
-        clauses.append(f"no {lacking} is recorded for {join_and(named)}")
+        named = [f"{names[key]} in {format_gameweek_list(gameweeks)}" for key, gameweeks in ordered]
+        clauses.append(f"no {lacking} is recorded for {capped_managers(named)}")
     return join_and(clauses)
 
 
@@ -244,10 +251,11 @@ def _ranked(totals: Mapping[int, int], names: Mapping[int, str]) -> list[MonthTo
     ]
 
 
-def _played_by_league(month: SeasonMonth, league_start_gameweek: int) -> SeasonMonth:
+def month_played_by_league(month: SeasonMonth, league_start_gameweek: int) -> SeasonMonth:
     """The part of the month the league played: all of it, or from its first
     gameweek when it began partway through, as FPL's own table for the league
-    counts it (a league begun at GW2 has an August of GW2 alone)."""
+    counts it (a league begun at GW2 has an August of GW2 alone). The Player
+    of the Month voucher reads the month the same way (#492)."""
     if month.first_gameweek >= league_start_gameweek:
         return month
     return month.model_copy(update={"first_gameweek": league_start_gameweek})
@@ -328,7 +336,7 @@ def build_monthly_honours(
     """
     completed = sorted(
         (
-            _played_by_league(month, league_start_gameweek) for month in months
+            month_played_by_league(month, league_start_gameweek) for month in months
             if league_start_gameweek <= month.last_gameweek <= through_gameweek
         ),
         key=lambda month: month.first_gameweek,

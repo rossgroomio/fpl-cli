@@ -71,7 +71,7 @@ Format shapes the help listing rather than availability: a draft-only setup drop
 - `fpl fixtures -g <gw>` - who plays who, difficulty. The gameweek is a flag, not a positional argument (`fpl fixtures 5` is an error); `-m opponent` rates the opponent alone
 - `fpl history` - career arc for every current player in one pass: per-season pts/90 and xGI/90 plus points, xGI and cost trends. No filters and no flags beyond `--format`, so it's the bulk read - `fpl player -H` is the single-player one
 - `fpl league` - standings context for risk calibration
-- `fpl doctor` - setup health check: dead IDs, stale per-team data, which config/data dirs are live. Reach for it when the numbers look wrong rather than assuming the analysis is. `--providers` probes the upstream sources instead (FPL/Draft APIs, vaastav, Core-Insights, Understat, football-data.org) - that's the check for plausible-but-wrong output caused by a renamed field upstream. Exits non-zero only when something is genuinely broken
+- `fpl doctor` - setup health check: dead IDs, stale per-team data, which config/data dirs are live. Reach for it when the numbers look wrong rather than assuming the analysis is. `--providers` probes the upstream sources instead (FPL/Draft APIs, vaastav, Core-Insights, Understat, football-data.org, the Premier League awards feed) - that's the check for plausible-but-wrong output caused by a renamed field upstream. Exits non-zero only when something is genuinely broken
 - `fpl init` - the setup walkthrough (entry and league IDs, format, custom analysis). Where to send the user when `doctor` reports nothing configured, or when a command they want is switched off - never guess IDs on their behalf
 
 **Analysis agents (run when the question needs deeper data):**

@@ -2226,7 +2226,7 @@ class TestKindScopedNets:
         assert "(2 moves: 1 waiver, 1 free agent; waivers -1, free agents +4, net +3 overall)" in first
         corrections = retry[len(first):]
         assert '"waiver claims netted +3" of Alice' in corrections
-        assert "never their waivers' or their free agents'" in corrections
+        assert 'or a generic waiver word ("his waiver work"), never a free-agent word' in corrections
         envelope = json.loads(result.stdout)
         assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
         assert not [w for w in envelope["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
@@ -8771,3 +8771,329 @@ class TestManagerAndDudOfTheMonth:
 
         assert result.exit_code == 0, result.output
         assert "Dud of the Month: [b]B[/b] with 110 pts" in result.output.replace("\n", "")
+
+
+# ---------------------------------------------------------------------------
+# The Player of the Month voucher (issue #492)
+# ---------------------------------------------------------------------------
+
+
+class TestPlayerOfTheMonthVoucher:
+    """Through the full command: a draft league that opts in gets September's
+    Player of the Month, who held him and the voucher he gives on the first
+    recap of the latest gameweek after the award is out, on every surface,
+    once. GW6 is the first recap after September (GW3-5)."""
+
+    GROSS = 60_307
+    SETTINGS: dict[str, Any] = {
+        "fpl": {"draft_league_id": 42},
+        "fines": {"draft_vouchers": [{"type": "player-of-the-month", "penalty": "Pint on video"}]},
+    }
+
+    @classmethod
+    def _seed(cls, holders: dict[int, str]) -> None:
+        """September's draft rows: each gameweek's holder of Groß, on the
+        bench, by the manager's name; Alice is key 10 and Bob key 11."""
+        store = _store("draft")
+        for gameweek, holder in holders.items():
+            store.append_rows(gameweek, [
+                make_history_row(
+                    season=SEASON, fpl_format="draft", league_id=42, gameweek=gameweek,
+                    manager_key=key, manager_name=name, gross_points=50,
+                    squad=[
+                        LedgerPlayer(name="Salah", team="LIV", position="MID", code=118_748 + key),
+                        LedgerPlayer(
+                            name="Groß" if holder == name else "Filler", team="BHA", position="MID",
+                            code=cls.GROSS if holder == name else 900 + key, contributed=False,
+                        ),
+                    ],
+                )
+                for key, name in ((10, "Alice"), (11, "Bob"))
+            ])
+
+    @staticmethod
+    def _week(gameweek: int = 6, fpl_format: str = "draft", **data: Any) -> LeagueRecapData:
+        draft = fpl_format == "draft"
+        return _recap_data(
+            gameweek=gameweek, fpl_format=fpl_format, **data,
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=60, **({"league_entry_id": 10} if draft else {})),
+                _manager(
+                    name="Bob", entry_id=2, gross_points=40, gw_rank=2, overall_rank=2,
+                    **({"league_entry_id": 11} if draft else {}),
+                ),
+            ],
+            cohort=_cohort(
+                (10 if draft else 1, "Alice", 1, 60, 300), (11 if draft else 2, "Bob", 2, 40, 200),
+            ),
+        )
+
+    @staticmethod
+    def _feed(*codes_by_month: tuple[str, int], error: Exception | None = None) -> MagicMock:
+        """The Premier League's client, serving one Player of the Month per month."""
+        from fpl_cli.api.premier_league import parse_monthly_awards
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        if error is not None:
+            client.get_monthly_awards = AsyncMock(side_effect=error)
+        else:
+            client.get_monthly_awards = AsyncMock(return_value=parse_monthly_awards({"player_awards": [
+                {"type": "POTM", "date": month, "id": str(code), "name": {"display": "Pascal Groß"}}
+                for month, code in codes_by_month
+            ]}))
+        return client
+
+    def _run(
+        self, args: list[str], *, gameweek: int = 6, feed: MagicMock | None = None,
+        settings: dict[str, Any] | None = None, fpl_format: str = "draft", client: MagicMock | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> Any:
+        feed = feed if feed is not None else self._feed(("2026-9", self.GROSS))
+        with patch("fpl_cli.api.premier_league.PremierLeagueClient", return_value=feed):
+            return _invoke_recap(
+                self._week(gameweek, fpl_format, **(data or {})),
+                (["--draft"] if fpl_format == "draft" else []) + args,
+                client=client or _fpl_client(gameweek), gw=gameweek,
+                settings=settings or self.SETTINGS,
+            )
+
+    def test_the_first_recap_after_the_award_announces_it_on_the_console_and_in_the_report(self, tmp_path: Path):
+        self._seed({3: "Bob", 4: "Bob", 5: "Alice"})
+
+        result = self._run(["--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        console = " ".join(result.output.split())
+        line = (
+            "Groß for September (GW3-5), owned by Alice at the month's end. "
+            "Held by Bob in GW3-4 and Alice in GW5, so the voucher goes to Alice"
+        )
+        assert f"Player of the Month: {line}" in console
+        assert (
+            "Player of the Month voucher (September): Alice may hand out one fine to anyone they choose"
+            " (Pint on video)" in console
+        )
+        report = (tmp_path / season_label() / "gw6-league-recap-draft.md").read_text(encoding="utf-8")
+        assert f"**Player of the Month:** {line}" in report
+        assert "# Fines" in report
+        assert (
+            "- **Player of the Month voucher (September):** Alice may hand out one fine to anyone they"
+            " choose (Pint on video)" in report
+        )
+
+    def test_the_json_carries_the_month_with_the_winners_code(self):
+        self._seed({3: "Alice", 4: "Alice", 5: "Alice"})
+
+        result = self._run(["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        potm = payload["metadata"]["player_of_the_month"]
+        (september,) = potm["months"]
+        assert september["player"] == {"code": self.GROSS, "name": "Groß"}
+        assert september["owner"] == {"manager_key": 10, "manager_name": "Alice"}
+        assert (september["voucher"], september["announced"], september["announced_gameweek"]) == (True, True, 6)
+        assert potm["unchecked"] == []
+        assert payload["metadata"]["warnings"] == []
+        # Recorded in the ledger's partition, and said so where stderr is not read.
+        assert potm["records_saved"] == [
+            str(_store("draft").partition_dir() / "awards" / "player-of-the-month-2026-09.json"),
+        ]
+
+    def test_a_later_recap_does_not_announce_it_again_but_a_rerun_of_the_same_gameweek_does(self, tmp_path: Path):
+        self._seed({3: "Alice", 4: "Alice", 5: "Alice"})
+        assert self._run(["--format", "json"]).exit_code == 0
+
+        rerun = self._run(["--save", "--output", str(tmp_path)])
+        later = self._run(["--save", "--output", str(tmp_path)], gameweek=7)
+
+        assert rerun.exit_code == 0 and later.exit_code == 0, (rerun.output, later.output)
+        assert "Player of the Month voucher (September)" in " ".join(rerun.output.split())
+        assert "Player of the Month" not in later.output
+        report = (tmp_path / season_label() / "gw7-league-recap-draft.md").read_text(encoding="utf-8")
+        assert "Player of the Month" not in report
+
+    def test_a_recap_skipped_while_the_award_came_out_still_gets_it_next_time(self):
+        """No award at GW6's recap, GW7 never recapped, GW8's announces it."""
+        self._seed({3: "Alice", 4: "Alice", 5: "Alice"})
+        first = self._run(["--format", "json"], feed=self._feed())
+        assert json.loads(first.stdout)["metadata"]["player_of_the_month"]["months"] == []
+
+        result = self._run(["--format", "json"], gameweek=8)
+
+        (september,) = json.loads(result.stdout)["metadata"]["player_of_the_month"]["months"]
+        assert (september["announced"], september["announced_gameweek"]) == (True, 8)
+
+    def test_a_replay_of_an_older_gameweek_announces_nothing_and_never_asks_the_feed(self):
+        self._seed({3: "Alice", 4: "Alice", 5: "Alice"})
+        client = _fpl_client(6)
+        # GW7 has finished since, so a GW6 recap is a replay.
+        client.get_gameweeks = AsyncMock(return_value=[
+            {"id": 6, "finished": True}, {"id": 7, "finished": True, "is_current": True},
+        ])
+        feed = self._feed(("2026-9", self.GROSS))
+
+        result = self._run(["--format", "json"], client=client, feed=feed)
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["metadata"]["player_of_the_month"]["months"] == []
+        feed.get_monthly_awards.assert_not_awaited()
+        assert not (_store("draft").partition_dir() / "awards").exists()
+
+    def test_a_league_read_in_part_withholds_a_winner_found_in_no_squad_it_read(self):
+        """The member the standings never returned could hold him, as the
+        monthly honours already allow (#425)."""
+        self._seed({3: "Alice", 4: "Alice", 5: "nobody"})
+
+        result = self._run(["--format", "json"], data={"standings_truncated": True, "league_size": 3})
+
+        assert result.exit_code == 0, result.output
+        (september,) = json.loads(result.stdout)["metadata"]["player_of_the_month"]["months"]
+        assert september["voucher"] is False
+        assert september["withheld_reason"] == "the recap reads only 2 of the league's 3 members"
+
+    def test_a_damaged_month_end_is_reported_once_the_voucher_sharing_the_captures_store(
+        self, caplog: pytest.LogCaptureFixture,
+    ):
+        """The capture already warns about the damaged file in full (#224), so
+        the voucher, reading the same store, only leaves a debug trail."""
+        self._seed({3: "Alice", 4: "Alice"})
+        _store("draft").gameweek_file(5).write_text("not json{{{\n", encoding="utf-8")
+
+        with caplog.at_level(logging.DEBUG, logger="fpl_cli.services.league_history"):
+            result = self._run(["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        (september,) = json.loads(result.stdout)["metadata"]["player_of_the_month"]["months"]
+        assert september["withheld_reason"] == "GW5 could not be read"
+        voucher_reads = [r for r in caplog.records if "Player of the Month" in r.getMessage()]
+        assert voucher_reads and [r for r in voucher_reads if r.levelno > logging.DEBUG] == []
+
+    def test_an_unreadable_feed_says_not_checked_never_no_award(self, tmp_path: Path):
+        self._seed({3: "Alice", 4: "Alice", 5: "Alice"})
+        blocked = self._feed(error=httpx.ConnectError("blocked"))
+
+        result = self._run(["--save", "--output", str(tmp_path)], feed=blocked)
+
+        assert result.exit_code == 0, result.output
+        console = " ".join(result.output.split())
+        assert "Player of the Month: not checked, as the Premier League's awards could not be read" in console
+        report = (tmp_path / season_label() / "gw6-league-recap-draft.md").read_text(encoding="utf-8")
+        assert "**Player of the Month:** not checked, as the Premier League's awards could not be read\n" in report
+        assert "voucher" not in report
+        # The report is the copy the league reads: the host to allow is the
+        # warning's, for the user.
+        assert "pulselive" not in report and "ConnectError" not in report
+
+        payload = json.loads(self._run(["--format", "json"], feed=blocked).stdout)
+        (warning,) = payload["metadata"]["warnings"]
+        assert warning["code"] == "player_of_the_month_unchecked"
+        assert "sdp-prem-prod.premier-league-prod.pulselive.com has to be allowed" in warning["message"]
+        assert payload["metadata"]["player_of_the_month"]["months"] == []
+
+    def test_the_manual_override_wins_over_the_feed(self):
+        self._seed({3: "Alice", 4: "Alice", 5: "Bob"})
+        settings = {
+            "fpl": {"draft_league_id": 42},
+            "fines": {"draft_vouchers": [{
+                "type": "player-of-the-month", "overrides": {"2026-09": 900 + 10},
+            }]},
+        }
+
+        result = self._run(["--format", "json"], settings=settings, feed=self._feed(("2026-9", self.GROSS)))
+
+        (september,) = json.loads(result.stdout)["metadata"]["player_of_the_month"]["months"]
+        # Alice's filler, who she held in GW5 while Bob held Groß.
+        assert (september["player"]["code"], september["source"]) == (910, "override")
+        assert september["owner"] == {"manager_key": 10, "manager_name": "Alice"}
+
+    def test_a_classic_recap_shows_nothing_and_never_asks_the_feed(self, tmp_path: Path):
+        feed = self._feed(("2026-9", self.GROSS))
+        settings = {"fpl": {"classic_league_id": 42}, "fines": self.SETTINGS["fines"]}
+
+        result = self._run(["--save", "--output", str(tmp_path)], fpl_format="classic", feed=feed, settings=settings)
+
+        assert result.exit_code == 0, result.output
+        assert "Player of the Month" not in result.output
+        report = (tmp_path / season_label() / "gw6-league-recap.md").read_text(encoding="utf-8")
+        assert "Player of the Month" not in report
+        feed.get_monthly_awards.assert_not_awaited()
+
+    def test_a_draft_league_that_has_not_opted_in_never_asks_the_feed(self):
+        feed = self._feed(("2026-9", self.GROSS))
+
+        result = self._run(["--format", "json"], feed=feed, settings={"fpl": {"draft_league_id": 42}})
+
+        assert json.loads(result.stdout)["metadata"]["player_of_the_month"] is None
+        feed.get_monthly_awards.assert_not_awaited()
+
+    def test_the_voucher_never_reaches_the_season_fines_tally(self):
+        """A grant, not a ruling: `fpl league-fines` counts nobody for it."""
+        self._seed({3: "Alice", 4: "Alice", 5: "Alice"})
+        settings = {
+            "fpl": {"draft_league_id": 42},
+            "fines": {
+                "draft": [{"type": "red-card", "penalty": "Pint on video"}],
+                "draft_vouchers": self.SETTINGS["fines"]["draft_vouchers"],
+            },
+        }
+        assert self._run(["--format", "json"], settings=settings).exit_code == 0
+
+        with patch("fpl_cli.cli.league_fines.get_settings", return_value=settings):
+            from fpl_cli.cli.league_fines import league_fines_command
+
+            tally = CliRunner().invoke(league_fines_command, ["--draft", "--format", "json"])
+
+        assert tally.exit_code == 0, tally.output
+        payload = json.loads(tally.stdout)
+        assert payload["metadata"]["total_fines"] == 0
+        assert all(row["total"] == 0 for row in payload["data"])
+
+    def test_the_editorial_is_shown_the_award_and_the_voucher_with_its_forfeit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.chdir(tmp_path)  # debug prompts land in ./data/debug
+        self._seed({3: "Alice", 4: "Alice", 5: "Alice"})
+
+        result = self._run(["--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "- **Player of the Month:** Groß for September (GW3-5), owned by Alice at the month's end" in prompt
+        assert "## Fines" in prompt
+        assert (
+            "- Player of the Month voucher (September): Alice may hand out one fine to anyone they choose"
+            " (Pint on video)" in prompt
+        )
+        assert '- "Pint on video": write these exact words at most once in the editorial' in prompt
+        system = (tmp_path / "data" / "debug" / "recap_system.txt").read_text(encoding="utf-8")
+        assert "A Player of the Month voucher lets its holder hand out one fine" in system
+
+    def test_the_editorial_is_told_nothing_on_a_recap_announcing_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        self._seed({3: "Alice", 4: "Alice", 5: "Alice"})
+        assert self._run(["--format", "json"]).exit_code == 0
+
+        result = self._run(["--dry-run"], gameweek=7)
+
+        assert result.exit_code == 0, result.output
+        prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "Player of the Month" not in prompt
+
+    def test_manager_names_in_the_lines_are_not_read_as_markup(self):
+        store = _store("draft")
+        for gameweek in (3, 4, 5):
+            store.append_rows(gameweek, [make_history_row(
+                season=SEASON, fpl_format="draft", league_id=42, gameweek=gameweek,
+                manager_key=10, manager_name="[b]Al[/b]", gross_points=50,
+                squad=[LedgerPlayer(name="Groß", team="BHA", position="MID", code=self.GROSS)],
+            )])
+
+        result = self._run([])
+
+        assert result.exit_code == 0, result.output
+        assert "owned by [b]Al[/b] at the month's end" in " ".join(result.output.split())

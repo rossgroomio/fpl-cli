@@ -1,0 +1,260 @@
+{
+  "manager_awards": [
+    {
+      "currentTeam": {
+        "name": "Hull City",
+        "id": "88",
+        "shortName": "Hull"
+      },
+      "date": "2026-8",
+      "country": {
+        "isoCode": "HR",
+        "country": "Croatia",
+        "demonym": "Croatian"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "2645198",
+        "seasonsAtCurrentTeam": [
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Jakirovic",
+        "first": "Sergej"
+      },
+      "dates": {
+        "joinedClub": "2025-06-11",
+        "birth": "1976-12-23"
+      },
+      "id": "50432",
+      "type": "MOTM"
+    },
+    {
+      "currentTeam": {
+        "name": "Brighton and Hove Albion",
+        "id": "36",
+        "shortName": "Brighton"
+      },
+      "date": "2026-9",
+      "country": {
+        "isoCode": "DE",
+        "country": "Germany",
+        "demonym": "German"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025",
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "2444472",
+        "seasonsAtCurrentTeam": [
+          "2025",
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Hürzeler",
+        "first": "Fabian"
+      },
+      "dates": {
+        "joinedClub": "2024-06-15",
+        "birth": "1993-02-26"
+      },
+      "id": "53902",
+      "type": "MOTM"
+    }
+  ],
+  "player_awards": [
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Chelsea",
+        "id": "8",
+        "shortName": "Chelsea"
+      },
+      "date": "2026-8",
+      "country": {
+        "isoCode": "BR",
+        "country": "Brazil",
+        "demonym": "Brazilian"
+      },
+      "shirtNum": 9,
+      "weight": 70,
+      "dates": {
+        "joinedClub": "2025-07-02",
+        "birth": "2001-09-26"
+      },
+      "type": "POTM",
+      "countryOfBirth": "Brazil",
+      "name": {
+        "last": "Junqueira de Jesus",
+        "display": "João Pedro",
+        "first": "João Pedro"
+      },
+      "id": "475168",
+      "position": "Forward",
+      "preferredFoot": "Right",
+      "height": 186
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Newcastle United",
+        "id": "4",
+        "shortName": "Newcastle"
+      },
+      "date": "2026-8",
+      "country": {
+        "isoCode": "SE",
+        "country": "Sweden",
+        "demonym": "Swedish"
+      },
+      "shirtNum": 19,
+      "weight": 75,
+      "dates": {
+        "joinedClub": "2025-07-11",
+        "birth": "2002-04-27"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "Sweden",
+      "name": {
+        "last": "Elanga",
+        "display": "Anthony Elanga",
+        "first": "Anthony"
+      },
+      "id": "449434",
+      "position": "Forward",
+      "preferredFoot": "Right",
+      "height": 178
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Everton",
+        "id": "11",
+        "shortName": "Everton"
+      },
+      "date": "2026-8",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 1,
+      "weight": 77,
+      "dates": {
+        "joinedClub": "2017-07-01",
+        "birth": "1994-03-07"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Pickford",
+        "display": "Jordan Pickford",
+        "first": "Jordan"
+      },
+      "id": "111234",
+      "position": "Goalkeeper",
+      "preferredFoot": "Left",
+      "height": 185
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Brighton and Hove Albion",
+        "id": "36",
+        "shortName": "Brighton"
+      },
+      "date": "2026-9",
+      "country": {
+        "isoCode": "DE",
+        "country": "Germany",
+        "demonym": "German"
+      },
+      "shirtNum": 13,
+      "weight": 78,
+      "dates": {
+        "joinedClub": "2026-01-02",
+        "birth": "1991-06-15"
+      },
+      "type": "POTM",
+      "countryOfBirth": "Germany",
+      "name": {
+        "last": "Groß",
+        "display": "Pascal Groß",
+        "first": "Pascal"
+      },
+      "id": "60307",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 181
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Brighton and Hove Albion",
+        "id": "36",
+        "shortName": "Brighton"
+      },
+      "date": "2026-9",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 5,
+      "weight": 88,
+      "dates": {
+        "joinedClub": "2009-07-01",
+        "birth": "1991-11-21"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Dunk",
+        "display": "Lewis Dunk",
+        "first": "Lewis"
+      },
+      "id": "83299",
+      "position": "Defender",
+      "preferredFoot": "Right",
+      "height": 192
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Arsenal",
+        "id": "3",
+        "shortName": "Arsenal"
+      },
+      "date": "2026-9",
+      "country": {
+        "isoCode": "ES",
+        "country": "Spain",
+        "demonym": "Spanish"
+      },
+      "shirtNum": 1,
+      "weight": 80,
+      "dates": {
+        "joinedClub": "2024-07-04",
+        "birth": "1995-09-15"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "Spain",
+      "name": {
+        "last": "Raya",
+        "display": "David Raya",
+        "first": "David"
+      },
+      "id": "154561",
+      "position": "Goalkeeper",
+      "preferredFoot": "Right",
+      "height": 183
+    }
+  ]
+}

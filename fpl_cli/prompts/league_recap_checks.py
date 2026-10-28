@@ -3297,10 +3297,10 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
         code=RECAP_WARNING_KIND_NET_MISATTRIBUTION,
         lead="The editorial gives one kind of a manager's moves a figure that is not that kind's own",
         retry_instruction=(
-            "Say a figure is a manager's waivers' or free agents' only when it is that kind's own net "
-            "from the brackets of their line, or one of that kind's moves' swings; where a line mixes "
-            "kinds, the net overall is all the moves together, so call it their moves' net, never their "
-            "waivers' or their free agents'."
+            "Say a figure is a manager's free agents' or waiver claims' (named as claims, as one waiver, "
+            "counted, or set against their free agents) only when it is that kind's own net from the "
+            "brackets of their line or one of its moves' swings; the net overall may go with the manager, "
+            'their moves or a generic waiver word ("his waiver work"), never a free-agent word.'
         ),
         run=lambda summary, data, names: check_kind_net_scopes(summary, data["managers"], names),
     ),

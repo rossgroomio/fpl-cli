@@ -19,6 +19,7 @@ from fpl_cli.cli._league_recap_types import (
     gameweek_rank,
     recap_title,
 )
+from fpl_cli.cli._league_recap_vouchers import recap_voucher_lines
 from fpl_cli.paths import TEMPLATE_DIR
 from fpl_cli.prompts.league_recap_checks import split_recap_problems
 from fpl_cli.services.team_ratings import fdr_columns_footer
@@ -683,10 +684,11 @@ class ReportAgent(Agent):
         data["title"] = recap_title(gameweek, data.get("league_name", ""))
         data.setdefault("generated_at", format_generated_at())
         data["standings_block"] = _format_standings_block(data.get("managers", []))
-        # Grouped by the fine (#504), the same lines the console prints.
+        # Grouped by the fine (#504), then any Player of the Month voucher
+        # (#492): the same lines the console prints.
         data["fine_lines"] = recap_fine_lines(
             data.get("fines", []), data.get("fine_rules_evaluated", []),
-        )
+        ) + recap_voucher_lines(data.get("player_of_the_month_vouchers", []))
         # The editorial's problems the data contradicts apart from those that
         # only broke its brief (#459), so the callout never says the data
         # contradicts a sentence that was true.

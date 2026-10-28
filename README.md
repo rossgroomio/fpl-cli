@@ -101,6 +101,20 @@ month's first gameweek, which FPL's month table never charges. A month with a sc
 or one FPL's own month table disagrees with, names nobody and says why. The halfway recap (GW19) and the finale (GW38) also list every month
 so far under Monthly Honours, so the GW38 recap is the season's honours board.
 
+A draft league can also play the Player of the Month voucher: when the Premier League names its
+Player of the Month, the manager who owned him at the end of the month may hand out one fine to
+anyone they choose. Add a `player-of-the-month` entry under `fines: draft_vouchers` in
+`settings.yaml` (see [Fine Rule Types](docs/command-reference.md#fine-rule-types)) and the first
+recap after the award is published says who won, who owned him at the month's last gameweek (and
+who held him when, if he changed hands) and, in the Fines section, that the owner may hand out
+one fine. Each month is announced once, and a skipped recap still gets it next time; a voucher
+withheld because the history is missing a squad is announced once that gap is filled. The award
+comes from the Premier League's own data, so if that can't be read the recap says "not checked"
+rather than "no award", and you can set the winner yourself under `overrides`. It is a fine the
+owner hands out, not one they owe, so `fpl league-fines` never counts it. In an environment that
+restricts outbound hosts, such as Claude Code on the web, allow
+`sdp-prem-prod.premier-league-prod.pulselive.com`.
+
 The Fines list prints each fine's forfeit as configured, but the editorial writes it out word
 for word at most once and says it in other words elsewhere, so "pint on video" does not wear
 thin by October. Give it your league's own vocabulary with `penalty_phrasings` under `fines:`
@@ -180,7 +194,7 @@ $ fpl doctor --providers           # Probe the external data sources for shape a
 
 Every ID in settings.yaml is resolved against the live API and the team/league name reported back, so a dead or recycled ID (which otherwise fails silently) is visible. Per-team data files are checked against the current season's clubs, and the scoring scale against the newest completed season. Exits non-zero when something needs fixing.
 
-`--providers` checks the other side of the bargain: that each external data source (FPL and Draft APIs, the historical datasets, Understat, football-data.org) still serves data of the expected shape and size, that every club resolves across sources and its players still join to them by name, that a player's per-gameweek history still carries the fields the scoring signals read, and that the per-gameweek match files actually parse into records through the same code the scoring commands run — the upstream drift that otherwise surfaces as plausible but wrong output, especially at a season rollover.
+`--providers` checks the other side of the bargain: that each external data source (FPL and Draft APIs, the historical datasets, Understat, football-data.org, the Premier League's awards feed) still serves data of the expected shape and size, that every club resolves across sources and its players still join to them by name, that a player's per-gameweek history still carries the fields the scoring signals read, and that the per-gameweek match files actually parse into records through the same code the scoring commands run — the upstream drift that otherwise surfaces as plausible but wrong output, especially at a season rollover.
 
 ### Scouting Players
 

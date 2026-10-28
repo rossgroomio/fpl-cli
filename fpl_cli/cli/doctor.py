@@ -738,7 +738,7 @@ def _status_counts(results: list[CheckResult]) -> tuple[int, int, int]:
     is_flag=True,
     help="Probe the external data sources instead of the local setup: live shape "
     "and volume checks against the FPL and Draft APIs, the historical datasets, "
-    "Understat, and football-data.org.",
+    "Understat, football-data.org, and the Premier League's awards.",
 )
 @output_format_option
 def doctor_command(providers_only: bool, output_format: str) -> None:

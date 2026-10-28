@@ -8592,7 +8592,7 @@ class TestKindNetScopeCheck:
         found = check_recap_editorial("Dan Ford's waiver claims netted +3 overall.", data)
         assert list(found) == [RECAP_WARNING_KIND_NET_MISATTRIBUTION]
         prompt = get_recap_editorial_retry_prompt("ORIGINAL", found)
-        assert "never their waivers' or their free agents'" in prompt
+        assert 'the net overall may go with the manager, their moves or a generic waiver word ("his waiver work"), never a free-agent word' in prompt
         assert "NEVER to one named move" not in prompt
 
 
@@ -10286,7 +10286,7 @@ class TestEditorialChecks:
         )
         assert "they are never interchangeable" in system
         assert "never to one named move" in system
-        assert "never their waivers' or their free agents'" in system
+        assert 'or a generic waiver word ("his waiver work", "his waiver moves"), as the Waiver Genius and Waiver Disaster awards are judged on all moves. A free-agent word is never every move.' in system
         assert 'never that they took it "to bring in"' in system
         assert "Judge the chain only by its effective move" in system
         assert 'only as passing through ("Penders in for Kinsky, via Henderson")' in system

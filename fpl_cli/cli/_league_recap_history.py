@@ -154,6 +154,12 @@ class CaptureResult:
     # `LeagueHistoryStore` at the CLI layer (which would both duplicate the
     # check and widen the window between it and the write it precedes).
     first_capture_store_path: Path | None = None
+    # The store the capture read and wrote, for a later reader of the same
+    # partition (the Player of the Month voucher, #492): a fresh one would
+    # parse every gameweek again, and log a damaged one a second time beside
+    # the warning the coverage report already gave it (issue #224). None
+    # exactly when store_readable is False.
+    store: LeagueHistoryStore | None = None
 
 
 def _warn(warnings: list[dict[str, str]], code: str, message: str) -> None:
@@ -627,10 +633,10 @@ def _quality_warnings(
         )
 
 
-def _partial_league_reason(data: LeagueRecapData) -> str | None:
+def partial_league_reason(data: LeagueRecapData) -> str | None:
     """Why the ledger holds only part of the league, as the clause a month's
-    awards are withheld with, or None when the standings were read whole
-    (#425).
+    awards (#425) and a draft Player of the Month voucher (#492) are withheld
+    with, or None when the standings were read whole.
 
     Only a cut-short standings read counts. A member in the table whose
     picks never came back has an unknown row, which the months already
@@ -2732,7 +2738,7 @@ async def capture_recap_history(
     month_honours = (
         build_monthly_honours(
             store, months, data["gameweek"], league_start_gameweek=start_gameweek,
-            partial_league=_partial_league_reason(data),
+            partial_league=partial_league_reason(data),
         )
         if months else None
     )
@@ -2747,6 +2753,7 @@ async def capture_recap_history(
         fines_tally=fines_tally,
         month_honours=month_honours,
         first_capture_store_path=first_capture_store_path,
+        store=store,
     )
 
 
