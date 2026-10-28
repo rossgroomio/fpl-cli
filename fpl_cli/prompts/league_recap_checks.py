@@ -1130,9 +1130,11 @@ _SCOPE_NOUNS = (
 # A draft move's kind named as what a figure is about: "his waiver moves",
 # "her waivers", "the free-agent pickups", "his free agency". Only the kind
 # word scopes the figure, and "the waiver wire" is the pool of unowned
-# players, free agents included.
+# players, free agents included. The league's Waiver Genius and Waiver
+# Disaster are awards, not a kind of move, however they are cased (#543).
 _KIND_SCOPE_RE = re.compile(
-    r"(?<!\w)(?:(?P<waiver>waivers?(?![-\s]+wire))|(?P<free_agent>free[-\s]+agen(?:ts?|cy)))"
+    r"(?<!\w)(?:(?P<waiver>waivers?(?![-\s]+wire)(?![-\s]+(?:genius(?:es)?|disasters?)(?!\w)))"
+    r"|(?P<free_agent>free[-\s]+agen(?:ts?|cy)))"
     rf"(?:[-\s]+{_SCOPE_NOUNS}|[-\s]+market)?(?!\w)",
     re.IGNORECASE,
 )
@@ -1155,9 +1157,11 @@ _WAIVER_CLAIMS_RE = re.compile(r"claims?$", re.IGNORECASE)
 _WAIVER_ONE_RE = re.compile(r"waiver", re.IGNORECASE)
 _NEXT_WORD_RE = re.compile(r"[-\s]+([a-z]+)", re.IGNORECASE)
 _WAIVER_NOUN_FOLLOWERS = frozenset({"and", "or", "but", "which", "that", "who"})
+# The number words a count of moves may use, each regex adding its own extras.
+_COUNT_WORDS = r"one|two|three|four|five|six|seven|eight|nine|ten"
 # A number is a count only unsigned: "-9 waiver ledger" is a figure.
 _WAIVER_COUNT_BEFORE_RE = re.compile(
-    r"(?<!\w)(?:(?<![+\-−–])\d+|one|two|three|four|five|six|seven|eight|nine|ten|both|each|either|several|few"
+    rf"(?<!\w)(?:(?<![+\-−–])\d+|{_COUNT_WORDS}|both|each|either|several|few"
     r"|(?:couple|pair|handful)\s+of)\s+$",
     re.IGNORECASE,
 )
@@ -1166,7 +1170,7 @@ _WAIVER_COUNT_BEFORE_RE = re.compile(
 # "both free agents". "Manzambi arrived as a free agent" and "with a free
 # agent doing the heavy lifting" name a player's status, not a contrast.
 _FREE_AGENTS_OWNED_BEFORE_RE = re.compile(
-    r"(?:(?<!\w)(?:his|her|their|its|the|(?<![+\-−–])\d+|one|two|three|four|five|six|seven|eight|nine|ten|both|each"
+    rf"(?:(?<!\w)(?:his|her|their|its|the|(?<![+\-−–])\d+|{_COUNT_WORDS}|both|each"
     r"|either)|['’]s)\s+$",
     re.IGNORECASE,
 )
@@ -1185,6 +1189,28 @@ _ANY_KIND = "*"
 _KIND_JOIN_RE = re.compile(
     r"^\s*(?:[,/]|(?:,\s*)?(?:and|or|&|plus)(?:\s+(?:a|an|the|his|her|their|its|one|two|three|\d+))?)\s*$",
     re.IGNORECASE,
+)
+# A breakdown of a neutral noun into kinds is that noun, not a kind of its
+# own (#543): "four moves (three waivers, one free agent) netted -7" and
+# "four moves, three of them waivers and one a free agent, netting -7" say
+# -7 of the four moves. Each shape is how it opens after the noun, how its
+# kinds join, and how it closes, an appositive on its comma ("one a free
+# agent netting -7" says it of the free agent); it must name more than one
+# kind.
+_BREAKDOWN_COUNT = rf"(?:a|an|{_COUNT_WORDS}|\d+|both|all)"
+_BREAKDOWN_SHAPES = (
+    (
+        re.compile(rf"^\s*\(\s*(?:{_BREAKDOWN_COUNT}\s+)?$", re.IGNORECASE),
+        re.compile(rf"^\s*(?:[,;/]|,?\s*(?:and|plus|&))\s*(?:{_BREAKDOWN_COUNT}\s+)?$", re.IGNORECASE),
+        re.compile(r"\s*\)"),
+    ),
+    (
+        re.compile(rf"^\s*,\s*{_BREAKDOWN_COUNT}\s+of\s+them\s+(?:an?\s+)?$", re.IGNORECASE),
+        re.compile(
+            rf"^\s*(?:,|,?\s*(?:and|plus|&))\s*{_BREAKDOWN_COUNT}(?:\s+of\s+them)?(?:\s+an?)?\s+$", re.IGNORECASE,
+        ),
+        re.compile(r"(?=\s*(?:,|$))"),
+    ),
 )
 # What may sit between a kind and the figure it scopes: the verb that carries
 # one to the other and its furniture, never a word that names or counts
@@ -1261,7 +1287,8 @@ def _scope_word(clause: str, match: re.Match[str]) -> _KindScope:
 
 
 def _kind_scopes(clause: str) -> list[_KindScope]:
-    """Every scope in `clause`, kinds and neutral nouns, joined runs merged."""
+    """Every scope in `clause`, kinds and neutral nouns, joined runs merged
+    and a breakdown of a neutral noun into kinds folded into it (#543)."""
     words = [_scope_word(clause, match) for match in _KIND_SCOPE_RE.finditer(clause)]
     words.extend(
         _KindScope(match.start(), match.end(), frozenset({_ANY_KIND}))
@@ -1275,14 +1302,44 @@ def _kind_scopes(clause: str) -> list[_KindScope]:
             scopes.append(_KindScope(last.start, word.end, last.kinds | word.kinds, loose=last.loose and word.loose))
         else:
             scopes.append(word)
-    return scopes
+    merged: list[_KindScope] = []
+    index = 0
+    while index < len(scopes):
+        scope = scopes[index]
+        found = _breakdown(clause, scopes, index) if scope.kinds == {_ANY_KIND} else None
+        if found is None:
+            merged.append(scope)
+            index += 1
+        else:
+            merged.append(_KindScope(scope.start, found[0], scope.kinds))
+            index = found[1]
+    return merged
+
+
+def _breakdown(clause: str, scopes: Sequence[_KindScope], index: int) -> tuple[int, int] | None:
+    """Where the breakdown into kinds after the neutral scope at `index`
+    ends, and the index of the first scope after it, or None when no
+    breakdown follows it (#543)."""
+    for opens, joins, closes in _BREAKDOWN_SHAPES:
+        end, last, kinds = scopes[index].end, index, frozenset[str]()
+        while (
+            last + 1 < len(scopes) and _ANY_KIND not in scopes[last + 1].kinds
+            and (opens if last == index else joins).match(_plain(clause[end:scopes[last + 1].start]))
+        ):
+            last += 1
+            end, kinds = scopes[last].end, kinds | scopes[last].kinds
+        close = closes.match(clause, end)
+        if len(kinds) > 1 and close:
+            return close.end(), last + 1
+    return None
 
 
 def _free_agents_set_apart(sentence: str) -> bool:
     """Whether `sentence` names free agents of the manager's own, apart from
     any waivers, so its waiver words are the waivers alone (#539): "his
     waivers broke even but his free agents lost 9", whatever clause each
-    sits in."""
+    sits in. Free agents named in a breakdown of a neutral noun ("four moves
+    (two waivers, two free agents)") are those moves, no contrast (#543)."""
     return any(
         scope.kind == "free agent" and _FREE_AGENTS_OWNED_BEFORE_RE.search(sentence, 0, scope.start)
         for scope in _kind_scopes(sentence)
@@ -1393,17 +1450,26 @@ def check_kind_net_scopes(summary: str, managers: Sequence[RecapManagerEntry], n
     few words of verb ("netted", "came to", "left him", ", which netted")
     with nothing between them that names or counts anything else -- and the
     scope names one kind. Kind-neutral scopes ("moves", "claims", "pickups",
-    "the waiver wire", "one waiver and one free agent") pass, and so does a figure whose own subject is one of them, whatever
-    kind trails after it. So does a figure after a kind that is only an
-    aside: one that already has its own figure, with a new subject opening
-    the gap to the next ("with Dunk's +1 on waiver claims he finished +7",
-    #465). Whose moves they are is the one manager the clause names, or, in
-    a clause that names none ("his waiver claims"), the one manager the
-    nearest earlier clause of the paragraph named; a clause naming two
-    managers, or following one that did, is left alone. A manager a clause
-    only measures someone against ("a point clear of Bob") does not count
-    as named (#524), nor does one named only as the owner of a player's
-    squad ("on Bob's bench", #537).
+    "the waiver wire", "one waiver and one free agent") pass, and so does a
+    figure whose own subject is one of them, whatever kind trails after it.
+    So does a figure after a kind that is only an aside: one that already
+    has its own figure, with a new subject opening the gap to the next
+    ("with Dunk's +1 on waiver claims he finished +7", #465). Whose moves
+    they are is the one manager the clause names, or, in a clause that
+    names none ("his waiver claims"), the one manager the nearest earlier
+    clause of the paragraph named; a clause naming two managers, or
+    following one that did, is left alone. A manager a clause only measures
+    someone against ("a point clear of Bob") does not count as named (#524),
+    nor does one named only as the owner of a player's squad ("on Bob's
+    bench", #537).
+
+    A breakdown of a neutral noun into kinds, in brackets ("four moves
+    (three waivers, one free agent) netted -7") or as an appositive closed
+    by its comma ("four moves, three of them waivers and one a free agent,
+    netting -7"), is that noun: the figure stays the moves', and the free
+    agents it names set nothing apart from the waivers (#543). The league's
+    Waiver Genius and Waiver Disaster are awards, never a kind.
+
     The figure is then a problem only when it is not that kind's net nor the
     swing of a move of that kind, and is another figure on the manager's
     line: the net overall, another kind's net, or another kind's move's
