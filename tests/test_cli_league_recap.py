@@ -7243,6 +7243,156 @@ class TestLostClaimsReachTheLedger:
 
 
 # ---------------------------------------------------------------------------
+# issue #534: a draft replay shows the standings its ledger kept
+# ---------------------------------------------------------------------------
+
+
+class TestDraftReplayShowsRecordedStandings:
+    """The carry put a replay's recorded positions and totals back on its
+    ledger rows alone, while the prompt's GW Standings, the report's
+    standings block and the console all read the collected managers. So a
+    draft recap of a gameweek the season had moved past printed every
+    position and total as unknown, beside a warning saying it had kept them."""
+
+    _SETTINGS = {"fpl": {"draft_league_id": 42}}
+
+    @staticmethod
+    def _replay(gameweek: int = 5) -> LeagueRecapData:
+        """A gameweek as the draft collector hands it over once the standings
+        describe a later one: no position, no total, and no previous position,
+        since R13 has no earlier gameweek in the ledger to read one from."""
+        return _recap_data(
+            gameweek=gameweek, fpl_format="draft",
+            managers=[
+                _manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=60, gw_rank=1,
+                         total_points=None, overall_rank=None, previous_rank=None),
+                _manager(name="Bob", entry_id=2, league_entry_id=20, gross_points=40, gw_rank=2,
+                         total_points=None, overall_rank=None, previous_rank=None),
+            ],
+            cohort=_cohort((10, "Alice", 1, 60, 330), (20, "Bob", 2, 40, 345)),
+        )
+
+    @staticmethod
+    def _record_gw5() -> None:
+        """GW5 as captured live: Bob top on 320, Alice second on 300, up from third."""
+        _store("draft").append_rows(5, [
+            make_history_row(
+                season=SEASON, fpl_format="draft", league_id=42, gameweek=5,
+                manager_key=key, manager_name=name, gross_points=points,
+                league_position=position, previous_league_position=previous, total_points=total,
+            )
+            for key, name, points, position, previous, total in (
+                (10, "Alice", 60, 2, 3, 300),
+                (20, "Bob", 40, 1, 1, 320),
+            )
+        ])
+
+    def _invoke_replay(self, data: LeagueRecapData, args: list[str]):
+        """GW5 finished and GW6 under way, so the recap of GW5 is a replay."""
+        client = _fpl_client(gw=5)
+        client.get_gameweeks = AsyncMock(return_value=_gameweeks((5, True, False), (6, False, True)))
+        return _invoke_recap(data, ["--draft", *args], client=client, settings=self._SETTINGS, gw=5)
+
+    @staticmethod
+    def _draft_report(tmp_path: Path) -> str:
+        return (tmp_path / season_label() / "gw5-league-recap-draft.md").read_text(encoding="utf-8")
+
+    def test_every_surface_shows_the_recorded_standings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        self._record_gw5()
+
+        result = self._invoke_replay(
+            self._replay(), ["--dry-run", "--save", "--output", str(tmp_path / "reports")],
+        )
+
+        assert result.exit_code == 0, result.output
+        prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "| 1 | 1 | Bob | 40 | 2 | 320 |" in prompt
+        assert "| 2 | 3 | Alice (↑1) | 60 | 1 | 300 |" in prompt
+
+        report = self._draft_report(tmp_path / "reports")
+        assert "(2nd ↑1, 300)" in report
+        assert "(1st, 320)" in report
+        assert "unavailable" not in report
+
+        assert "Alice: 3 → 2" in result.stdout
+        assert "Unavailable:" not in result.stdout
+
+    def test_a_replay_with_nothing_recorded_still_shows_them_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+
+        result = self._invoke_replay(self._replay(), ["--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "| ? | ? | Alice | 60 | 1 | ? |" in prompt
+        assert "Alice: position unavailable, total unavailable" in result.stdout
+
+    def test_a_live_draft_recap_keeps_its_own_standings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The carry fills nulls only, and so does what it hands on: a live
+        capture's own figures stand over an earlier capture's of the same
+        gameweek, on every surface as in the ledger."""
+        monkeypatch.chdir(tmp_path)
+        self._record_gw5()
+        live = _recap_data(
+            gameweek=5, fpl_format="draft",
+            managers=[
+                _manager(name="Alice", entry_id=1, league_entry_id=10, gross_points=60, gw_rank=1,
+                         total_points=345, overall_rank=1, previous_rank=2),
+                _manager(name="Bob", entry_id=2, league_entry_id=20, gross_points=40, gw_rank=2,
+                         total_points=330, overall_rank=2, previous_rank=1),
+            ],
+            cohort=_cohort((10, "Alice", 1, 60, 345), (20, "Bob", 2, 40, 330)),
+        )
+
+        result = _invoke_recap(live, ["--draft", "--dry-run"], settings=self._SETTINGS, gw=5)
+
+        assert result.exit_code == 0, result.output
+        prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert "| 1 | 2 | Alice (↑1) | 60 | 1 | 345 |" in prompt
+        assert "| 2 | 1 | Bob (↓1) | 40 | 2 | 330 |" in prompt
+
+    async def test_the_capture_hands_the_restored_figures_to_the_recap(self):
+        self._record_gw5()
+        data = self._replay()
+
+        await capture_recap_history(data, season=SEASON, is_live_gw=False, finished_gameweeks=[5])
+
+        assert [
+            (m["manager_name"], m.get("overall_rank"), m.get("previous_rank"), m.get("total_points"))
+            for m in data["managers"]
+        ] == [("Alice", 2, 3, 300), ("Bob", 1, 1, 320)]
+
+    async def test_a_table_the_ledger_reconstructs_stays_in_the_ledger(self):
+        """Only what the gameweek recorded is shown. A replayed draft gameweek
+        nothing was recorded for still gets a table summed from the ones
+        before it, but that is the ledger's own derivation: the recap shows
+        the gameweek's standings as recorded or not at all."""
+        store = _store("draft")
+        for gameweek in range(1, 5):
+            store.append_rows(gameweek, [
+                make_history_row(
+                    season=SEASON, fpl_format="draft", league_id=42, gameweek=gameweek,
+                    manager_key=key, manager_name=name, gross_points=50,
+                )
+                for key, name in ((10, "Alice"), (20, "Bob"))
+            ])
+        data = self._replay()
+
+        await capture_recap_history(data, season=SEASON, is_live_gw=False, finished_gameweeks=[5])
+
+        resolved = _store("draft").resolved_gameweek(5)
+        assert {k: r.total_points for k, r in resolved.items()} == {10: 260, 20: 240}
+        assert all("overall_rank" not in m and "total_points" not in m for m in data["managers"])
+
+
+# ---------------------------------------------------------------------------
 # issue #319: neither the carry nor the sweep may invent a first gameweek's
 # previous position, and the sweep must count only what it says it restored
 # ---------------------------------------------------------------------------

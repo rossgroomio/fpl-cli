@@ -715,7 +715,8 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
     """Render league standings as a space-aligned text block.
 
     Sort order: gw_points desc, tie-break by overall_rank asc (managers with
-    no derivable position, e.g. an unreconstructable draft replay per R10,
+    no derivable position, e.g. a draft replay of a gameweek the ledger
+    recorded none for, per R10,
     sort last). Each row: GW rank (`gameweek_rank`, so level scores share one,
     the same rank the prompt's table states -- #483), manager (+ chip), GW points, (ordinal
     league pos[ arrow], total) -- either half of that pair is named
