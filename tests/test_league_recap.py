@@ -8314,8 +8314,11 @@ def _mixed_waivers() -> list[RecapManagerEntry]:
 class TestKindNetScopeCheck:
     """Issue #390: the editorial said of a manager who made one waiver (-1)
     and one free-agent pickup (+4) that "his waiver moves netted +3
-    overall" -- the two moves' combined net, hiding a losing claim behind
-    the pickup's gain."""
+    overall" -- the two moves' combined net. Issue #539 settled that a
+    generic waiver word is every move the manager made, as the league's
+    Waiver Genius and Waiver Disaster are, so that sentence now passes; a
+    waiver word pinned to claims -- naming them, counted, or set against the
+    free agents -- is the waivers alone and still gets the check."""
 
     _LEAD = "Dan Ford had a week to forget. "
 
@@ -8323,34 +8326,45 @@ class TestKindNetScopeCheck:
         managers = managers or _mixed_waivers()
         return check_kind_net_scopes(summary, managers, RecapNames.of(managers))
 
-    def test_the_reported_sentence_is_caught(self):
+    def test_the_reported_sentence_said_of_claims_is_caught(self):
         problems = self._check(
-            self._LEAD + "His Kostoulas claim failed, and his waiver moves netted +3 overall, "
+            self._LEAD + "His Kostoulas claim failed, and his waiver claims netted +3 overall, "
             "which did nothing to rescue him."
         )
         assert problems == [
-            'the editorial says "waiver moves netted +3" of Dan Ford, but +3 is Dan Ford\'s net for the '
+            'the editorial says "waiver claims netted +3" of Dan Ford, but +3 is Dan Ford\'s net for the '
             "whole gameweek (2 moves: 1 waiver, 1 free agent), not the waivers' own net of -1"
         ]
 
+    def test_the_reported_sentence_itself_now_passes(self):
+        """Issue #539: "waiver moves" is every move, so their +3 is right."""
+        assert self._check(
+            self._LEAD + "His Kostoulas claim failed, and his waiver moves netted +3 overall, "
+            "which did nothing to rescue him."
+        ) == []
+
     @pytest.mark.parametrize("summary", [
-        "Dan Ford's waiver moves netted +3 overall.",
+        "Dan Ford's waiver claims netted +3 overall.",
+        # Issue #539: a counted waiver, and waivers set against free agents,
+        # are the waivers alone too.
+        "Dan Ford's one waiver netted +3 overall.",
+        "Dan Ford's waivers netted +3 overall but his free agents did the damage.",
         # A short form the manager goes by.
-        "Ford's waivers came to +3.",
+        "Ford's waiver claims came to +3.",
         # The figure ahead of the kind it is said of.
-        "Dan Ford netted +3 overall from his waivers.",
+        "Dan Ford netted +3 overall from his waiver claims.",
         "Dan Ford's free-agent pickups netted +3 overall.",
         # PR #392 review: a relative or participle clause, and the furniture
         # of a figure.
-        "Dan Ford's waiver moves, netting +3 overall, did little.",
-        "Dan Ford's waiver moves, which netted +3 overall, did little.",
-        "Dan Ford's waiver moves netted a mere +3 overall.",
-        "Dan Ford's waiver work paid off to the tune of +3.",
+        "Dan Ford's waiver claims, netting +3 overall, did little.",
+        "Dan Ford's waiver claims, which netted +3 overall, did little.",
+        "Dan Ford's waiver claim netted a mere +3 overall.",
+        "Dan Ford's one waiver paid off to the tune of +3.",
         # A determiner after a bare comma opens a new phrase, not a list.
-        "Dan Ford made two moves, his waivers netting +3 overall.",
+        "Dan Ford made two moves, his waiver claims netting +3 overall.",
         # Issue #524: a manager the clause only measures him against is not
         # a second manager it could be about.
-        "Dan Ford, a point clear of Eve Ray, saw his waiver moves net +3 overall.",
+        "Dan Ford, a point clear of Eve Ray, saw his waiver claims net +3 overall.",
     ])
     def test_the_net_overall_said_of_one_kind_is_caught(self, summary):
         problems = self._check(summary)
@@ -8358,9 +8372,9 @@ class TestKindNetScopeCheck:
         assert "+3 is Dan Ford's net for the whole gameweek (2 moves: 1 waiver, 1 free agent)" in problems[0]
 
     def test_the_other_kind_s_figure_is_caught_and_named(self):
-        problems = self._check("Dan Ford's waivers went +4.")
+        problems = self._check("Dan Ford's waiver claim went +4.")
         assert problems == [
-            'the editorial says "waivers went +4" of Dan Ford, but +4 is the swing on Manzambi in for '
+            'the editorial says "waiver claim went +4" of Dan Ford, but +4 is the swing on Manzambi in for '
             "Yalcouyé [free agent], not the waivers' own net of -1"
         ]
         problems = self._check("Fay Lund's free agents netted +10.")
@@ -8398,46 +8412,72 @@ class TestKindNetScopeCheck:
         "Manzambi in for Yalcouyé as a free agent (+4) left Dan Ford's moves +3 net overall.",
         "Dan Ford's waiver flopped but he still netted +3 overall.",
         # A figure that is nobody's on the line.
-        "Dan Ford's waiver moves netted +9.",
+        "Dan Ford's waiver claims netted +9.",
         # Unsigned after the verb is a player's score, not a swing.
         "Dan Ford's waiver claims netted him 3 points.",
         # A comma that opens no clause about the figure.
         "Dan Ford's waiver flopped, he netted +3 overall.",
         "Dan Ford had no luck on waivers, overall he went +3.",
         # One of the kind's own moves' swings.
-        "Fay Lund's waivers netted +8.",
+        "Fay Lund's waiver claims netted +8.",
+        # Each kind its own figure, the waivers given theirs.
+        "Fay Lund's waivers netted +10 and her free agents -3.",
     ])
     def test_a_figure_the_data_bears_out_or_cannot_place_passes(self, summary):
         assert self._check(summary) == []
 
+    @pytest.mark.parametrize("summary", [
+        "Dan Ford's waiver moves netted +3 overall.",
+        "Ford's waivers came to +3.",
+        "Dan Ford netted +3 overall from his waivers.",
+        "Dan Ford's waiver work paid off to the tune of +3.",
+        "Dan Ford's waiver moves, which netted +3 overall, did little.",
+        "Dan Ford had the week's best waiver work, +3 net.",
+        "Fay Lund's waiver moves netted +7 overall.",
+    ])
+    def test_the_net_overall_said_of_a_generic_waiver_word_passes(self, summary):
+        """Issue #539: a waiver word nothing pins to claims is every move,
+        as the league's Waiver Genius and Waiver Disaster are."""
+        assert self._check(summary) == []
+
+    @pytest.mark.parametrize("summary", [
+        # Free agents are never every move.
+        "Dan Ford's free agents netted +3 overall.",
+        "Dan Ford's free-agent work came to +3.",
+    ])
+    def test_the_net_overall_said_of_free_agents_is_still_caught(self, summary):
+        problems = self._check(summary)
+        assert len(problems) == 1
+        assert "not the free agents' own net of +4" in problems[0]
+
     def test_a_manager_whose_moves_are_one_kind_is_not_read(self):
         # Eve Ray's waivers are every move she made: their net is the net.
-        assert self._check("Eve Ray's waiver moves netted +8 overall.") == []
-        assert self._check("Eve Ray's waiver moves netted +3 overall.") == []
+        assert self._check("Eve Ray's waiver claims netted +8 overall.") == []
+        assert self._check("Eve Ray's waiver claims netted +3 overall.") == []
 
     @pytest.mark.parametrize("summary", [
         # Two managers in the clause: the figure could be either's.
-        "Unlike Eve Ray, Dan Ford's waiver moves netted +3 overall.",
+        "Unlike Eve Ray, Dan Ford's waiver claims netted +3 overall.",
         # Two in the clause before: "his" could be either's.
-        "Dan Ford beat Eve Ray to Isak. His waiver moves netted +3 overall.",
+        "Dan Ford beat Eve Ray to Isak. His waiver claims netted +3 overall.",
         # A new paragraph: "his" is nobody's the check can see.
-        "Dan Ford had a week to forget.\n\nHis waiver moves netted +3 overall.",
+        "Dan Ford had a week to forget.\n\nHis waiver claims netted +3 overall.",
         # Nobody named at all.
-        "His waiver moves netted +3 overall.",
+        "His waiver claims netted +3 overall.",
     ])
     def test_a_clause_whose_manager_is_unclear_is_left_alone(self, summary):
         assert self._check(summary) == []
 
     def test_the_nearest_manager_named_earlier_in_the_paragraph_is_the_one_read(self):
-        summary = "Dan Ford had a week to forget. Gus Hill sat it out. His waiver moves netted +3 overall."
+        summary = "Dan Ford had a week to forget. Gus Hill sat it out. His waiver claims netted +3 overall."
         # Gus Hill made no moves, so the clause is about nobody it can check.
         assert self._check(summary) == []
-        summary = "Gus Hill sat it out. Dan Ford had a week to forget: his waiver moves netted +3 overall."
+        summary = "Gus Hill sat it out. Dan Ford had a week to forget: his waiver claims netted +3 overall."
         assert len(self._check(summary)) == 1
 
     def test_nothing_is_read_when_nobody_mixed_kinds(self):
         managers = [m for m in _mixed_waivers() if m["manager_name"] in ("Eve Ray", "Gus Hill")]
-        assert self._check("Eve Ray's waiver moves netted +3 overall.", managers) == []
+        assert self._check("Eve Ray's waiver claims netted +3 overall.", managers) == []
 
     def _aside_line(self) -> list[RecapManagerEntry]:
         # A free agent (+6) and a waiver (+1), +7 overall.
@@ -8449,9 +8489,10 @@ class TestKindNetScopeCheck:
             _make_manager(name="Gus Hill", entry_id=2),
         ]
 
+    # The waiver is pinned to claims so that it is a kind at all (#539).
     _ASIDE = (
         "Dan Ford had a busy week. Belloumi came in on a free agent for Kluivert and scored 6, "
-        "and with Dunk's +1 on waivers {subject} finished +7"
+        "and with Dunk's +1 on waiver claims {subject} finished +7"
     )
 
     @pytest.mark.parametrize("subject", ["he", "she", "they"])
@@ -8464,19 +8505,19 @@ class TestKindNetScopeCheck:
 
     @pytest.mark.parametrize("summary", [
         # The kind is the subject: its "overall" is the waivers' (#390).
-        "Dan Ford's waiver moves netted +7 overall.",
-        "Dan Ford's waivers made him +7.",
-        "Dan Ford's waivers made him +7 overall.",
+        "Dan Ford's waiver claims netted +7 overall.",
+        "Dan Ford's waiver claim made him +7.",
+        "Dan Ford's waiver claim made him +7 overall.",
         # PR #468 review: a new subject with no aside figure is still the
         # waivers' figure, closer or not.
-        "Dan Ford's waivers he netted +7 overall.",
-        "Dan Ford on waivers he went +7 in total.",
-        "Dan Ford's waiver moves he made were +7 overall.",
+        "Dan Ford's waiver claims he netted +7 overall.",
+        "Dan Ford on his one waiver he went +7 in total.",
+        "Dan Ford's waiver claims he made were +7 overall.",
         # ...and a relative clause's pronoun opens no new subject.
-        "Dan Ford's waivers, which he netted +7 overall, did little.",
-        "Dan Ford's waivers, which they netted +7 for the week, did little.",
+        "Dan Ford's waiver claims, which he netted +7 overall, did little.",
+        "Dan Ford's waiver claims, which they netted +7 for the week, did little.",
         # The aside's own figure with no new subject carries on to the kind.
-        "Dan Ford's +1 on waivers left him +7.",
+        "Dan Ford's +1 on waiver claims left him +7.",
     ])
     def test_the_week_s_net_said_of_the_kind_is_still_caught(self, summary):
         problems = self._check(summary, self._aside_line())
@@ -8499,7 +8540,7 @@ class TestKindNetScopeCheck:
     def test_the_registry_runs_it_on_a_draft_editorial(self):
         data = _make_recap_data(managers=_mixed_waivers())
         data["fpl_format"] = "draft"
-        found = check_recap_editorial("Dan Ford's waiver moves netted +3 overall.", data)
+        found = check_recap_editorial("Dan Ford's waiver claims netted +3 overall.", data)
         assert list(found) == [RECAP_WARNING_KIND_NET_MISATTRIBUTION]
         prompt = get_recap_editorial_retry_prompt("ORIGINAL", found)
         assert "never their waivers' or their free agents'" in prompt
@@ -8562,21 +8603,89 @@ class TestPossessivePronounNetAndLostNet:
         assert len(problems) == 1
         assert '" of Welbeck in for Kostoulas, but -9 is Manager D\'s net' in problems[0]
 
-    @pytest.mark.parametrize("summary", [_SENTENCE, "Manager D's waiver moves lost 9 net points."])
+    @pytest.mark.parametrize("summary", [
+        _SENTENCE.replace("waiver work", "waiver claims"), "Manager D's waiver claims lost 9 net points.",
+    ])
     def test_lost_links_a_kind_to_its_figure(self, summary):
         problems = self._kind(summary)
         assert len(problems) == 1
         assert self._KIND_FACT in problems[0]
 
+    def test_the_reported_sentence_now_passes_the_kind_check(self):
+        """Issue #539: "waiver work" is every move, and -9 is all of them."""
+        assert self._kind(self._SENTENCE) == []
+
     def test_the_owner_of_a_player_s_squad_does_not_take_the_clause(self):
         problems = self._kind(
-            "Manager D had a week to forget. His waiver work lost 9 net points, with Isak on Manager E's bench."
+            "Manager D had a week to forget. His waiver claims lost 9 net points, with Isak on Manager E's bench."
         )
         assert len(problems) == 1
         assert self._KIND_FACT in problems[0]
 
     def test_a_waiver_s_own_swing_after_lost_passes(self):
         assert self._kind("Manager D's waiver work lost 4 net on Elanga for Isak.") == []
+
+
+class TestGenericWaiverWordIsEveryMove:
+    """Issue #539: the kind check's verdict on "waiver work" turned on the
+    verb and the punctuation. A waiver word is every move unless it names
+    claims, is counted, or is set against the free agents, so the same claim
+    gets the same verdict however it is worded. Manager D's waivers net +0,
+    free agents -9, -9 overall (`_lost_net_mover`)."""
+
+    _LEAD = "Manager D had a week to forget. "
+    _OVERALL = "-9 is Manager D's net for the whole gameweek (4 moves: 2 waivers, 2 free agents)"
+
+    def _kind(self, sentence: str) -> list[str]:
+        managers = _lost_net_mover()
+        return check_kind_net_scopes(self._LEAD + sentence, managers, RecapNames.of(managers))
+
+    @pytest.mark.parametrize("sentence", [
+        "His waiver work lost 9 net points.",
+        "His waiver work netted -9.",
+        "His waiver work came to -9 net across four moves.",
+        "He had the week's worst waiver work, -9 net across four moves.",
+        "He had the week's worst waiver week at -9 net.",
+        "His waiver moves were the week's worst, -9 net in all.",
+    ])
+    def test_the_issue_s_six_sentences_pass(self, sentence):
+        assert self._kind(sentence) == []
+
+    def test_the_issue_s_pair_gets_one_verdict(self):
+        assert self._kind("His waiver work lost 9 net points.") == self._kind(
+            "He had the week's worst waiver work, -9 net across four moves."
+        ) == []
+
+    @pytest.mark.parametrize("sentence", [
+        # Claims named.
+        "His waiver claims lost 9 net points.",
+        # Counted.
+        "His two waivers netted -9.",
+        # Set against the free agents, the waivers given the overall -9.
+        "His waivers lost 9 net but his free agents only 1.",
+    ])
+    def test_a_waiver_word_pinned_to_claims_is_still_caught(self, sentence):
+        problems = self._kind(sentence)
+        assert len(problems) == 1
+        assert self._OVERALL in problems[0]
+        assert "not the waivers' own net of +0" in problems[0]
+
+    @pytest.mark.parametrize("sentence", [
+        "His waiver claims came to 0 net.",
+        # "Broke even" links nothing, so this one is never read.
+        "His waiver claims broke even at 0 net.",
+    ])
+    def test_the_claims_own_net_passes(self, sentence):
+        assert self._kind(sentence) == []
+
+    @pytest.mark.parametrize("sentence", [
+        "His free-agent moves netted +0.",
+        "His free-agent moves came to 0 net.",
+    ])
+    def test_free_agents_given_the_waivers_net_are_still_caught(self, sentence):
+        problems = self._kind(sentence)
+        assert len(problems) == 1
+        assert "+0 is the net across Manager D's 2 waivers, not the free agents' own net of -9" in problems[0]
 
 
 def _reported_table() -> list[RecapManagerEntry]:

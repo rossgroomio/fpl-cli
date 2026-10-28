@@ -1132,6 +1132,18 @@ _KIND_SCOPE_RE = re.compile(
     re.IGNORECASE,
 )
 _KIND_GROUP_LABELS = {"waiver": "waiver", "free_agent": "free agent"}
+# A waiver word is every move the manager made unless something pins it to
+# their waiver claims (#539). The league's own Waiver Genius and Waiver
+# Disaster are judged on the aggregate net, waivers and free agents
+# together, so "his waiver work lost 9" of the overall -9 is the tool's own
+# usage. It names waivers alone when it names claims ("his waiver claims"),
+# is counted ("his two waivers", "each waiver"), or stands against a
+# free-agent scope of its own in the clause ("his waivers broke even but his
+# free agents lost 9"). "Free agent" is never used for every move.
+_WAIVER_CLAIMS_RE = re.compile(r"claims?$", re.IGNORECASE)
+_WAIVER_COUNT_BEFORE_RE = re.compile(
+    r"(?<!\w)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|both|each|either)\s+$", re.IGNORECASE,
+)
 # The same nouns with no kind before them are every move ("his moves netted
 # +3 overall"): a figure said of them keeps that subject whatever kind word
 # trails after it, and a kind joined to one ("a waiver and a pickup") is no
@@ -1149,7 +1161,7 @@ _KIND_JOIN_RE = re.compile(
 )
 # What may sit between a kind and the figure it scopes: the verb that carries
 # one to the other and its furniture, never a word that names or counts
-# anything else. "His waiver moves netted +3 overall" scopes +3 to his
+# anything else. "His waiver claims netted +3 overall" scopes +3 to his
 # waivers; "his one waiver lost a point and his moves netted +3" does not,
 # and neither does "Manzambi arrived as a free agent (+4) and left his moves
 # +3", where another figure stands nearer. Before the figure, one comma may
@@ -1198,24 +1210,38 @@ class _KindScope:
         return next(iter(self.kinds)) if len(self.kinds) == 1 and _ANY_KIND not in self.kinds else None
 
 
-def _kind_scopes(clause: str) -> list[_KindScope]:
-    """Every scope in `clause`, kinds and neutral nouns, joined runs merged."""
-    words = [
-        (match.start(), match.end(), _KIND_GROUP_LABELS[next(g for g in _KIND_GROUP_LABELS if match.group(g))])
-        for match in _KIND_SCOPE_RE.finditer(clause)
-    ]
-    words.extend(
-        (match.start(), match.end(), _ANY_KIND) for match in _NEUTRAL_SCOPE_RE.finditer(clause)
-        if not any(start <= match.start() < end for start, end, _ in words)
+def _waiver_pinned(clause: str, match: re.Match[str]) -> bool:
+    """Whether the waiver word `match` names waiver claims on its own
+    account: it names claims, or is counted (#539)."""
+    return bool(
+        _WAIVER_CLAIMS_RE.search(match.group(0)) or _WAIVER_COUNT_BEFORE_RE.search(clause, 0, match.start())
     )
-    scopes: list[_KindScope] = []
-    for start, end, kind in sorted(words):
-        if scopes and _KIND_JOIN_RE.match(_plain(clause[scopes[-1].end:start])):
-            last = scopes.pop()
-            scopes.append(_KindScope(last.start, end, last.kinds | {kind}))
+
+
+def _kind_scopes(clause: str) -> list[_KindScope]:
+    """Every scope in `clause`, kinds and neutral nouns, joined runs merged.
+    A waiver run nothing pins to claims is every move (#539)."""
+    words = []
+    for match in _KIND_SCOPE_RE.finditer(clause):
+        kind = _KIND_GROUP_LABELS[next(g for g in _KIND_GROUP_LABELS if match.group(g))]
+        words.append((match.start(), match.end(), kind, kind != "waiver" or _waiver_pinned(clause, match)))
+    words.extend(
+        (match.start(), match.end(), _ANY_KIND, True) for match in _NEUTRAL_SCOPE_RE.finditer(clause)
+        if not any(start <= match.start() < end for start, end, *_ in words)
+    )
+    runs: list[tuple[_KindScope, bool]] = []
+    for start, end, kind, pinned in sorted(words):
+        if runs and _KIND_JOIN_RE.match(_plain(clause[runs[-1][0].end:start])):
+            last, last_pinned = runs.pop()
+            runs.append((_KindScope(last.start, end, last.kinds | {kind}), last_pinned or pinned))
         else:
-            scopes.append(_KindScope(start, end, frozenset({kind})))
-    return scopes
+            runs.append((_KindScope(start, end, frozenset({kind})), pinned))
+    contrasted = any(scope.kind == "free agent" for scope, _ in runs)
+    return [
+        _KindScope(scope.start, scope.end, frozenset({_ANY_KIND}))
+        if scope.kind == "waiver" and not (pinned or contrasted) else scope
+        for scope, pinned in runs
+    ]
 
 
 def _kind_link(gap: str, words: frozenset[str], *, comma: bool = False) -> bool:
@@ -1289,27 +1315,35 @@ def check_kind_net_scopes(summary: str, managers: Sequence[RecapManagerEntry], n
 
     A manager made one waiver (-1) and one free-agent pickup (+4), and the
     editorial wrote "his waiver moves netted +3 overall": the +3 is the two
-    together, so the sentence hid a losing claim behind the pickup's gain.
-    For a manager whose moves are all one kind the kind is every move and
-    the net overall is that kind's, so only a line that mixes kinds can be
-    wrong this way, and its per-kind nets and swings are known.
+    together. That sentence passes now (#539): a generic waiver word ("his
+    waiver work", "his waiver moves", "his waivers") is read as every move
+    the manager made, the way the league's Waiver Genius and Waiver Disaster
+    are judged on the aggregate net. "His waiver claims netted +3 overall"
+    is still caught, as is a waiver word that is counted ("his one waiver",
+    "both waivers") or set against a free-agent scope of its own in the same
+    clause ("his waivers broke even but his free agents lost 9"). "Free
+    agent" is never every move. For a manager whose moves are all one kind
+    the kind is every move and the net overall is that kind's, so only a
+    line that mixes kinds can be wrong this way, and its per-kind nets and
+    swings are known.
 
-    A figure is read when a kind word scopes it -- "waivers", "waiver
-    moves", "free agents", "free-agent pickups", joined to the figure by a
+    A figure is read when a kind word scopes it -- "waiver claims", "two
+    waivers", "free agents", "free-agent pickups", joined to the figure by a
     few words of verb ("netted", "came to", "left him", ", which netted")
     with nothing between them that names or counts anything else -- and the
     scope names one kind. Kind-neutral scopes ("moves", "claims", "pickups",
-    "the waiver wire", "one waiver and one free agent") pass, and so does a
-    figure whose own subject is one of them, whatever kind trails after it.
-    So does a figure after a kind that is only an aside: one that already
-    has its own figure, with a new subject opening the gap to the next
-    ("with Dunk's +1 on waivers he finished +7", #465). Whose moves they are is the one manager
-    the clause names, or, in a clause that names none ("his waiver moves"),
-    the one manager the nearest earlier clause of the paragraph named; a
-    clause naming two managers, or following one that did, is left alone. A
-    manager a clause only measures someone against ("a point clear of Bob")
-    does not count as named (#524), nor does one named only as the owner of
-    a player's squad ("on Bob's bench", #537).
+    "his waiver work", "the waiver wire", "one waiver and one free agent")
+    pass, and so does a figure whose own subject is one of them, whatever
+    kind trails after it. So does a figure after a kind that is only an
+    aside: one that already has its own figure, with a new subject opening
+    the gap to the next ("with Dunk's +1 on waiver claims he finished +7",
+    #465). Whose moves they are is the one manager the clause names, or, in
+    a clause that names none ("his waiver claims"), the one manager the
+    nearest earlier clause of the paragraph named; a clause naming two
+    managers, or following one that did, is left alone. A manager a clause
+    only measures someone against ("a point clear of Bob") does not count
+    as named (#524), nor does one named only as the owner of a player's
+    squad ("on Bob's bench", #537).
     The figure is then a problem only when it is not that kind's net nor the
     swing of a move of that kind, and is another figure on the manager's
     line: the net overall, another kind's net, or another kind's move's
