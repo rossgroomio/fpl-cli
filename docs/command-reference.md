@@ -1635,8 +1635,9 @@ notes pack — an unreadable store, or no league id configured for the format.
 
 The second half starts at GW20 and takes in `post_chip_boundary`, `run_in` and `finale`, so to
 ask whether the second set of chips is live, compare `metadata.gameweek` with 20 rather than
-reading one phase. GW20-31 used to report `midpoint` too, which told their recaps they were
-the season midpoint.
+reading one phase. That 20 is FPL's chip rule (the second set opens at GW20 of 38), not a
+setting of this tool, so it moves only if FPL changes the rule. GW20-31 used to report
+`midpoint` too, which told their recaps they were the season midpoint.
 
 #### Capture warnings
 

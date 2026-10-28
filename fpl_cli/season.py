@@ -34,9 +34,11 @@ Each chip is available once up to and including it, and once more from
 def second_half_start(chip_split_gw: int = CHIP_SPLIT_GW) -> int:
     """First gameweek of the second half, given the first half's last.
 
-    The one place the gameweek after the split is worked out, so a caller
-    handed a different season length (the notes pack's tests) asks the same
-    question the constant answers rather than spelling its own `+ 1`.
+    For code handed a season length to work in, which today is only the
+    notes pack and its shorter test seasons. Code tied to the real season,
+    the chip plan among it, reads `SECOND_HALF_START_GW` instead, which this
+    computes, so the two agree at the real length and the `+ 1` is written
+    once.
     """
     return chip_split_gw + 1
 
@@ -44,8 +46,9 @@ def second_half_start(chip_split_gw: int = CHIP_SPLIT_GW) -> int:
 SECOND_HALF_START_GW: int = second_half_start()
 """First gameweek of the second half (GW20 of 38), where the second set of chips opens.
 
-Ask "is this the second half?" as `gameweek >= SECOND_HALF_START_GW`, never
-`> CHIP_SPLIT_GW`.
+Ask "is this the second half?" as `gameweek >= SECOND_HALF_START_GW` (the first
+half as `<`), never with `<` or `>` against `CHIP_SPLIT_GW`: `tests/test_season.py`
+holds every module to it.
 """
 
 PROMOTED_CLUBS_PER_SEASON: int = 3
