@@ -3,9 +3,10 @@
 Two things live here, both pure derivations from data U8 already computes --
 never a second source of truth:
 
-- `derive_season_phase`: which of five arcs (opener, pre-chip-boundary,
-  midpoint, run-in, finale) a gameweek sits in (R15). A standalone, pure
-  function so a later unit can call it without a store or a built pack.
+- `derive_season_phase`: which of six arcs (opener, pre-chip-boundary,
+  midpoint, post-chip-boundary, run-in, finale) a gameweek sits in (R15). A
+  standalone, pure function so a later unit can call it without a store or
+  a built pack.
 - `build_notes_pack`: atomic, provenance-stamped factoids for one gameweek
   (R14) -- one per manager per streak condition with an open run, one per
   manager per condition with a season occurrence count (issue #164), the
@@ -93,11 +94,13 @@ TRAILING_WINDOW_GAMEWEEKS: int = 6
 class SeasonPhase(str, Enum):
     """Where a gameweek sits in the season's arc, independent of any one
     league's data -- purely a function of the gameweek number against the
-    fixed season-length and chip-split constants (R15)."""
+    fixed season-length and chip-split constants (R15). Opener, midpoint and
+    finale are one gameweek each; the other three are the spans between."""
 
     OPENER = "opener"
     PRE_CHIP_BOUNDARY = "pre_chip_boundary"
     MIDPOINT = "midpoint"
+    POST_CHIP_BOUNDARY = "post_chip_boundary"
     RUN_IN = "run_in"
     FINALE = "finale"
 
@@ -110,25 +113,28 @@ def derive_season_phase(
     """Derive the season phase for one gameweek (R15).
 
     Exhaustive and gap-free over 1..total_gameweeks: opener (GW1) <
-    pre_chip_boundary (GW2..chip_split_gw-1) < midpoint
-    (chip_split_gw..total_gameweeks-TRAILING_WINDOW_GAMEWEEKS-1) < run_in
-    (the last TRAILING_WINDOW_GAMEWEEKS gameweeks before the final one) <
-    finale (total_gameweeks and beyond, so a season whose real final
-    gameweek differs from the constant still reaches it).
+    pre_chip_boundary (GW2..chip_split_gw-1) < midpoint (chip_split_gw) <
+    post_chip_boundary (second_half_start(chip_split_gw)..
+    total_gameweeks-TRAILING_WINDOW_GAMEWEEKS-1) < run_in (the last
+    TRAILING_WINDOW_GAMEWEEKS gameweeks before the final one) < finale
+    (total_gameweeks and beyond, so a season whose real final gameweek
+    differs from the constant still reaches it).
 
     Only the opener and finale boundaries are handed down by the plan
-    verbatim; midpoint and run_in split the remaining span at the
-    chip split gameweek (the last of the first half) and at a trailing window sized to match the
-    pack-builder's own raw-row read window (see `build_notes_pack`), rather
-    than at some other arbitrary fraction of the season -- both boundaries
-    are already-meaningful points elsewhere in the codebase, so reusing them
+    verbatim; the rest split the remaining span at the chip split gameweek
+    and at a trailing window sized to match the pack-builder's own raw-row
+    read window (see `build_notes_pack`), rather than at some other
+    arbitrary fraction of the season -- both boundaries are
+    already-meaningful points elsewhere in the codebase, so reusing them
     here avoids inventing a third, unrelated notion of "how far into the
     season".
 
-    So midpoint runs from GW19, still the first half, to GW31, well into
-    the second: it says nothing about which chip half a gameweek is in. Ask
-    `second_half_start(chip_split_gw)` (GW20), never the phase, whether the
-    second set of chips is live.
+    Midpoint is the chip split gameweek alone (GW19 of 38): the last of the
+    first half, whose recap is written at the halfway point once it has
+    finished. It used to run on to the run-in, which told a GW25 recap it
+    was the season midpoint (#531). Ask `second_half_start(chip_split_gw)`,
+    never the phase, whether the second set of chips is live: the run-in
+    and finale are the second half too.
     """
     if is_opening_gameweek(gameweek):
         return SeasonPhase.OPENER
@@ -139,7 +145,9 @@ def derive_season_phase(
         return SeasonPhase.RUN_IN
     if gameweek < chip_split_gw:
         return SeasonPhase.PRE_CHIP_BOUNDARY
-    return SeasonPhase.MIDPOINT
+    if gameweek == chip_split_gw:
+        return SeasonPhase.MIDPOINT
+    return SeasonPhase.POST_CHIP_BOUNDARY
 
 
 def is_season_milestone(
@@ -147,23 +155,21 @@ def is_season_milestone(
     total_gameweeks: int = TOTAL_GAMEWEEKS,
     chip_split_gw: int = CHIP_SPLIT_GW,
 ) -> bool:
-    """Whether this gameweek is one of the season's two milestone *moments*.
+    """Whether this gameweek is one of the season's two milestone *moments*:
+    the chip split gameweek, the last of the first half, which is
+    `TOTAL_GAMEWEEKS // 2` and so is the halfway point too, and the finale.
 
-    Deliberately not "is this gameweek in a milestone phase": `MIDPOINT`
-    spans thirteen gameweeks, so gating a once-a-season set-piece on the
-    phase would fire it thirteen times and turn the set-piece into
-    wallpaper. The moment is the phase's own first gameweek -- the
-    chip split gameweek, the last of the first half, which is
-    `TOTAL_GAMEWEEKS // 2` and so is the halfway point too -- and the finale.
-
-    Both are compared exactly rather than asked of `derive_season_phase`,
-    whose FINALE branch is deliberately open-ended (`>= total_gameweeks`, so
+    Both are compared exactly rather than asked of `derive_season_phase`.
+    Its FINALE branch is deliberately open-ended (`>= total_gameweeks`, so
     a season running past the constant still has a phase). Open-ended is
     right for a phase and wrong for a moment: a season rearranged out to
     GW39 would satisfy it at GW38 and again at GW39, and print the
     once-a-season set-piece twice. The moment is the constant's own final
     gameweek, which fires once whatever the real season length turns out to
-    be.
+    be. And a season too short to leave a gap between the split and the
+    run-in (the tests' eight-gameweek one) puts the split gameweek in the
+    run-in rather than the midpoint, where the halfway set-piece still has
+    to fire.
     """
     return gameweek in (chip_split_gw, total_gameweeks)
 
@@ -978,12 +984,12 @@ def _season_phase_text(
     chip_split_gw: int,
     fpl_format: LeagueFormat,
 ) -> str:
-    """Draft has no chip mechanics, so `PRE_CHIP_BOUNDARY` and `MIDPOINT` --
-    the two phrasings that name the chip split -- fall back to the plain
-    halfway-point framing for a draft league rather than mentioning chips
-    that don't exist for it. `chip_split_gw` is also just `TOTAL_GAMEWEEKS
-    // 2` (see `derive_season_phase`), so the halfway-point framing is still
-    accurate, not merely chip-free.
+    """Draft has no chip mechanics, so `PRE_CHIP_BOUNDARY`, `MIDPOINT` and
+    `POST_CHIP_BOUNDARY` -- the three phrasings that name the chip split --
+    fall back to the plain halfway-point framing for a draft league rather
+    than mentioning chips that don't exist for it. `chip_split_gw` is also
+    just `TOTAL_GAMEWEEKS // 2` (see `derive_season_phase`), so the
+    halfway-point framing is still accurate, not merely chip-free.
     """
     if phase is SeasonPhase.OPENER:
         return f"GW{gameweek} is the season opener."
@@ -995,24 +1001,18 @@ def _season_phase_text(
             f"available up to and including GW{chip_split_gw}."
         )
     if phase is SeasonPhase.MIDPOINT:
-        second_half_start_gw = second_half_start(chip_split_gw)
-        if gameweek >= second_half_start_gw:
-            if fpl_format == "draft":
-                return (
-                    f"GW{gameweek} is the season midpoint, past the GW{chip_split_gw} halfway "
-                    "point and before the run-in."
-                )
-            return (
-                f"GW{gameweek} is the season midpoint, past the GW{chip_split_gw} chip boundary "
-                "and before the run-in."
-            )
-        # The phase opens on the halfway milestone, still the first half's
-        # last gameweek, so the second set of chips is one gameweek away.
         if fpl_format == "draft":
             return f"GW{gameweek} is the season midpoint, the last gameweek of the first half."
         return (
             f"GW{gameweek} is the season midpoint, the last gameweek of the first half, "
-            f"with the second set of chips available from GW{second_half_start_gw}."
+            f"with the second set of chips available from GW{second_half_start(chip_split_gw)}."
+        )
+    if phase is SeasonPhase.POST_CHIP_BOUNDARY:
+        if fpl_format == "draft":
+            return f"GW{gameweek} is past the season's halfway point (GW{chip_split_gw}) and before the run-in."
+        return (
+            f"GW{gameweek} is in the second half of the season, before the run-in, "
+            f"with the second set of chips available from GW{second_half_start(chip_split_gw)}."
         )
     if phase is SeasonPhase.RUN_IN:
         return f"GW{gameweek} is in the run-in to the season finale (GW{total_gameweeks})."

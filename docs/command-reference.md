@@ -1617,25 +1617,27 @@ pack rescans every captured gameweek instead of a trailing six-gameweek window.
 | `opener` | The first gameweek (GW1) | "the season opener" |
 | `pre_chip_boundary` (classic) | Second gameweek up to the one before the first half's last (GW2-18) | "in the first half of the season, with the first set of chips available up to and including GW19" |
 | `pre_chip_boundary` (draft) | Second gameweek up to the one before the first half's last (GW2-18) | "before the season's halfway point (GW19)" |
-| `midpoint` (classic) | The first half's last gameweek to the start of the run-in (GW19-31) | GW19: "the season midpoint, the last gameweek of the first half, with the second set of chips available from GW20"; GW20-31: "the season midpoint, past the GW19 chip boundary and before the run-in" |
-| `midpoint` (draft) | The first half's last gameweek to the start of the run-in (GW19-31) | GW19: "the season midpoint, the last gameweek of the first half"; GW20-31: "the season midpoint, past the GW19 halfway point and before the run-in" |
+| `midpoint` (classic) | The first half's last gameweek (GW19), whose recap is written at the halfway point | "the season midpoint, the last gameweek of the first half, with the second set of chips available from GW20" |
+| `midpoint` (draft) | The first half's last gameweek (GW19), whose recap is written at the halfway point | "the season midpoint, the last gameweek of the first half" |
+| `post_chip_boundary` (classic) | The second half's first gameweek up to the start of the run-in (GW20-31) | "in the second half of the season, before the run-in, with the second set of chips available from GW20" |
+| `post_chip_boundary` (draft) | The second half's first gameweek up to the start of the run-in (GW20-31) | "past the season's halfway point (GW19) and before the run-in" |
 | `run_in` | The last six gameweeks before the final one (GW32-37) | "in the run-in to the season finale (GW38)" |
 | `finale` | The final gameweek and anything past it (GW38+) | "the season finale" |
 
-Draft has no chip mechanics, so `pre_chip_boundary` and `midpoint` drop the chip framing
-for a draft league in favour of the same halfway-point wording, plain of any chip
-language.
+Draft has no chip mechanics, so `pre_chip_boundary`, `midpoint` and `post_chip_boundary`
+drop the chip framing for a draft league in favour of the same halfway-point wording,
+plain of any chip language.
 
 Boundaries derive from the season-length and chip-split constants rather than fixed
 dates, so a season of a different length moves them and the stated gameweek numbers move
 with it. `metadata.season_phase` carries the live value, and is `null` on any run that built no
 notes pack — an unreadable store, or no league id configured for the format.
 
-`midpoint` covers GW19-31, so it doesn't tell you which chip half a gameweek is in: the second
-half starts at GW20. To ask whether the second set of chips is live, compare
-`metadata.gameweek` with 20 rather than reading `season_phase`. That 20 is FPL's chip rule
-(the second set opens at GW20 of 38), not a setting of this tool, so it moves only if FPL
-changes the rule.
+The second half starts at GW20 and takes in `post_chip_boundary`, `run_in` and `finale`, so to
+ask whether the second set of chips is live, compare `metadata.gameweek` with 20 rather than
+reading one phase. That 20 is FPL's chip rule (the second set opens at GW20 of 38), not a
+setting of this tool, so it moves only if FPL changes the rule. GW20-31 used to report
+`midpoint` too, which told their recaps they were the season midpoint.
 
 #### Capture warnings
 
