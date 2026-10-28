@@ -8440,6 +8440,52 @@ class TestKindNetScopeCheck:
         as the league's Waiver Genius and Waiver Disaster are."""
         assert self._check(summary) == []
 
+    def test_a_generic_waiver_word_given_neither_reading_s_figure_is_caught(self):
+        """PR #542 review: "waivers" read as every move still may not carry
+        the free agent's swing, which is neither the waivers' net nor the
+        net overall."""
+        assert self._check("Dan Ford's waivers netted +4.") == [
+            'the editorial says "waivers netted +4" of Dan Ford, but +4 is the swing on Manzambi in for '
+            "Yalcouyé [free agent], not the waivers' own net of -1 nor their moves' net of +3 overall"
+        ]
+
+    @pytest.mark.parametrize("summary", [
+        # PR #542 review: one waiver, however it is singled out, and a count
+        # in words.
+        "Dan Ford's waiver netted +3 overall.",
+        "Dan Ford's only waiver netted +3 overall.",
+        "Dan Ford's first waiver netted +3 overall.",
+        "Dan Ford's couple of waivers netted +3 overall.",
+        # ...and free agents of his own set against the waivers in another
+        # clause of the same sentence.
+        "Dan Ford's waivers netted +3 overall; his free agents netted +4.",
+        "Dan Ford's waivers netted +3 overall: Dan Ford's free agents had done the work.",
+    ])
+    def test_a_waiver_word_singled_out_or_set_against_free_agents_is_caught(self, summary):
+        problems = self._check(summary)
+        assert len(problems) == 1
+        assert problems[0].endswith("not the waivers' own net of -1")
+
+    @pytest.mark.parametrize("summary", [
+        # PR #542 review: a free agent named as a player's status is no
+        # contrast with the waivers.
+        "Dan Ford's waivers netted +3 overall, while Manzambi arrived as a free agent.",
+        "Dan Ford's waiver work netted +3 overall with a free agent doing the heavy lifting.",
+        # A contrast in another sentence leaves this one's waivers loose.
+        "Dan Ford's free agents netted +4. His waiver work netted +3 overall.",
+    ])
+    def test_a_free_agent_named_in_passing_leaves_a_waiver_word_loose(self, summary):
+        assert self._check(summary) == []
+
+    def test_each_clause_reads_its_own_sentence_s_contrast(self):
+        summary = (
+            "Dan Ford had a **busy** week: two moves. His waivers netted +3 overall; his free agents "
+            "netted +4. His waiver work netted +3 overall!"
+        )
+        problems = self._check(summary)
+        assert len(problems) == 1
+        assert '"waivers netted +3"' in problems[0]
+
     @pytest.mark.parametrize("summary", [
         # Free agents are never every move.
         "Dan Ford's free agents netted +3 overall.",
