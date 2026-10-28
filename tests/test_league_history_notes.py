@@ -668,12 +668,12 @@ class TestSeasonCountEntries:
             ])
 
         _append(1, winner=1)  # first half: M1's first win
-        for gw in range(2, 21):
+        for gw in range(2, 20):
             _append(gw, winner=1)
-        _append(21, winner=2)  # second half: M2's first win
+        _append(20, winner=2)  # the second half's first gameweek: M2's first win
 
         early = self._count_entry(build_notes_pack(store, 1), "M1", "gw_win_streak")
-        late = self._count_entry(build_notes_pack(store, 21), "M2", "gw_win_streak")
+        late = self._count_entry(build_notes_pack(store, 20), "M2", "gw_win_streak")
 
         assert (early.occurrences, early.surfaces) == (1, frozenset())
         assert late.occurrences == 1

@@ -24,7 +24,29 @@ TOTAL_GAMEWEEKS: int = 38
 """Number of gameweeks in a Premier League season (unchanged since 1995)."""
 
 CHIP_SPLIT_GW: int = TOTAL_GAMEWEEKS // 2
-"""Last gameweek of the first half: each chip is available once up to and including it, and once more from the next."""
+"""Last gameweek of the first half (GW19 of 38), and the season's halfway milestone.
+
+Each chip is available once up to and including it, and once more from
+`SECOND_HALF_START_GW`.
+"""
+
+
+def second_half_start(chip_split_gw: int = CHIP_SPLIT_GW) -> int:
+    """First gameweek of the second half, given the first half's last.
+
+    The one place the gameweek after the split is worked out, so a caller
+    handed a different season length (the notes pack's tests) asks the same
+    question the constant answers rather than spelling its own `+ 1`.
+    """
+    return chip_split_gw + 1
+
+
+SECOND_HALF_START_GW: int = second_half_start()
+"""First gameweek of the second half (GW20 of 38), where the second set of chips opens.
+
+Ask "is this the second half?" as `gameweek >= SECOND_HALF_START_GW`, never
+`> CHIP_SPLIT_GW`.
+"""
 
 PROMOTED_CLUBS_PER_SEASON: int = 3
 """Clubs promoted into the Premier League each season (three up, three down since 1995-96)."""

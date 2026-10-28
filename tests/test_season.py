@@ -7,6 +7,7 @@ import pytest
 
 from fpl_cli.season import (
     CHIP_SPLIT_GW,
+    SECOND_HALF_START_GW,
     TOTAL_GAMEWEEKS,
     core_insights_season,
     get_season_year,
@@ -19,6 +20,7 @@ from fpl_cli.season import (
     season_partition,
     season_start_year,
     season_year_from_gameweeks,
+    second_half_start,
     understat_season,
     vaastav_season,
     vaastav_season_range,
@@ -32,6 +34,13 @@ def test_total_gameweeks_is_38():
 
 def test_chip_split_is_half():
     assert CHIP_SPLIT_GW == TOTAL_GAMEWEEKS // 2
+
+
+def test_second_half_starts_the_gameweek_after_the_split():
+    """GW19 closes the first half and GW20 opens the second, whatever
+    season length the split is handed."""
+    assert (CHIP_SPLIT_GW, SECOND_HALF_START_GW) == (19, 20)
+    assert second_half_start(10) == 11
 
 
 # -- get_season_year ---------------------------------------------------------
