@@ -8547,18 +8547,31 @@ class TestPossessivePronounNetAndLostNet:
         assert self._net(self._SENTENCE) == []
         assert self._net(self._SENTENCE.replace("His", "Manager D's")) == []
 
-    def test_a_possessive_pronoun_with_no_clear_antecedent_is_skipped(self):
-        assert self._net("Manager D and Manager E had a week to forget. His waiver work lost 9 net on "
-                         "Welbeck in for Kostoulas.") == []
-
-    def test_the_move_s_figure_named_after_nobody_is_still_caught(self):
-        problems = self._net("Manager D had a week to forget. The worst of it was 9 net lost on Welbeck in for Kostoulas.")
+    @pytest.mark.parametrize("clause", [
+        "The worst of it was 9 net lost on Welbeck in for Kostoulas.",
+        # PR #538 review: a figure that leads straight into the move is the
+        # move's, whatever pronoun opens the clause, and a pronoun that does
+        # not open it stands for nobody's figure.
+        "Their worst move cost 9 net on Welbeck in for Kostoulas.",
+        "His -9 net swing came on Welbeck in for Kostoulas.",
+        "Her 9 net loss came on Welbeck in for Kostoulas.",
+        "Despite his best efforts, 9 net was lost on Welbeck in for Kostoulas.",
+    ])
+    def test_a_figure_that_leads_into_the_move_is_still_caught(self, clause):
+        problems = self._net("Manager D had a week to forget. " + clause)
         assert len(problems) == 1
-        assert problems[0].startswith('the editorial says "9 net" of Welbeck in for Kostoulas')
+        assert '" of Welbeck in for Kostoulas, but -9 is Manager D\'s net' in problems[0]
 
     @pytest.mark.parametrize("summary", [_SENTENCE, "Manager D's waiver moves lost 9 net points."])
     def test_lost_links_a_kind_to_its_figure(self, summary):
         problems = self._kind(summary)
+        assert len(problems) == 1
+        assert self._KIND_FACT in problems[0]
+
+    def test_the_owner_of_a_player_s_squad_does_not_take_the_clause(self):
+        problems = self._kind(
+            "Manager D had a week to forget. His waiver work lost 9 net points, with Isak on Manager E's bench."
+        )
         assert len(problems) == 1
         assert self._KIND_FACT in problems[0]
 
@@ -8946,8 +8959,8 @@ class TestPlayerFigureTieClaims:
 
     @pytest.mark.parametrize("summary", [
         "Semenyo's 17 was the week's joint-top score.",
-        "Semenyo (17) was the week's joint-top scorer among the players.",
-        "Semenyo, on 17, ended the week as the joint-top score of the round.",
+        "Semenyo (17) was the week's joint-top score.",
+        "Elsewhere, Semenyo's 17 was the week's joint-top score.",
     ])
     def test_a_player_s_figure_is_left_alone(self, summary):
         assert self._check(summary) == []
@@ -8956,6 +8969,13 @@ class TestPlayerFigureTieClaims:
         "Manager A's 50 was the week's joint-top score.",
         # A manager named between the player and the tie is its subject.
         "Semenyo's 17 lifted Manager A to the week's joint-top score.",
+        # PR #538 review: a player who is not the clause's subject, a new
+        # subject between his figure and the tie, or a number that is not
+        # his points.
+        "With Semenyo's 17 in the bank, 70 was the week's joint-top score.",
+        "Semenyo's 17 helped, and the week's joint-top score was Manager C's 70.",
+        "Semenyo's 17 carried him to the week's joint-top score.",
+        "Manager C played Semenyo 70 minutes and finished joint-top on the week.",
     ])
     def test_the_same_shape_said_of_a_manager_is_still_read(self, summary):
         assert self._check(summary) == [
@@ -9378,14 +9398,31 @@ class TestPronounPassesOverAPassingMention:
         assert problems[0].startswith('the editorial places Manager A "first" for the week')
 
     @pytest.mark.parametrize("passing", [
-        "Semenyo outscored Manager B's captain. ",
-        "Semenyo finished level with Manager B. ",
-        "Semenyo finished level with Manager C and Manager B. ",
-        "Semenyo's 17 was a point clear of Manager B's 16. ",
         "Brobbey sat in Manager B's squad all afternoon. ",
+        "Semenyo's 17 was matched by Brobbey on Manager B's loaded bench. ",
+        "Semenyo's 17 was matched by Brobbey, who came off Manager B's bench. ",
     ])
-    def test_a_manager_named_in_passing_is_never_the_next_he(self, passing):
+    def test_the_owner_of_a_player_s_squad_is_never_the_next_he(self, passing):
         assert self._placings(self._LEAD + passing + "He finished third on the week.") == []
+
+    @pytest.mark.parametrize("clause", [
+        # PR #538 review: a phrase opening the clause, a lead-in before the
+        # owner, or a squad phrase with nothing before it is the clause's
+        # subject or topic, not a passing mention...
+        "Level with Manager C, Manager B hit 60. ",
+        "Against Manager C, Manager B scored 60. ",
+        "Semenyo finished level with Manager C, and Manager B was second. ",
+        "Sadly, Manager B's bench held Brobbey. ",
+        "Last week Manager B's bench held Brobbey. ",
+        "In Manager B's case the week was kinder. ",
+        "On Manager B's bench, Brobbey sat unused. ",
+        # ...and so is a manager whose thing is not a squad.
+        "There was a row over Manager B's captaincy. ",
+        "Everyone is talking about Manager B's captaincy. ",
+        "The talk was all of Manager B's captain. ",
+    ])
+    def test_a_manager_the_clause_is_about_is_not_passed_over(self, clause):
+        assert self._placings(self._LEAD + clause + "He finished second on the week.") == []
 
     @pytest.mark.parametrize("summary", [
         "Manager B was on 60. He finished third on the week.",

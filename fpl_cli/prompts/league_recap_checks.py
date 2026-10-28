@@ -632,37 +632,28 @@ def _measured_against(text: str, start: int) -> bool:
     return _MEASURED_AGAINST_RE.search(text, _window_start(text, start, 2), start) is not None
 
 
-# A manager named inside a phrase after the clause's verb is mentioned in
-# passing, never who the clause is about, so a "he" in the next clause does
-# not point back to them (#537): one a "with" or "over" phrase names ("level
-# with Hal Penn", "the race over Hal Penn"), or the owner of a thing ("on Hal
-# Penn's bench", "outscored Hal Penn's captain"). An owner opening the
-# clause, or a stretch of it after a comma or a conjunction, is in its
-# subject slot ("Hal Penn's bench held Brobbey", "..., and Hal Penn's
-# captain blanked"), and so is one whose score is the thing ("Cy Hart's 70
-# beat Hal Penn's 60" is about both). A verb's own object is no passing
-# mention: in "Gus Peel watched Hal Penn edge him" the next "he" could be
-# either's.
-_IN_PASSING_BEFORE_RE = re.compile(r"(?<!\w)(?:with|over|alongside|beside|against)\s+$", re.IGNORECASE)
-_OWNER_PHRASE_BEFORE_RE = re.compile(r"(?<!\w)(?:on|in)\s+$", re.IGNORECASE)
-_SUBJECT_SLOT_BEFORE_RE = re.compile(
-    r"(?:^|[,(–—]|\s-|(?<!\w)(?:and|but|while|whereas|though|although|as|so|yet|then|when|even|only"
-    r"|meanwhile|still|also|both))\s*$",
-    re.IGNORECASE,
+# A manager named only as the owner of the squad a player sat in, after the
+# clause's verb -- "shared with Brobbey on Gus Peel's bench", "Isak, sat in
+# Gus Peel's squad" -- is no more who the clause is about than one it
+# measures someone against (#537). A word, not a break, stands before the
+# preposition, so a phrase opening the clause or a stretch of it ("On Gus
+# Peel's bench, Brobbey ...", "In Gus Peel's case ...") is not one, and the
+# noun after the possessive is a squad's, so "the row over Gus Peel's
+# captaincy" is still about Gus Peel.
+_SQUAD_OWNER_BEFORE_RE = re.compile(r"\w\s+(?:on|in|off|from)\s+$", re.IGNORECASE)
+_SQUAD_OWNED_AFTER_RE = re.compile(
+    r"['’]s\s+(?:[a-z-]+\s+)?(?:bench|squad|team|xi|roster|books)(?!\w)", re.IGNORECASE,
 )
 
 
 def _named_in_passing(text: str, start: int, end: int) -> bool:
     """Whether the manager named at `start`-`end` of `text` is only
-    mentioned in passing: measured someone against (#524), or named inside
-    a phrase after the clause's verb (#537)."""
-    before = text[:start]
-    if _measured_against(text, start) or _IN_PASSING_BEFORE_RE.search(before):
-        return True
-    owner = _POSSESSIVE_RE.match(text, end)
-    if owner is None or re.search(r"\d", _words_after(text, owner.end(), 2)):
-        return False
-    return bool(_OWNER_PHRASE_BEFORE_RE.search(before)) or not _SUBJECT_SLOT_BEFORE_RE.search(before)
+    mentioned in passing: measured someone against (#524), or named as the
+    owner of the squad a player sat in (#537)."""
+    return _measured_against(text, start) or bool(
+        _SQUAD_OWNER_BEFORE_RE.search(text, _window_start(text, start, 2), start)
+        and _SQUAD_OWNED_AFTER_RE.match(text, end)
+    )
 
 
 @dataclass(frozen=True)
@@ -675,9 +666,9 @@ class _ReadClause:
     named: the subject a reader takes the next "he" for (#488). None where
     the clause opens on a list of managers ("Alice and Bob both struggled"),
     which has no one subject. A manager the clause only mentions in passing
-    -- measured someone against ("a point clear of Gus Peel", #524), or named
-    inside a phrase after its verb ("on Gus Peel's bench", #537) -- is none
-    of these: see `carried`."""
+    -- measured someone against ("a point clear of Gus Peel", #524), or the
+    owner of a player's squad ("on Gus Peel's bench", #537) -- is none of
+    these: see `subjects`."""
 
     text: str
     mentions: list[re.Match[str]]
@@ -687,28 +678,11 @@ class _ReadClause:
 
     @property
     def subjects(self) -> list[tuple[int, int, str]]:
-        """The managers the clause names, less any it only measures someone
-        against: the ones a claim in the clause itself can be about."""
-        return [mention for mention in self.named if not _measured_against(self.text, mention[0])]
-
-    @property
-    def carried(self) -> list[tuple[int, int, str]]:
-        """The managers the clause can pass on to a pronoun in the next: its
-        subjects, less any it only mentions in passing (`_named_in_passing`),
-        and any listed straight after one ("level with Gus Peel and Hal
-        Penn"). A clause naming nobody else passes its antecedent and opener
-        on (#524, #537)."""
-        kept: list[tuple[int, int, str]] = []
-        passing_end: int | None = None
-        for mention in self.named:
-            start, end, _ = mention
-            listed = passing_end is not None and _LIST_JOIN_RE.match(_plain(self.text[passing_end:start]))
-            if listed or _named_in_passing(self.text, start, end):
-                passing_end = end
-                continue
-            passing_end = None
-            kept.append(mention)
-        return kept
+        """The managers the clause names, less any it only mentions in
+        passing (`_named_in_passing`): the ones it can be about. A clause
+        naming nobody else passes its antecedent and opener on (#524,
+        #537)."""
+        return [mention for mention in self.named if not _named_in_passing(self.text, mention[0], mention[1])]
 
     @property
     def manager(self) -> str | None:
@@ -732,11 +706,9 @@ def _read_clauses(summary: str, names: RecapNames, aliases: Mapping[str, str]) -
             named = [(m.start(), m.end(), aliases[m.group(0)]) for m in mentions if m.group(0) in aliases]
             read = _ReadClause(clause, mentions, named, antecedent, opener)
             yield read
-            if carried := read.carried:
-                listed = len(carried) > 1 and _LIST_JOIN_RE.match(_plain(clause[carried[0][1]:carried[1][0]]))
-                distinct = {name for *_, name in carried}
-                antecedent = next(iter(distinct)) if len(distinct) == 1 else None
-                opener = None if listed else carried[0][2]
+            if subjects := read.subjects:
+                listed = len(subjects) > 1 and _LIST_JOIN_RE.match(_plain(clause[subjects[0][1]:subjects[1][0]]))
+                antecedent, opener = read.manager, None if listed else subjects[0][2]
 
 
 # =============================================================================
@@ -1004,9 +976,12 @@ def _mover_lines(managers: Sequence[RecapManagerEntry]) -> list[_MoverLine]:
     return lines
 
 
-# A possessive pronoun: "his", "their", and "her" before a word, not a figure
-# ("cost her 9 net" is an object).
-_POSSESSIVE_PRONOUN_RE = re.compile(r"(?<!\w)(?:his|their|her(?=\s+[^\W\d]))(?!\w)", re.IGNORECASE)
+# A possessive pronoun opening a clause, standing for a manager: "His waiver
+# work lost 9 net points" (#536).
+_POSSESSIVE_PRONOUN_OPENS_RE = re.compile(r"\W*(?:(?:and|but|so|yet)\s+)?(?:his|her|their)\s", re.IGNORECASE)
+# What sets a move named after a figure in a stretch of its own: "9 net
+# points, and Welbeck in for Kostoulas cost 8 of them".
+_NET_STRETCH_BREAK_RE = re.compile(r",|[–—]|\s-\s|(?<!\w)(?:and|but)(?!\w)", re.IGNORECASE)
 
 
 def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], names: RecapNames) -> list[str]:
@@ -1024,9 +999,10 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], 
     tied to the word "net", or a signed one after "worth" or before "swing"
     ("was worth -9", "a -9 swing", #501). The figure is then the move's when
     the move is the nearest thing named before it, and the manager's when the
-    manager is ("Gibbs-White for Wirtz went -4, and Alice was -6 net"), and a
-    possessive pronoun before it with neither named before stands for a
-    manager ("His waiver work lost 9 net", #536). It is a problem
+    manager is ("Gibbs-White for Wirtz went -4, and Alice was -6 net"), as it
+    is where the clause opens on a possessive pronoun, neither is named
+    before it, and the move follows in a stretch of its own ("His waiver
+    work lost 9 net points, and Welbeck in for Kostoulas cost 8", #536). It is a problem
     only when it is the move's, is not that move's swing, and is another
     figure on the same line, so a number from anywhere else is never guessed
     at. A clause that marks the figure as the manager's ("overall", "across
@@ -1109,11 +1085,19 @@ def check_net_attributions(summary: str, managers: Sequence[RecapManagerEntry], 
             last_owner = max((s for s in owner_starts if s < figure.start()), default=-1)
             if last_owner > last_move:
                 continue
-            # A possessive pronoun stands for a manager where nothing is
-            # named before the figure ("His waiver work lost 9 net points"),
-            # so the figure is that manager's, or one the clause cannot say
-            # whose, never the move's after it (#536).
-            if last_move < 0 and _POSSESSIVE_PRONOUN_RE.search(clause, 0, figure.start()):
+            # A clause opening on a possessive pronoun, with nothing named
+            # before the figure, says it of the manager the pronoun stands
+            # for, and a move named after it in a stretch of its own is not
+            # what it is about: "His waiver work lost 9 net points, and
+            # Welbeck in for Kostoulas cost 8 of them" (#536). Whichever
+            # manager that is, the figure is not the move's. One the figure
+            # leads straight into still is: "Their worst move cost 9 net on
+            # Welbeck in for Kostoulas".
+            next_move = min((s for s in move_starts if s > figure.start()), default=len(clause))
+            if (
+                last_move < 0 and _POSSESSIVE_PRONOUN_OPENS_RE.match(clause)
+                and _NET_STRETCH_BREAK_RE.search(clause, figure.end(), next_move)
+            ):
                 continue
             fact = by_manager[move.manager].misplaced(value, move, signed=signed)
             if fact is None:
@@ -1324,8 +1308,8 @@ def check_kind_net_scopes(summary: str, managers: Sequence[RecapManagerEntry], n
     the one manager the nearest earlier clause of the paragraph named; a
     clause naming two managers, or following one that did, is left alone. A
     manager a clause only measures someone against ("a point clear of Bob")
-    does not count as named (#524), nor, for the next clause's pronoun, one
-    it names only in passing ("on Bob's bench", #537).
+    does not count as named (#524), nor does one named only as the owner of
+    a player's squad ("on Bob's bench", #537).
     The figure is then a problem only when it is not that kind's net nor the
     swing of a move of that kind, and is another figure on the manager's
     line: the net overall, another kind's net, or another kind's move's
@@ -1420,10 +1404,20 @@ _TIE_SUBJECT_WORDS_BEFORE = 3
 _TIE_SUBJECT_WORDS_AFTER = 2
 # A player's figure as the subject of the tie, however far before it the
 # player is named: "Semenyo's 17 was the week's joint-top score", "Semenyo
-# (17) was joint-top" (#535). The player is in the possessive or followed by
-# his points, and no manager is named between him and the tie, so "Semenyo's
-# 17 lifted Bob to the joint-top score" is still Bob's.
-_TIE_PLAYER_FIGURE_RE = re.compile(r"['’]s(?!\w)|\s*\(\s*\d|,?\s+(?:(?:on|with)\s+)?\d+(?![\w.%])", re.IGNORECASE)
+# (17) was joint-top" (#535). The player is the first name in the clause,
+# opening it or straight after one leading phrase ("Elsewhere, Semenyo's 17
+# ..."), with his points straight after him. Nothing between that figure and
+# the tie may open another subject: no manager, no comma, no "and" and no
+# pronoun, so "Semenyo's 17 lifted Bob to the joint-top score", "Semenyo's 17
+# helped, and the week's joint-top score was Bob's" and "Semenyo's 17
+# carried him to the joint-top score" are still read.
+_TIE_PLAYER_LEAD_RE = re.compile(r"\W*(?:[^,\d]*,\s*)?")
+_TIE_PLAYER_FIGURE_RE = re.compile(
+    r"(?:['’]s\s+|\s*\(\s*)\d+(?:\s*(?:pts?|points?))?\)?(?![\w.%])", re.IGNORECASE,
+)
+_TIE_PLAYER_BREAK_RE = re.compile(
+    r"[,(–—]|\s-\s|(?<!\w)(?:and|but|he|she|they|him|her|them|his|their)(?!\w)", re.IGNORECASE,
+)
 _TIE_GAMEWEEK_RE = re.compile(r"(?<!\w)(?:scor\w*|tall(?:y|ies)|week\w*|gameweek\w*|gw\d*|round)(?!\w)", re.IGNORECASE)
 _TIE_TABLE_RE = re.compile(
     r"(?<!\w)(?:table|standings|league|positions?|places?|spots?|overall|season\w*|totals?|summit|rank\w*)(?!\w)",
@@ -1628,6 +1622,10 @@ def check_tie_claims(
         found = names.find(clause)
         player_spans = [m.span() for m in found if m.group(0) in names.players]
         manager_starts = [m.start() for m in found if m.group(0) in aliases]
+        opening = found[0] if found and found[0].group(0) in names.players.difference(aliases) else None
+        player_figure = opening and _TIE_PLAYER_LEAD_RE.fullmatch(clause, 0, opening.start()) and (
+            _TIE_PLAYER_FIGURE_RE.match(clause, opening.end())
+        )
         for match in ties:
             word = match.group("rank").lower()
             rest = clause[match.end():]
@@ -1641,10 +1639,10 @@ def check_tie_claims(
             subject = clause[lo:match.start()] + " " + clause[match.end():hi]
             if _TIE_OTHER_SUBJECT_RE.search(subject) or any(lo <= s and e <= hi for s, e in player_spans):
                 continue
-            if any(
-                e <= match.start() and _TIE_PLAYER_FIGURE_RE.match(clause, e)
-                and not any(e <= s < match.start() for s in manager_starts)
-                for _, e in player_spans
+            if (
+                player_figure and player_figure.end() <= match.start()
+                and not _TIE_PLAYER_BREAK_RE.search(clause, player_figure.end(), match.start())
+                and not any(player_figure.end() <= s < match.start() for s in manager_starts)
             ):
                 continue
             window = (
