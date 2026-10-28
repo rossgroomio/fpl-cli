@@ -1983,6 +1983,40 @@ def _format_award_detail(
     return f"{headline} {moves_part}"
 
 
+def _move_award_entry(
+    tied: list[RecapManagerEntry],
+    value: int,
+    detail_for: Callable[[RecapManagerEntry], str],
+) -> RecapAwardEntry:
+    """One transfer or waiver award for every manager on its figure (#546).
+
+    A lone winner keeps the single-manager detail `detail_for` builds. A
+    shared figure says so up front and then gives each manager that same
+    detail, so the editorial has a tie to quote rather than one name to read
+    as the week's sole best or worst mover. Each detail is verbose, so the
+    tie is capped at DETAIL_CAP like Biggest Bench Haul's, with name as the
+    order so the managers shown stay deterministic; `manager_name` still
+    names everyone tied.
+    """
+    tied = sorted(tied, key=lambda m: m["manager_name"])
+    shown = tied[:DETAIL_CAP]
+    parts = [detail_for(m) for m in shown]
+    if len(tied) == 1:
+        detail = parts[0]
+    else:
+        lead = f"Shared by {len(tied)} managers on {value:+d} net pts overall."
+        detail = (
+            " ".join([lead, *parts]).removesuffix(".")
+            + _omitted_suffix(len(tied) - len(shown), "manager")
+            + "."
+        )
+    return RecapAwardEntry(
+        manager_name=" and ".join(m["manager_name"] for m in tied),
+        value=value,
+        detail=detail,
+    )
+
+
 def _compute_transfer_awards(
     managers: list[RecapManagerEntry],
     awards: RecapAwards,
@@ -1991,7 +2025,8 @@ def _compute_transfer_awards(
 
     Aggregate true_net = sum(per-transfer net) - transfer_cost, so the award
     reconciles with the standings figure (which is also post-hit) rather than
-    presenting a pre-hit gross swing.
+    presenting a pre-hit gross swing. Every manager on the top (or bottom)
+    figure is named (#546).
     """
     managers_with_transfers = [m for m in managers if m.get("transfers")]
 
@@ -2001,34 +2036,31 @@ def _compute_transfer_awards(
     def _transfer_net(m: RecapManagerEntry) -> int:
         return sum(t["net"] for t in m.get("transfers", [])) - m.get("transfer_cost", 0)
 
-    genius = max(managers_with_transfers, key=_transfer_net)
-    genius_net = _transfer_net(genius)
+    def _detail(side: Literal["genius", "disaster"]) -> Callable[[RecapManagerEntry], str]:
+        def _for(m: RecapManagerEntry) -> str:
+            return _format_award_detail(
+                manager_name=m["manager_name"],
+                moves=list(m.get("transfers", [])),
+                transfer_cost=m.get("transfer_cost", 0),
+                side=side,
+                breakdown=[("transfer", len(m.get("transfers", [])))],
+            )
+        return _for
+
+    genius_net = max(_transfer_net(m) for m in managers_with_transfers)
     if genius_net > 0:
-        awards["transfer_genius"] = RecapAwardEntry(
-            manager_name=genius["manager_name"],
-            value=genius_net,
-            detail=_format_award_detail(
-                manager_name=genius["manager_name"],
-                moves=list(genius.get("transfers", [])),
-                transfer_cost=genius.get("transfer_cost", 0),
-                side="genius",
-                breakdown=[("transfer", len(genius.get("transfers", [])))],
-            ),
+        awards["transfer_genius"] = _move_award_entry(
+            [m for m in managers_with_transfers if _transfer_net(m) == genius_net],
+            genius_net,
+            _detail("genius"),
         )
 
-    disaster = min(managers_with_transfers, key=_transfer_net)
-    disaster_net = _transfer_net(disaster)
+    disaster_net = min(_transfer_net(m) for m in managers_with_transfers)
     if disaster_net < 0:
-        awards["transfer_disaster"] = RecapAwardEntry(
-            manager_name=disaster["manager_name"],
-            value=disaster_net,
-            detail=_format_award_detail(
-                manager_name=disaster["manager_name"],
-                moves=list(disaster.get("transfers", [])),
-                transfer_cost=disaster.get("transfer_cost", 0),
-                side="disaster",
-                breakdown=[("transfer", len(disaster.get("transfers", [])))],
-            ),
+        awards["transfer_disaster"] = _move_award_entry(
+            [m for m in managers_with_transfers if _transfer_net(m) == disaster_net],
+            disaster_net,
+            _detail("disaster"),
         )
 
 
@@ -2064,7 +2096,8 @@ def _compute_waiver_awards(
     managers: list[RecapManagerEntry],
     awards: RecapAwards,
 ) -> None:
-    """Compute waiver genius/disaster awards for draft format."""
+    """Compute waiver genius/disaster awards for draft format, naming every
+    manager on the top (or bottom) figure (#546)."""
     managers_with_txns = [m for m in managers if m.get("transactions")]
 
     if not managers_with_txns:
@@ -2079,39 +2112,29 @@ def _compute_waiver_awards(
     def _txn_net(m: RecapManagerEntry) -> int:
         return sum(t["net"] for t in effective_by_manager[id(m)])
 
-    genius = max(managers_with_txns, key=_txn_net)
-    genius_effective = effective_by_manager[id(genius)]
-    genius_net = _txn_net(genius)
-    if genius_net > 0 and genius_effective:
-        awards["waiver_genius"] = RecapAwardEntry(
-            manager_name=genius["manager_name"],
-            value=genius_net,
-            detail=_format_award_detail(
-                manager_name=genius["manager_name"],
-                moves=list(genius_effective),
+    def _detail(side: Literal["genius", "disaster"]) -> Callable[[RecapManagerEntry], str]:
+        def _for(m: RecapManagerEntry) -> str:
+            return _format_award_detail(
+                manager_name=m["manager_name"],
+                moves=list(effective_by_manager[id(m)]),
                 transfer_cost=0,
-                side="genius",
-                breakdown=draft_transaction_kind_counts(genius.get("transactions", [])),
+                side=side,
+                breakdown=draft_transaction_kind_counts(m.get("transactions", [])),
                 always_label_single=True,
-            ),
-        )
+            )
+        return _for
 
-    disaster = min(managers_with_txns, key=_txn_net)
-    disaster_effective = effective_by_manager[id(disaster)]
-    disaster_net = _txn_net(disaster)
-    if disaster_net < 0 and disaster_effective:
-        awards["waiver_disaster"] = RecapAwardEntry(
-            manager_name=disaster["manager_name"],
-            value=disaster_net,
-            detail=_format_award_detail(
-                manager_name=disaster["manager_name"],
-                moves=list(disaster_effective),
-                transfer_cost=0,
-                side="disaster",
-                breakdown=draft_transaction_kind_counts(disaster.get("transactions", [])),
-                always_label_single=True,
-            ),
-        )
+    def _on(net: int) -> list[RecapManagerEntry]:
+        # A closed loop contracts to no move at all, so it has nothing to name.
+        return [m for m in managers_with_txns if _txn_net(m) == net and effective_by_manager[id(m)]]
+
+    genius_net = max(_txn_net(m) for m in managers_with_txns)
+    if genius_net > 0 and (geniuses := _on(genius_net)):
+        awards["waiver_genius"] = _move_award_entry(geniuses, genius_net, _detail("genius"))
+
+    disaster_net = min(_txn_net(m) for m in managers_with_txns)
+    if disaster_net < 0 and (disasters := _on(disaster_net)):
+        awards["waiver_disaster"] = _move_award_entry(disasters, disaster_net, _detail("disaster"))
 
 
 def _compute_most_contested_award(
