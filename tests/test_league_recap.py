@@ -8961,6 +8961,12 @@ class TestPlayerFigureTieClaims:
         "Semenyo's 17 was the week's joint-top score.",
         "Semenyo (17) was the week's joint-top score.",
         "Elsewhere, Semenyo's 17 was the week's joint-top score.",
+        # The other shapes #528's GW5 drafts drew the false flag on.
+        "Manager B was the Waiver Genius at +6, and Semenyo's 17 was the week's joint-top score.",
+        "Semenyo gave him 17, the week's joint-top score, and three small moves netted +6.",
+        "Semenyo, drafted in the second round, scored 17 for him, the joint-highest in the league's squads.",
+        "Semenyo's 17 points for him were the week's joint-top score from a player in the league's squads.",
+        "His real success was Semenyo, a second-round pick who delivered 17 points and the week's joint-top score.",
     ])
     def test_a_player_s_figure_is_left_alone(self, summary):
         assert self._check(summary) == []
@@ -8969,13 +8975,17 @@ class TestPlayerFigureTieClaims:
         "Manager A's 50 was the week's joint-top score.",
         # A manager named between the player and the tie is its subject.
         "Semenyo's 17 lifted Manager A to the week's joint-top score.",
-        # PR #538 review: a player who is not the clause's subject, a new
+        # PR #538 review: a figure nearer the tie than the player's, a new
         # subject between his figure and the tie, or a number that is not
-        # his points.
+        # his points...
         "With Semenyo's 17 in the bank, 70 was the week's joint-top score.",
         "Semenyo's 17 helped, and the week's joint-top score was Manager C's 70.",
         "Semenyo's 17 carried him to the week's joint-top score.",
         "Manager C played Semenyo 70 minutes and finished joint-top on the week.",
+        # ...a figure the data does not give the player, or a figure attached
+        # to the tie that is not his.
+        "Semenyo's 20 was the week's joint-top score.",
+        "Despite Semenyo's 17, the week's joint-top score of 70 belonged to Manager C.",
     ])
     def test_the_same_shape_said_of_a_manager_is_still_read(self, summary):
         assert self._check(summary) == [

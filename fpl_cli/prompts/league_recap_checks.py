@@ -1402,21 +1402,19 @@ _TIE_OTHER_SUBJECT_RE = re.compile(
 )
 _TIE_SUBJECT_WORDS_BEFORE = 3
 _TIE_SUBJECT_WORDS_AFTER = 2
-# A player's figure as the subject of the tie, however far before it the
-# player is named: "Semenyo's 17 was the week's joint-top score", "Semenyo
-# (17) was joint-top" (#535). The player is the first name in the clause,
-# opening it or straight after one leading phrase ("Elsewhere, Semenyo's 17
-# ..."), with his points straight after him. Nothing between that figure and
-# the tie may open another subject: no manager, no comma, no "and" and no
-# pronoun, so "Semenyo's 17 lifted Bob to the joint-top score", "Semenyo's 17
-# helped, and the week's joint-top score was Bob's" and "Semenyo's 17
-# carried him to the joint-top score" are still read.
-_TIE_PLAYER_LEAD_RE = re.compile(r"\W*(?:[^,\d]*,\s*)?")
-_TIE_PLAYER_FIGURE_RE = re.compile(
-    r"(?:['’]s\s+|\s*\(\s*)\d+(?:\s*(?:pts?|points?))?\)?(?![\w.%])", re.IGNORECASE,
-)
+# A player's figure as what the tie is said of, however far before it the
+# player is named (#535): "Semenyo's 17 was the week's joint-top score",
+# "Semenyo gave him 17, the week's joint-top score", "..., and Semenyo's 17
+# was the week's joint-top score". The figure nearest before the tie is one
+# the data gives that player, the last name before it is his, and nothing
+# between the figure and the tie names a manager or opens another subject:
+# ", and", "but", or a pronoun other than a "for him" ("Semenyo's 17 points
+# for him were ..."). So "Semenyo's 17 carried him to the joint-top score",
+# "Semenyo's 17 helped, and the joint-top score was Bob's" and "Bob played
+# Semenyo 70 minutes and finished joint-top" are still read.
 _TIE_PLAYER_BREAK_RE = re.compile(
-    r"[,(–—]|\s-\s|(?<!\w)(?:and|but|he|she|they|him|her|them|his|their)(?!\w)", re.IGNORECASE,
+    r",\s*(?:and|but)(?!\w)|(?<!\w)(?:but|while|whereas|he|she|they)(?!\w)|(?<!for )(?<!\w)(?:him|her|them)(?!\w)",
+    re.IGNORECASE,
 )
 _TIE_GAMEWEEK_RE = re.compile(r"(?<!\w)(?:scor\w*|tall(?:y|ies)|week\w*|gameweek\w*|gw\d*|round)(?!\w)", re.IGNORECASE)
 _TIE_TABLE_RE = re.compile(
@@ -1489,6 +1487,45 @@ def _tie_figures(clause: str, start: int, end: int) -> list[int]:
     if after and not _NOT_A_SCORE_AFTER_RE.match(clause, after.end("figure")):
         figures.append(int(after.group("figure")))
     return figures
+
+
+def _player_points(managers: Sequence[RecapManagerEntry]) -> dict[str, set[int]]:
+    """Every figure the recap data gives a player this gameweek: his points
+    in a squad, as a captain, and either side of a move."""
+    points: dict[str, set[int]] = {}
+    for m in managers:
+        for player in m.get("squad", []):
+            points.setdefault(player["name"], set()).add(player["points"])
+        if m.get("captain"):
+            points.setdefault(m["captain"], set()).add(m["captain_points"])
+        for move in [*m.get("transfers", []), *m.get("transactions", [])]:
+            points.setdefault(move["player_in"], set()).add(move["player_in_points"])
+            points.setdefault(move["player_out"], set()).add(move["player_out_points"])
+    return points
+
+
+def _player_figure_tie(
+    clause: str, tie: re.Match[str], found: Sequence[re.Match[str]], aliases: Mapping[str, str],
+    player_points: Mapping[str, set[int]],
+) -> bool:
+    """Whether the tie at `tie` is said of a player's figure
+    (`_TIE_PLAYER_BREAK_RE`), with any figure attached to the tie that same
+    one: "Despite Semenyo's 17, the week's joint-top score of 70" is about
+    the 70."""
+    figure = None
+    for figure in _FIGURE_RE.finditer(clause, 0, tie.start()):
+        pass
+    if figure is None or _NOT_A_SCORE_AFTER_RE.match(clause, figure.end()):
+        return False
+    value = int(figure.group(0))
+    before = [m.group(0) for m in found if m.end() <= figure.start()]
+    if not before or before[-1] in aliases or value not in player_points.get(before[-1], ()):
+        return False
+    if any(figure.end() <= m.start() < tie.start() and m.group(0) in aliases for m in found):
+        return False
+    if any(attached != value for attached in _tie_figures(clause, tie.start(), tie.end())):
+        return False
+    return not _TIE_PLAYER_BREAK_RE.search(clause, figure.end(), tie.start())
 
 
 def check_tie_claims(
@@ -1611,6 +1648,7 @@ def check_tie_claims(
         )
 
     aliases = _manager_aliases(names)
+    player_points = _player_points(managers)
     problems: list[str] = []
     for clause in _clauses(summary):
         ties = list(_TIE_RE.finditer(clause))
@@ -1621,11 +1659,6 @@ def check_tie_claims(
         # "White", #379).
         found = names.find(clause)
         player_spans = [m.span() for m in found if m.group(0) in names.players]
-        manager_starts = [m.start() for m in found if m.group(0) in aliases]
-        opening = found[0] if found and found[0].group(0) in names.players.difference(aliases) else None
-        player_figure = opening and _TIE_PLAYER_LEAD_RE.fullmatch(clause, 0, opening.start()) and (
-            _TIE_PLAYER_FIGURE_RE.match(clause, opening.end())
-        )
         for match in ties:
             word = match.group("rank").lower()
             rest = clause[match.end():]
@@ -1639,11 +1672,7 @@ def check_tie_claims(
             subject = clause[lo:match.start()] + " " + clause[match.end():hi]
             if _TIE_OTHER_SUBJECT_RE.search(subject) or any(lo <= s and e <= hi for s, e in player_spans):
                 continue
-            if (
-                player_figure and player_figure.end() <= match.start()
-                and not _TIE_PLAYER_BREAK_RE.search(clause, player_figure.end(), match.start())
-                and not any(player_figure.end() <= s < match.start() for s in manager_starts)
-            ):
+            if _player_figure_tie(clause, match, found, aliases, player_points):
                 continue
             window = (
                 _words_before(clause, match.start(), _TIE_WINDOW_WORDS) + " "
