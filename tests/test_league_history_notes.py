@@ -1458,7 +1458,10 @@ class TestMidpointAndRunInPhases:
         before = build_notes_pack(store, 18, total_gameweeks=38, chip_split_gw=19)
         after = build_notes_pack(store, 20, total_gameweeks=38, chip_split_gw=19)
 
-        assert before.season_phase_entry.text == "GW18 is before the GW19 chip-availability boundary."
+        assert before.season_phase_entry.text == (
+            "GW18 is in the first half of the season, with the first set of chips "
+            "available up to and including GW19."
+        )
         assert after.season_phase_entry.text == (
             "GW20 is the season midpoint, past the GW19 chip boundary and before the run-in."
         )
@@ -1470,7 +1473,7 @@ class TestMidpointAndRunInPhases:
         pack = build_notes_pack(store, 2)
 
         assert pack.phase is SeasonPhase.PRE_CHIP_BOUNDARY
-        assert "chip-availability boundary" in pack.season_phase_entry.text
+        assert "first set of chips" in pack.season_phase_entry.text
 
 
 class TestDraftPhaseTextHasNoChipLanguage:

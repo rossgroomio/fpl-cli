@@ -1615,7 +1615,7 @@ pack rescans every captured gameweek instead of a trailing six-gameweek window.
 | Phase | Gameweeks | Framing it states |
 |---|---|---|
 | `opener` | The first gameweek (GW1) | "the season opener" |
-| `pre_chip_boundary` (classic) | Second gameweek up to the one before the first half's last (GW2-18) | "before the GW19 chip-availability boundary" |
+| `pre_chip_boundary` (classic) | Second gameweek up to the one before the first half's last (GW2-18) | "in the first half of the season, with the first set of chips available up to and including GW19" |
 | `pre_chip_boundary` (draft) | Second gameweek up to the one before the first half's last (GW2-18) | "before the season's halfway point (GW19)" |
 | `midpoint` (classic) | The first half's last gameweek to the start of the run-in (GW19-31) | GW19: "the season midpoint, the last gameweek of the first half, with the second set of chips available from GW20"; GW20-31: "the season midpoint, past the GW19 chip boundary and before the run-in" |
 | `midpoint` (draft) | The first half's last gameweek to the start of the run-in (GW19-31) | GW19: "the season midpoint, the last gameweek of the first half"; GW20-31: "the season midpoint, past the GW19 halfway point and before the run-in" |

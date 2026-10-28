@@ -985,7 +985,10 @@ def _season_phase_text(
     if phase is SeasonPhase.PRE_CHIP_BOUNDARY:
         if fpl_format == "draft":
             return f"GW{gameweek} is before the season's halfway point (GW{chip_split_gw})."
-        return f"GW{gameweek} is before the GW{chip_split_gw} chip-availability boundary."
+        return (
+            f"GW{gameweek} is in the first half of the season, with the first set of chips "
+            f"available up to and including GW{chip_split_gw}."
+        )
     if phase is SeasonPhase.MIDPOINT:
         if gameweek == chip_split_gw:
             # The split gameweek is the last of the first half; the second
