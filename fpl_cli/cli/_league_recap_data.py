@@ -58,7 +58,6 @@ if TYPE_CHECKING:
             self, league_id: int, page: int = 1, /,
         ) -> dict[str, Any]: ...
 from fpl_cli.cli._league_recap_types import (
-    DETAIL_CAP,
     STANDOUT_BLANK_MAX_POINTS,
     STANDOUT_PPG_FROM_GW,
     STANDOUT_PPG_MIN_APPEARANCES,
@@ -90,6 +89,7 @@ from fpl_cli.cli._league_recap_types import (
     points_label,
     recap_manager_key,
 )
+from fpl_cli.constants import DETAIL_CAP
 from fpl_cli.models.player import usable_code
 from fpl_cli.services.fixture_predictions import had_fixture
 from fpl_cli.services.league_history_drafts import draft_snapshot_path
@@ -2210,11 +2210,12 @@ def month_table_mismatches(
     month, as (name, the ledger's total, FPL's), in the ledger's order.
 
     The classic cross-check on the month's awards, in the spirit of
-    `_reconcile_classic_headline_numbers` but never a stop: the awards stand
-    on the ledger either way. Matched on `entry`, the ledger's classic key,
-    so a manager only one side holds is no disagreement: FPL's table is the
-    league as it stands when read, which a manager who has since left is no
-    longer in. A row without an int `entry` and `total` is skipped.
+    `_reconcile_classic_headline_numbers` but never a stop: a disagreement
+    withholds the month's awards, not the recap. Matched on `entry`, the
+    ledger's classic key, so a manager only one side holds is no
+    disagreement: FPL's table is the league as it stands when read, which a
+    manager who has since left is no longer in. A row without an int
+    `entry` and `total` is skipped.
     """
     fpl_totals = {
         row["entry"]: row["total"]

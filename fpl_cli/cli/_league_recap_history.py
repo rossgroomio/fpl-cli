@@ -627,6 +627,25 @@ def _quality_warnings(
         )
 
 
+def _partial_league_reason(data: LeagueRecapData) -> str | None:
+    """Why the ledger holds only part of the league, as the clause a month's
+    awards are withheld with, or None when the standings were read whole
+    (#425).
+
+    Only a cut-short standings read counts. A member in the table whose
+    picks never came back has an unknown row, which the months already
+    withhold for by name, and in the gameweek it happened rather than the
+    whole season.
+    """
+    if not data.get("standings_truncated"):
+        return None
+    fetched = len(data.get("standings_cohort") or data["managers"])
+    size = data.get("league_size")
+    if size is not None and size > fetched:
+        return f"the recap reads only {fetched} of the league's {size} members"
+    return f"the recap reads only the first {fetched} of the league's members"
+
+
 # ---------------------------------------------------------------------------
 # Backfill (U7)
 # ---------------------------------------------------------------------------
@@ -2664,6 +2683,7 @@ async def capture_recap_history(
     month_honours = (
         build_monthly_honours(
             store, months, data["gameweek"], league_start_gameweek=start_gameweek,
+            partial_league=_partial_league_reason(data),
         )
         if months else None
     )

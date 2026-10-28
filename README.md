@@ -97,8 +97,8 @@ On the gameweek that closes one of FPL's months (the ones your league page's mon
 offers: August is GW1-2 and September GW3-5 in 2026-27), `league-recap` adds Manager and Dud of
 the Month, for classic and draft leagues alike. Each manager's month is summed from the league
 history the way FPL's own month table sums it: net of transfer hits, except a hit taken for the
-month's first gameweek, which FPL's month table never charges. A month with a score missing
-names nobody and says why. The halfway recap (GW19) and the finale (GW38) also list every month
+month's first gameweek, which FPL's month table never charges. A month with a score missing,
+or one FPL's own month table disagrees with, names nobody and says why. The halfway recap (GW19) and the finale (GW38) also list every month
 so far under Monthly Honours, so the GW38 recap is the season's honours board.
 
 The Fines list prints each fine's forfeit as configured, but the editorial writes it out word

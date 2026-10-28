@@ -28,17 +28,20 @@ Three rules this module exists to enforce:
   hit, so it reads as a quirk of FPL's tables rather than a rule anyone
   chose. It is mirrored because the month tables are what a league checks
   these awards against, and the recap's classic cross-check against them
-  (`league_month_table_disagrees`) is what would flag FPL changing it. This
-  is neither the season win and loss counts' measure (each gameweek net of
-  its hit, `league_history_counters._net_gw_points`) nor the weekly awards'
-  (`use_net_points`). Draft has no hits, so a draft month is a plain sum.
+  (`league_month_table_disagrees`) is what would flag FPL changing it, and
+  withholds the month's awards when it does (`MonthlyHonours.withholding`).
+  This is neither the season win and loss counts' measure (each gameweek net
+  of its hit, `league_history_counters._net_gw_points`) nor the weekly
+  awards' (`use_net_points`). Draft has no hits, so a draft month is a plain
+  sum.
 - **A gap withholds both awards.** A month where any manager has no score for
   one of its gameweeks -- an unknown capture row (R19), a gameweek never
-  captured or unreadable, no row at all -- names nobody, and says why. Summing
-  what is there would make the manager with the missing points the Dud by
-  default, and a missing score could have won the month: an un-ruled
-  gameweek is not an innocent one, the rule the fines tally and the streaks
-  already follow.
+  captured or unreadable, no row at all -- names nobody, and says why. So
+  does a classic row with no hit recorded past the month's first gameweek,
+  which would otherwise read as no hit taken. Summing what is there would
+  make the manager with the missing points the Dud by default, and a missing
+  score could have won the month: an un-ruled gameweek is not an innocent
+  one, the rule the fines tally and the streaks already follow.
 - **A month's table is the league as the month closed.** Its managers are the
   ones with a row in its last gameweek, as FPL's own month table lists the
   league's members: one who left partway through is not in it, and one who
@@ -48,30 +51,30 @@ Three rules this module exists to enforce:
   and that gameweek is the month's first for the hit rule. No league checked
   had a hit there, so that part is unverified and the cross-check is its
   guard. A month that ended before the league began is left out altogether.
+  A league the recap reads only in part (classic standings past one page of
+  50) has every month withheld: the members it never read are a gap the
+  store cannot see, and the Dud is almost always one of them.
 
-Ties share either award, with the competition ranking
-`derive_point_in_time_positions` gives the league table (1, 2, 2, 4).
+Ties share either award, competition-ranked (`competition_rank`) as the
+league table is (1, 2, 2, 4).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
+from fpl_cli.constants import DETAIL_CAP
 from fpl_cli.models.league_history import CaptureStatus, LeagueFormat, LeagueHistoryRow
 from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
 from fpl_cli.utils.gameweek import format_gameweek_list
+from fpl_cli.utils.ranking import competition_rank
 from fpl_cli.utils.text import join_and
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping, Sequence
 
     from fpl_cli.models.season_month import SeasonMonth
-
-# Most managers a withheld month's reason names before it counts the rest, so
-# a capture that reached nobody does not read out the whole league. The same
-# number as the recap's award lines (`DETAIL_CAP`).
-_NAMED_GAPS = 3
 
 # The places Manager of the Month names: the winner and the rest of the top
 # three.
@@ -152,25 +155,42 @@ class MonthlyHonours:
         """The month this gameweek closed, whose awards are this week's news."""
         return next((awards for awards in self.months if awards.month.last_gameweek == gameweek), None)
 
+    def withholding(self, month: SeasonMonth, reason: str) -> MonthlyHonours:
+        """This list with `month`'s awards withheld for `reason`: what the
+        recap's cross-check does when FPL's own table for the month
+        disagrees with the ledger's totals, so every surface reading the
+        list after it says the same."""
+        return replace(self, months=[
+            MonthAwards(month=awards.month, withheld_reason=reason) if awards.month.id == month.id else awards
+            for awards in self.months
+        ])
+
 
 # ---------------------------------------------------------------------------
 # Scoring one row
 # ---------------------------------------------------------------------------
 
 
-def _month_points(row: LeagueHistoryRow | None, *, opens_month: bool) -> int | None:
-    """A row's points towards its month, or None when it records no score.
+def _month_points(row: LeagueHistoryRow | None, *, opens_month: bool) -> int | str:
+    """A row's points towards its month, or what it lacks for them.
 
     `gross_points` less the hit, but not in the month's first gameweek, whose
-    hit FPL's month table never charges. An unknown row's figure is never
-    read: R19's row carries the league table's number for a manager the
-    capture never reached, which is not a score this module can vouch for.
+    hit FPL's month table never charges. "score" when the row records none:
+    an unknown row's figure is never read, since R19's row carries the league
+    table's number for a manager the capture never reached, which is not a
+    score this module can vouch for. "transfer cost" when a classic row past
+    the month's first gameweek has no hit recorded: classic records one every
+    gameweek, zero included, so None there is a hit nobody read (the coarse
+    tier's `event_transfers_cost` absent) rather than none taken, and it could
+    have cost the month. Draft has no hits, so its None is a plain zero.
     """
     if row is None or row.capture_status is CaptureStatus.UNKNOWN or row.gross_points is None:
-        return None
+        return "score"
     if opens_month:
         return row.gross_points
-    return row.gross_points - (row.transfer_cost or 0)
+    if row.transfer_cost is None:
+        return "transfer cost" if row.fpl_format == "classic" else row.gross_points
+    return row.gross_points - row.transfer_cost
 
 
 # ---------------------------------------------------------------------------
@@ -189,15 +209,20 @@ def _store_gap_reason(uncaptured: list[int], unreadable: list[int]) -> str:
     return join_and(parts)
 
 
-def _score_gap_reason(missing: Mapping[int, list[int]], names: Mapping[int, str]) -> str:
-    """"no score is recorded for Alice in GW4 and Bob in GW3-4", the managers
-    past `_NAMED_GAPS` counted rather than named."""
-    gaps = sorted(missing.items(), key=lambda item: (names[item[0]], item[0]))
-    named = [f"{names[key]} in {format_gameweek_list(gameweeks)}" for key, gameweeks in gaps[:_NAMED_GAPS]]
-    omitted = len(gaps) - len(named)
-    if omitted:
-        named.append(f"{omitted} other manager{'s' if omitted != 1 else ''}")
-    return f"no score is recorded for {join_and(named)}"
+def _score_gap_reason(missing: Mapping[str, Mapping[int, list[int]]], names: Mapping[int, str]) -> str:
+    """"no score is recorded for Alice in GW4 and Bob in GW3-4", with "no
+    transfer cost is recorded for ..." beside it when a classic hit is what
+    a row lacks, the managers past `DETAIL_CAP` in each counted rather than
+    named."""
+    clauses: list[str] = []
+    for lacking, gaps in sorted(missing.items()):
+        ordered = sorted(gaps.items(), key=lambda item: (names[item[0]], item[0]))
+        named = [f"{names[key]} in {format_gameweek_list(gameweeks)}" for key, gameweeks in ordered[:DETAIL_CAP]]
+        omitted = len(ordered) - len(named)
+        if omitted:
+            named.append(f"{omitted} other manager{'s' if omitted != 1 else ''}")
+        clauses.append(f"no {lacking} is recorded for {join_and(named)}")
+    return join_and(clauses)
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +238,7 @@ def _ranked(totals: Mapping[int, int], names: Mapping[int, str]) -> list[MonthTo
             manager_key=key,
             manager_name=names[key],
             points=totals[key],
-            rank=1 + sum(other > totals[key] for other in totals.values()),
+            rank=competition_rank(totals[key], totals.values()),
         )
         for key in ordered
     ]
@@ -254,15 +279,16 @@ def _month_awards(
     closing = resolved[month.last_gameweek]
     names = {key: row.manager_name for key, row in closing.items()}
     totals: dict[int, int] = {}
-    missing: dict[int, list[int]] = {}
+    # What each manager lacks, by gameweek, under what it is ("score").
+    missing: dict[str, dict[int, list[int]]] = {}
     for key in closing:
         points = 0
         for gameweek in month.gameweeks:
             scored = _month_points(
                 resolved[gameweek].get(key), opens_month=gameweek == month.first_gameweek,
             )
-            if scored is None:
-                missing.setdefault(key, []).append(gameweek)
+            if isinstance(scored, str):
+                missing.setdefault(scored, {}).setdefault(key, []).append(gameweek)
             else:
                 points += scored
         totals[key] = points
@@ -282,6 +308,7 @@ def build_monthly_honours(
     through_gameweek: int,
     *,
     league_start_gameweek: int = 1,
+    partial_league: str | None = None,
 ) -> MonthlyHonours:
     """Every month `through_gameweek` has completed, with its awards or why
     it has none, folded out of one partition's ledger.
@@ -290,21 +317,31 @@ def build_monthly_honours(
     the recap knows and the store does not: a month that ended before it is
     left out, and one it fell inside starts there.
 
+    `partial_league` is why the recap read only part of the league, as a
+    reason clause ("the recap reads only the first 50 of the league's
+    members"), and withholds every month with it. The store records no
+    gameweek's read as partial, so a league read in part now has its earlier
+    months withheld too, any from before it outgrew one page included.
+
     Never raises for a store problem: an unreadable gameweek withholds its
     month and is named in the reason, as R4 asks of every ledger reader.
     """
-    captured = set(store.captured_gameweeks())
-    completed = [
-        _played_by_league(month, league_start_gameweek) for month in months
-        if league_start_gameweek <= month.last_gameweek <= through_gameweek
-    ]
+    completed = sorted(
+        (
+            _played_by_league(month, league_start_gameweek) for month in months
+            if league_start_gameweek <= month.last_gameweek <= through_gameweek
+        ),
+        key=lambda month: month.first_gameweek,
+    )
+    if partial_league is not None:
+        awards = [MonthAwards(month=month, withheld_reason=partial_league) for month in completed]
+    else:
+        captured = set(store.captured_gameweeks())
+        awards = [_month_awards(store, month, captured=captured) for month in completed]
     return MonthlyHonours(
         season=store.season,
         fpl_format=store.fpl_format,
         league_id=store.league_id,
         through_gameweek=through_gameweek,
-        months=[
-            _month_awards(store, month, captured=captured)
-            for month in sorted(completed, key=lambda month: month.first_gameweek)
-        ],
+        months=awards,
     )

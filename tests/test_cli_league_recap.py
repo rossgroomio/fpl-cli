@@ -8247,7 +8247,9 @@ class TestManagerAndDudOfTheMonth:
             ])
 
     @staticmethod
-    def _week(gameweek: int = 5, *, fpl_format: str = "classic", bob: str = "Bob") -> LeagueRecapData:
+    def _week(
+        gameweek: int = 5, *, fpl_format: str = "classic", bob: str = "Bob", **kwargs: Any,
+    ) -> LeagueRecapData:
         """The recapped gameweek: Alice 60, Bob 10."""
         draft = fpl_format == "draft"
         alice_key, bob_key = (10, 11) if draft else (1, 2)
@@ -8260,6 +8262,7 @@ class TestManagerAndDudOfTheMonth:
                 _manager(name=bob, entry_id=2, gross_points=10, gw_rank=2, overall_rank=2, **extra_bob),
             ],
             cohort=_cohort((alice_key, "Alice", 1, 60, 300), (bob_key, bob, 2, 10, 200)),
+            **kwargs,
         )
 
     @staticmethod
@@ -8392,21 +8395,89 @@ class TestManagerAndDudOfTheMonth:
         assert json.loads(result.stdout)["metadata"]["warnings"] == []
         assert "disagrees" not in result.stderr
 
-    def test_fpls_own_month_table_disagreeing_warns_and_the_awards_stand(self):
+    def test_fpls_own_month_table_disagreeing_withholds_both_everywhere(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """FPL's month table is what a league checks the awards against, so
+        the report, the editorial and the JSON name nobody rather than crown
+        what it contradicts, and the warning says where they differ."""
+        monkeypatch.chdir(tmp_path)  # debug prompts land in ./data/debug
         self._seed(3, 4)
         client = _fpl_client()
         client.get_classic_league_standings = AsyncMock(return_value={"standings": {"results": [
             {"entry": 1, "total": 196}, {"entry": 2, "total": 110},
         ]}})
+        withheld = (
+            "Withheld for September (GW3-5), as FPL's own table for the month disagrees with"
+            " this recap's totals for 1 manager."
+        )
 
         result = _invoke_recap(self._week(), ["--format", "json"], client=client)
 
-        honours = self._honours(result)
         warnings = json.loads(result.stdout)["metadata"]["warnings"]
         assert [w["code"] for w in warnings] == ["league_month_table_disagrees"]
-        assert "Alice: 200 here, 196 on FPL" in warnings[0]["message"]
+        assert "(Alice: 200 here, 196 on FPL), so this recap withholds" in warnings[0]["message"]
         assert "Alice: 200 here, 196 on FPL" in result.stderr.replace("\n", "")
-        assert honours["months"][1]["manager_of_the_month"][0]["manager_name"] == "Alice"
+        september = self._honours(result)["months"][1]
+        assert september["awarded"] is False
+        assert september["manager_of_the_month"] == september["totals"] == []
+        assert september["text"] == f"September (GW3-5): not awarded, as {withheld[35:-1]}"
+
+        saved = _invoke_recap(self._week(), ["--save", "--output", str(tmp_path), "--dry-run"], client=client)
+
+        assert saved.exit_code == 0, saved.output
+        # Rich wraps a long line at a space and drops it, so compare words.
+        assert f"Manager and Dud of the Month: {withheld}" in " ".join(saved.output.split())
+        report = (tmp_path / season_label() / "gw5-league-recap.md").read_text(encoding="utf-8")
+        assert f"**Manager and Dud of the Month:** {withheld}" in report
+        assert "**Manager of the Month:**" not in report
+        prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert f"- **Manager and Dud of the Month:** {withheld}" in prompt
+        assert "Manager of the Month Alice" not in prompt
+
+    def test_a_league_read_in_part_withholds_both_and_says_why(self, tmp_path: Path):
+        """Classic standings come one page of 50 at a time: the members past
+        it are a gap the ledger cannot see, and the Dud is almost always one
+        of them, so neither award is named and FPL's table is not asked."""
+        self._seed(3, 4)
+        client = _fpl_client()
+
+        result = _invoke_recap(
+            self._week(standings_truncated=True), ["--save", "--output", str(tmp_path)], client=client,
+        )
+
+        assert result.exit_code == 0, result.output
+        withheld = "Withheld for September (GW3-5), as the recap reads only the first 2 of the league's members."
+        # Rich wraps a long line at a space and drops it, so compare words.
+        assert f"Manager and Dud of the Month: {withheld}" in " ".join(result.output.split())
+        report = (tmp_path / season_label() / "gw5-league-recap.md").read_text(encoding="utf-8")
+        assert f"**Manager and Dud of the Month:** {withheld}" in report
+        assert "**Manager of the Month:**" not in report
+        client.get_classic_league_standings.assert_not_awaited()
+
+    def test_a_true_month_tie_in_the_editorial_raises_no_unsupported_tie(self):
+        """The tie check reads a tie said of the month against the month's
+        own table: Alice and Bob share September on 180, while Alice tops
+        the week and the season table alone."""
+        store = _store()
+        for gameweek, alice, bob in ((3, 70, 50), (4, 50, 120)):
+            store.append_rows(gameweek, [
+                make_history_row(
+                    season=SEASON, league_id=42, gameweek=gameweek, manager_key=key,
+                    manager_name=name, gross_points=points, transfer_cost=0,
+                )
+                for key, name, points in ((1, "Alice", alice), (2, "Bob", bob))
+            ])
+        stub, provider = _queued_provider("Alice and Bob finished joint-top for the month.")
+
+        with provider:
+            result = _invoke_recap(self._week(), ["--summarise", "--format", "json"])
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 1
+        honours = json.loads(result.stdout)["metadata"]["monthly_honours"]
+        assert [t["rank"] for t in honours["months"][1]["totals"]] == [1, 1]
+        assert not [w for w in json.loads(result.stdout)["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
 
     def test_the_cross_check_waits_while_fpl_is_still_updating_its_tables(self):
         self._seed(3, 4)

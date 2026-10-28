@@ -11,11 +11,19 @@ from fpl_cli.cli._league_recap_data import month_award_entries, month_table_mism
 from fpl_cli.cli._league_recap_types import (
     format_month_honours_line,
     month_awards_withheld_line,
+    month_table_withheld_reason,
+    recap_month_tables,
 )
+from fpl_cli.cli.league_recap import _month_table_disagrees_message
 from fpl_cli.models.season_month import SeasonMonth, season_months
 from fpl_cli.paths import user_data_dir
 from fpl_cli.services.league_history import LeagueHistoryStore
-from fpl_cli.services.league_history_months import MonthAwards, MonthTotal, build_monthly_honours
+from fpl_cli.services.league_history_months import (
+    MonthAwards,
+    MonthlyHonours,
+    MonthTotal,
+    build_monthly_honours,
+)
 from tests.conftest import PHASES_2026_27, make_history_row, make_season_months
 
 MONTHS = make_season_months()
@@ -255,6 +263,28 @@ class TestAGapWithholdsBothAwards:
 
         assert _september(store).withheld_reason == "no score is recorded for Alice in GW4"
 
+    def test_a_classic_row_with_no_hit_recorded_withholds_both(self):
+        """Classic records a hit every gameweek, zero included, so a missing
+        one is a hit nobody read (the coarse tier's field absent) rather than
+        none taken, and it could have cost the month. The month's first
+        gameweek is charged no hit, so one missing there costs nothing."""
+        store = _store()
+        _record(store, 3, (1, "Alice", 60, None), (2, "Bob", 50, 0))
+        _record(store, 4, (1, "Alice", 60, 0), (2, "Bob", 50, None))
+        _record(store, 5, (1, "Alice", 60, 0), (2, "Bob", 50, 0))
+
+        assert _september(store).withheld_reason == "no transfer cost is recorded for Bob in GW4"
+
+    def test_a_missing_score_and_a_missing_hit_are_each_named(self):
+        store = _store()
+        _record(store, 3, (1, "Alice", 60, 0), (2, "Bob", 50, 0))
+        _record(store, 4, (1, "Alice", None, 0), (2, "Bob", 50, None))
+        _record(store, 5, (1, "Alice", 60, 0), (2, "Bob", 50, 0))
+
+        assert _september(store).withheld_reason == (
+            "no score is recorded for Alice in GW4 and no transfer cost is recorded for Bob in GW4"
+        )
+
     def test_a_long_list_of_gaps_names_three_managers_and_counts_the_rest(self):
         store = _store()
         names = ["Alice", "Bob", "Cara", "Dan", "Eve"]
@@ -364,6 +394,35 @@ class TestHonoursList:
         assert _names(recomputed.managers_of_the_month) == ["Bob"]
         assert {t.manager_name: t.points for t in recomputed.totals} == {"Alice": 180, "Bob": 190}
 
+    def test_a_league_read_in_part_withholds_every_month(self):
+        """The members the recap never read are a gap the store cannot see,
+        and the Dud is almost always one of them, so a full ledger for the
+        managers it did read awards nothing."""
+        store = _store()
+        self._season(store, 9)
+        reason = "the recap reads only the first 50 of the league's members"
+
+        honours = build_monthly_honours(store, MONTHS, 9, partial_league=reason)
+
+        assert [awards.month.name for awards in honours.months] == ["August", "September", "October"]
+        assert [awards.withheld_reason for awards in honours.months] == [reason] * 3
+        assert not any(awards.totals for awards in honours.months)
+
+    def test_withholding_one_month_leaves_the_rest_and_the_original_alone(self):
+        store = _store()
+        self._season(store, 9)
+        honours = build_monthly_honours(store, MONTHS, 9)
+        october = honours.months[2]
+
+        withheld = honours.withholding(october.month, "FPL's own table for the month disagrees")
+
+        assert [awards.awarded for awards in withheld.months] == [True, True, False]
+        assert withheld.months[:2] == honours.months[:2]
+        assert withheld.ending_at(9) == MonthAwards(
+            month=october.month, withheld_reason="FPL's own table for the month disagrees",
+        )
+        assert october.awarded, "the list it was made from is unchanged"
+
     def test_nothing_is_written_beside_the_ledger(self):
         store = _store()
         self._season(store, 5)
@@ -424,6 +483,15 @@ class TestTheAwardsWording:
         assert month_awards_withheld_line(withheld) == "Withheld for September (GW3-5), as GW4 was never captured."
         assert format_month_honours_line(withheld) == "September (GW3-5): not awarded, as GW4 was never captured"
 
+    def test_a_month_fpls_own_table_disagrees_with_says_so_in_its_place(self):
+        withheld = MonthAwards(month=SEPTEMBER, withheld_reason=month_table_withheld_reason(2))
+
+        assert month_awards_withheld_line(withheld) == (
+            "Withheld for September (GW3-5), as FPL's own table for the month disagrees with"
+            " this recap's totals for 2 managers."
+        )
+        assert month_table_withheld_reason(1).endswith("for 1 manager")
+
     def test_an_honours_line_names_both_awards(self):
         line = format_month_honours_line(_awards(SEPTEMBER, ("Alice", 245), ("Bob", 238), ("Dan", 172)))
 
@@ -456,3 +524,34 @@ class TestTheMonthTableCrossCheck:
         awards = _awards(SEPTEMBER, ("Alice", 245))
 
         assert month_table_mismatches(awards, [{"entry": 1}, "junk", {"entry": "1", "total": 200}]) == []
+
+    def test_the_warning_names_three_disagreements_and_counts_the_rest(self):
+        """A change to how FPL scores a month disagrees for everyone who took
+        a hit, which must not read out the league."""
+        awards = _awards(SEPTEMBER, ("Alice", 245))
+        mismatches = [(name, 200, 196) for name in ("Alice", "Bob", "Cara", "Dan", "Eve")]
+
+        message = _month_table_disagrees_message(awards, mismatches)
+
+        assert message == (
+            "FPL's own September table disagrees with the ledger's totals for 5 managers"
+            " (Alice: 200 here, 196 on FPL; Bob: 200 here, 196 on FPL; Cara: 200 here, 196 on FPL;"
+            " 2 more), so this recap withholds the month's Manager and Dud of the Month rather"
+            " than contradict it."
+        )
+        assert "for 1 manager (" in _month_table_disagrees_message(awards, mismatches[:1])
+
+
+class TestTheMonthTablesTheTieCheckReads:
+    def test_each_awarded_month_gives_its_places_and_the_closing_one_is_marked(self):
+        honours = MonthlyHonours(
+            season="2026-27", fpl_format="classic", league_id=1, through_gameweek=5,
+            months=[
+                MonthAwards(month=MONTHS[0], withheld_reason="GW1-2 were never captured"),
+                _awards(SEPTEMBER, ("Alice", 200), ("Bob", 200), ("Cara", 150)),
+            ],
+        )
+
+        assert recap_month_tables(honours) == [
+            {"name": "September", "closing": True, "ranks": [("Alice", 1), ("Bob", 1), ("Cara", 3)]},
+        ]

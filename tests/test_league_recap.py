@@ -60,10 +60,10 @@ from fpl_cli.cli._league_recap_types import (
     RecapFineResult,
     RecapManagerEntry,
     RecapManagerPlayer,
+    RecapMonthTable,
     RecapPriorSeason,
     RecapSeasonRecord,
     RecapTransfer,
-    competition_rank,
     contested_draft_claims,
     draft_transaction_chains,
     draft_transaction_kind_counts,
@@ -134,6 +134,7 @@ from fpl_cli.services.league_history_notes import (
     NoteSurface,
     SeasonPhase,
 )
+from fpl_cli.utils.ranking import competition_rank
 from tests.conftest import (
     make_draft_player,
     make_draft_team,
@@ -8656,6 +8657,58 @@ class TestTieClaimCheck:
         data["season_highest_score"] = RecapSeasonRecord(points=43, scores=[("Eli Ray", 4), ("Dee Ford", 7)])
 
         found = check_recap_editorial("Dee Ford's 43 was the joint-highest score of the season.", data)
+
+        assert RECAP_WARNING_UNSUPPORTED_TIE not in found
+
+    # PR #528 review: the brief states a month's ties ("with 245 pts each"),
+    # so a true one must not read as a tie on the week or the table.
+    _MONTHS = [
+        RecapMonthTable(
+            name="September", closing=False,
+            ranks=[("Dee Ford", 1), ("Eli Ray", 2), ("Bea Gale", 2), ("Fay Lund", 4)],
+        ),
+        RecapMonthTable(
+            name="October", closing=True,
+            ranks=[("Dee Ford", 1), ("Eli Ray", 1), ("Ann Moss", 3), ("Fay Lund", 4)],
+        ),
+    ]
+
+    def _check_months(self, summary: str, months: list[RecapMonthTable] | None = None) -> list[str]:
+        managers = _reported_table()
+        return check_tie_claims(
+            summary, managers, RecapNames.of(managers), month_tables=self._MONTHS if months is None else months,
+        )
+
+    @pytest.mark.parametrize("summary", [
+        "Dee Ford and Eli Ray finished joint-first for the month.",
+        "Dee Ford and Eli Ray tied for first in October's table.",
+        "Dee Ford and Eli Ray were joint-top of the monthly standings.",
+        "Eli Ray and Bea Gale were joint-second in September.",
+    ])
+    def test_a_month_tie_its_own_table_holds_passes(self, summary):
+        assert self._check(summary)  # neither the week nor the table holds it
+        assert self._check_months(summary) == []
+
+    def test_a_month_tie_its_own_table_does_not_hold_names_the_month(self):
+        assert self._check_months("Dee Ford and Eli Ray were joint top in September.") == [
+            'the editorial says "joint top", but no reading holds: the highest gameweek score, 58 pts, '
+            "was Fay Lund's alone; 1st place in the table is Dee Ford's alone; 1st place in September's "
+            "table is Dee Ford's alone"
+        ]
+
+    def test_a_month_the_editorial_was_not_shown_answers_for_nothing(self):
+        """A bare "month" on a recap that closed none, and a month not on the
+        list, leave the week and the table to answer."""
+        not_closing = [RecapMonthTable(name="October", closing=False, ranks=[("Dee Ford", 1), ("Eli Ray", 1)])]
+
+        assert len(self._check_months("Dee Ford and Eli Ray finished joint-first for the month.", not_closing)) == 1
+        assert len(self._check_months("Dee Ford and Eli Ray were joint top in November.")) == 1
+
+    def test_the_registry_reads_the_month_tables_off_the_recap_data(self):
+        data = _make_recap_data(managers=_reported_table())
+        data["month_tables"] = self._MONTHS
+
+        found = check_recap_editorial("Dee Ford and Eli Ray finished joint-first for the month.", data)
 
         assert RECAP_WARNING_UNSUPPORTED_TIE not in found
 

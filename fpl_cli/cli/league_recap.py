@@ -40,12 +40,15 @@ from fpl_cli.cli._league_recap_types import (
     RecapStandoutPlayers,
     format_month_honours_line,
     month_awards_withheld_line,
+    month_table_withheld_reason,
+    recap_month_tables,
     recap_reads_whole_league,
     standout_blanks_heading,
     standout_players_lines,
     summarise_prior_seasons,
 )
 from fpl_cli.cli._synthesis_retry import synthesise_with_retry
+from fpl_cli.constants import DETAIL_CAP
 from fpl_cli.services.league_history import GameweekCoverage
 from fpl_cli.services.league_history_fines import (
     ManagerFineTally,
@@ -86,10 +89,12 @@ RECAP_WARNING_DRAFT_ROUNDS_UNKNOWN = "draft_rounds_unknown"
 # bootstrap, so no Manager or Dud of the Month and no honours list (#425).
 RECAP_WARNING_MONTHS_UNAVAILABLE = "league_months_unavailable"
 # Classic only: FPL's own table for the month just closed disagrees with the
-# month totals the ledger gives (#425). The awards stand on the ledger.
+# month totals the ledger gives (#425), so the month's awards are withheld.
 RECAP_WARNING_MONTH_TABLE_DISAGREES = "league_month_table_disagrees"
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from fpl_cli.api.fpl import FPLClient
     from fpl_cli.api.providers import LLMResponse, TokenUsage
     from fpl_cli.cli._league_recap_history import FetchDraftChoices
@@ -608,6 +613,31 @@ def league_recap_command(
             # closed gets its two awards, or the reason it has none.
             month_honours = capture_result.month_honours
             closing_month = month_honours.ending_at(gw) if month_honours is not None else None
+
+            # FPL's own table for the month, against the ledger's totals,
+            # before either award is placed anywhere: that table is what a
+            # league checks the awards against, so a disagreement withholds
+            # them on every surface rather than leaving the report and the
+            # editorial to crown what FPL contradicts. Only classic has month
+            # tables, and only a settled one is worth reading: while FPL is
+            # still refreshing the league tables it may not have caught up
+            # with the month's last gameweek, and the report's banner already
+            # says the recap's totals may be stale.
+            month_table_problem: str | None = None
+            league_id = collected_data.get("league_id")
+            if (
+                month_honours is not None and closing_month is not None and closing_month.awarded
+                and league_id is not None and not is_draft and not still_processing
+            ):
+                mismatches = await _month_table_mismatches(client, league_id, closing_month)
+                if mismatches:
+                    month_table_problem = _month_table_disagrees_message(closing_month, mismatches)
+                    error_console.print(f"[yellow]{rich_escape(month_table_problem)}[/yellow]")
+                    month_honours = month_honours.withholding(
+                        closing_month.month, month_table_withheld_reason(len(mismatches)),
+                    )
+                    closing_month = month_honours.ending_at(gw)
+
             if closing_month is not None:
                 if closing_month.awarded:
                     collected_data["awards"].update(month_award_entries(closing_month))
@@ -625,21 +655,13 @@ def league_recap_command(
                 collected_data["monthly_honours_lines"] = [
                     format_month_honours_line(awards) for awards in month_honours.months
                 ]
-
-            # FPL's own table for the month, against the ledger's totals. Only
-            # classic has month tables, and only a settled one is worth reading:
-            # while FPL is still refreshing the league tables it may not have
-            # caught up with the month's last gameweek.
-            month_table_problem: str | None = None
-            if (
-                closing_month is not None and closing_month.awarded
-                and not is_draft and not still_processing
-            ):
-                month_table_problem = await _month_table_disagreement(
-                    client, collected_data.get("league_id"), closing_month,
-                )
-                if month_table_problem:
-                    error_console.print(f"[yellow]{rich_escape(month_table_problem)}[/yellow]")
+            editorial_honours = (
+                month_honours if closing_month is not None or honours_milestone else None
+            )
+            if editorial_honours is not None:
+                # The months the editorial is shown, and only those, are
+                # what the tie check reads a month tie against.
+                collected_data["month_tables"] = recap_month_tables(editorial_honours)
 
             # The *printed* season table is a set-piece, not a weekly
             # fixture: a full standings-style table answers "who owes what
@@ -698,9 +720,7 @@ def league_recap_command(
                         prior_seasons=prior_seasons,
                         # On a month's last gameweek and at the two season
                         # milestones (#425): see above.
-                        month_honours=(
-                            month_honours if closing_month is not None or honours_milestone else None
-                        ),
+                        month_honours=editorial_honours,
                     )
                 except ProviderError as e:
                     error_console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")
@@ -988,16 +1008,16 @@ def _months_unavailable_message(reason: str) -> str:
     )
 
 
-async def _month_table_disagreement(
-    client: FPLClient, league_id: Any, awards: MonthAwards,
-) -> str | None:
-    """Where FPL's own table for the month disagrees with the ledger's totals
-    (#425), as the warning that says so, or None.
+async def _month_table_mismatches(
+    client: FPLClient, league_id: int, awards: MonthAwards,
+) -> list[tuple[str, int, int]]:
+    """Each manager FPL's own table for the month scores differently from the
+    ledger (#425), as (name, the ledger's total, FPL's), or none.
 
-    An optional cross-check: a table that cannot be read is a debug line, and
-    a disagreement a warning, since the awards stand on the ledger either way.
-    Only the table's first page is read, which holds the month's top 50, so
-    a larger league is checked for those.
+    A table that cannot be read is a debug line and no disagreement: the
+    check is a guard on the awards, not a source of them. Only the table's
+    first page is read, which is the whole league, since a league past one
+    page of standings has its months withheld before this is reached.
     """
     import httpx
 
@@ -1007,17 +1027,24 @@ async def _month_table_disagreement(
         response = await client.get_classic_league_standings(league_id, month_id=awards.month.id)
     except (httpx.HTTPError, ValueError) as exc:
         logger.debug("FPL's %s table could not be read for the cross-check: %s", awards.month.name, exc)
-        return None
+        return []
     standings = response.get("standings") if isinstance(response, dict) else None
     rows = standings.get("results") if isinstance(standings, dict) else None
-    mismatches = month_table_mismatches(awards, rows if isinstance(rows, list) else [])
-    if not mismatches:
-        return None
-    detail = "; ".join(f"{name}: {ours} here, {theirs} on FPL" for name, ours, theirs in mismatches)
+    return month_table_mismatches(awards, rows if isinstance(rows, list) else [])
+
+
+def _month_table_disagrees_message(awards: MonthAwards, mismatches: Sequence[tuple[str, int, int]]) -> str:
+    """The stderr line and the JSON warning's message, worded once for both:
+    the first `DETAIL_CAP` disagreements with both totals, the rest counted,
+    so a change to how FPL scores a month does not read out the league."""
+    shown = [f"{name}: {ours} here, {theirs} on FPL" for name, ours, theirs in mismatches[:DETAIL_CAP]]
+    if omitted := len(mismatches) - len(shown):
+        shown.append(f"{omitted} more")
+    count = len(mismatches)
     return (
-        f"FPL's own {awards.month.name} table disagrees with the ledger's totals for"
-        f" {len(mismatches)} manager(s) ({detail}). The Manager and Dud of the Month follow"
-        " the ledger's figures."
+        f"FPL's own {awards.month.name} table disagrees with the ledger's totals for {count}"
+        f" manager{'s' if count != 1 else ''} ({'; '.join(shown)}), so this recap withholds the"
+        " month's Manager and Dud of the Month rather than contradict it."
     )
 
 
