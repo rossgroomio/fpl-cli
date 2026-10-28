@@ -46,8 +46,10 @@ class TestSeasonMilestones:
         assert is_season_milestone(39) is False
         assert derive_season_phase(39) is SeasonPhase.FINALE
 
-    def test_the_second_half_before_the_run_in_is_not(self):
-        assert all(derive_season_phase(gw) is SeasonPhase.POST_CHIP_BOUNDARY for gw in range(20, 32))
+    def test_the_rest_of_the_midpoint_phase_is_not(self):
+        """`derive_season_phase` calls GW19-31 the midpoint. Gating on the
+        phase would fire a once-a-season table thirteen times."""
+        assert all(derive_season_phase(gw) is SeasonPhase.MIDPOINT for gw in range(19, 32))
         assert [gw for gw in range(20, 32) if is_season_milestone(gw)] == []
 
     def test_no_ordinary_gameweek_qualifies(self):
@@ -82,7 +84,7 @@ def _transaction(net: int) -> LedgerTransaction:
 class TestSeasonPhaseBoundaries:
     """Every boundary gameweek pinned explicitly under the default constants
     (TOTAL_GAMEWEEKS=38, CHIP_SPLIT_GW=19): opener=1, pre_chip_boundary=2-18,
-    midpoint=19, post_chip_boundary=20-31, run_in=32-37, finale=38+."""
+    midpoint=19-31, run_in=32-37, finale=38+."""
 
     def test_gw1_is_the_opener(self):
         assert derive_season_phase(1) is SeasonPhase.OPENER
@@ -93,16 +95,11 @@ class TestSeasonPhaseBoundaries:
     def test_gw18_is_the_last_pre_chip_boundary_gameweek(self):
         assert derive_season_phase(18) is SeasonPhase.PRE_CHIP_BOUNDARY
 
-    def test_gw19_alone_is_the_midpoint(self):
-        """The halfway point falls once GW19 has finished, which is when its
-        recap is written. GW20 is past it, not at it (#531)."""
+    def test_gw19_is_the_first_midpoint_gameweek(self):
         assert derive_season_phase(19) is SeasonPhase.MIDPOINT
 
-    def test_gw20_is_the_first_post_chip_boundary_gameweek(self):
-        assert derive_season_phase(20) is SeasonPhase.POST_CHIP_BOUNDARY
-
-    def test_gw31_is_the_last_post_chip_boundary_gameweek(self):
-        assert derive_season_phase(31) is SeasonPhase.POST_CHIP_BOUNDARY
+    def test_gw31_is_the_last_midpoint_gameweek(self):
+        assert derive_season_phase(31) is SeasonPhase.MIDPOINT
 
     def test_gw32_is_the_first_run_in_gameweek(self):
         assert derive_season_phase(32) is SeasonPhase.RUN_IN
@@ -120,10 +117,9 @@ class TestSeasonPhaseBoundaries:
 
     def test_boundaries_respect_overridden_constants(self):
         # total=20, split=10, run_in_start = 20-6 = 14: pre_chip_boundary
-        # 2-9, midpoint 10, post_chip_boundary 11-13, run_in 14-19, finale 20+.
+        # 2-9, midpoint 10-13, run_in 14-19, finale 20+.
         assert derive_season_phase(20, total_gameweeks=20, chip_split_gw=10) is SeasonPhase.FINALE
         assert derive_season_phase(15, total_gameweeks=20, chip_split_gw=10) is SeasonPhase.RUN_IN
-        assert derive_season_phase(11, total_gameweeks=20, chip_split_gw=10) is SeasonPhase.POST_CHIP_BOUNDARY
         assert derive_season_phase(10, total_gameweeks=20, chip_split_gw=10) is SeasonPhase.MIDPOINT
         assert derive_season_phase(9, total_gameweeks=20, chip_split_gw=10) is SeasonPhase.PRE_CHIP_BOUNDARY
         assert derive_season_phase(1, total_gameweeks=20, chip_split_gw=10) is SeasonPhase.OPENER
@@ -138,8 +134,7 @@ class TestSeasonPhasePartitionIsExhaustive:
 
         assert phases[0] is SeasonPhase.OPENER  # GW1
         assert all(p is SeasonPhase.PRE_CHIP_BOUNDARY for p in phases[1:18])  # GW2-18
-        assert phases[18] is SeasonPhase.MIDPOINT  # GW19
-        assert all(p is SeasonPhase.POST_CHIP_BOUNDARY for p in phases[19:31])  # GW20-31
+        assert all(p is SeasonPhase.MIDPOINT for p in phases[18:31])  # GW19-31
         assert all(p is SeasonPhase.RUN_IN for p in phases[31:37])  # GW32-37
         assert phases[37] is SeasonPhase.FINALE  # GW38
 
@@ -1391,24 +1386,20 @@ class TestFinaleReadsTheWholeSeason:
 
 
 class TestMidpointAndRunInPhases:
-    """MIDPOINT, POST_CHIP_BOUNDARY and RUN_IN are three of
-    `_season_phase_text`'s six branches; every other test in this module
-    lands in OPENER, PRE_CHIP_BOUNDARY, or FINALE, so these are the only
-    exercise of the three through `build_notes_pack` rather than
-    `derive_season_phase` alone."""
+    """MIDPOINT and RUN_IN are two of `_season_phase_text`'s five branches;
+    every other test in this module lands in OPENER, PRE_CHIP_BOUNDARY, or
+    FINALE, so these are the only exercise of the two through
+    `build_notes_pack` rather than `derive_season_phase` alone."""
 
-    def test_post_chip_boundary_phase_and_marker_text(self):
+    def test_midpoint_phase_and_marker_text(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(25, [make_history_row(gameweek=25, manager_key=1, manager_name="Alice")])
 
         pack = build_notes_pack(store, 25, total_gameweeks=38, chip_split_gw=19)
 
-        assert pack.phase is SeasonPhase.POST_CHIP_BOUNDARY
-        assert pack.season_phase_entry.text == (
-            "GW25 is in the second half of the season, before the run-in, "
-            "with the second set of chips available from GW20."
-        )
-        assert "midpoint" not in pack.season_phase_entry.text
+        assert pack.phase is SeasonPhase.MIDPOINT
+        assert "GW25 is the season midpoint" in pack.season_phase_entry.text
+        assert "GW19" in pack.season_phase_entry.text
 
     def test_run_in_phase_and_marker_text(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
@@ -1472,8 +1463,7 @@ class TestMidpointAndRunInPhases:
             "available up to and including GW19."
         )
         assert after.season_phase_entry.text == (
-            "GW20 is in the second half of the season, before the run-in, "
-            "with the second set of chips available from GW20."
+            "GW20 is the season midpoint, past the GW19 chip boundary and before the run-in."
         )
 
     def test_classic_pre_chip_boundary_text_names_the_chip_boundary(self):
@@ -1488,7 +1478,7 @@ class TestMidpointAndRunInPhases:
 
 class TestDraftPhaseTextHasNoChipLanguage:
     """Draft has no chips at all, so the two phrasings that name the chip
-    split (PRE_CHIP_BOUNDARY, MIDPOINT, POST_CHIP_BOUNDARY) must not mention chips for a draft
+    split (PRE_CHIP_BOUNDARY, MIDPOINT) must not mention chips for a draft
     league, even on the prompt-only surface (issue #187)."""
 
     def test_pre_chip_boundary_phase_drops_chip_language_for_draft(self):
@@ -1501,16 +1491,16 @@ class TestDraftPhaseTextHasNoChipLanguage:
         assert "chip" not in pack.season_phase_entry.text.lower()
         assert "GW19" in pack.season_phase_entry.text
 
-    def test_post_chip_boundary_phase_drops_chip_language_for_draft(self):
+    def test_midpoint_phase_drops_chip_language_for_draft(self):
         store = LeagueHistoryStore("2026-27", "draft", 1)
         store.append_rows(25, [make_history_row(gameweek=25, manager_key=1, manager_name="Alice")])
 
         pack = build_notes_pack(store, 25, total_gameweeks=38, chip_split_gw=19)
 
-        assert pack.phase is SeasonPhase.POST_CHIP_BOUNDARY
-        assert pack.season_phase_entry.text == (
-            "GW25 is past the season's halfway point (GW19) and before the run-in."
-        )
+        assert pack.phase is SeasonPhase.MIDPOINT
+        assert "chip" not in pack.season_phase_entry.text.lower()
+        assert "GW25 is the season midpoint" in pack.season_phase_entry.text
+        assert "GW19" in pack.season_phase_entry.text
 
 
 class TestOpenerHasNoPriorHistory:
