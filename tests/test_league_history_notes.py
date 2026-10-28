@@ -668,12 +668,12 @@ class TestSeasonCountEntries:
             ])
 
         _append(1, winner=1)  # first half: M1's first win
-        for gw in range(2, 21):
+        for gw in range(2, 20):
             _append(gw, winner=1)
-        _append(21, winner=2)  # second half: M2's first win
+        _append(20, winner=2)  # the second half's first gameweek: M2's first win
 
         early = self._count_entry(build_notes_pack(store, 1), "M1", "gw_win_streak")
-        late = self._count_entry(build_notes_pack(store, 21), "M2", "gw_win_streak")
+        late = self._count_entry(build_notes_pack(store, 20), "M2", "gw_win_streak")
 
         assert (early.occurrences, early.surfaces) == (1, frozenset())
         assert late.occurrences == 1
@@ -1411,6 +1411,61 @@ class TestMidpointAndRunInPhases:
         assert "GW35 is in the run-in" in pack.season_phase_entry.text
         assert "GW38" in pack.season_phase_entry.text
 
+    def test_split_gameweek_is_last_of_first_half_for_classic(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(19, [make_history_row(gameweek=19, manager_key=1, manager_name="Alice")])
+
+        pack = build_notes_pack(store, 19, total_gameweeks=38, chip_split_gw=19)
+
+        text = pack.season_phase_entry.text
+        assert pack.phase is SeasonPhase.MIDPOINT
+        assert text == (
+            "GW19 is the season midpoint, the last gameweek of the first half, "
+            "with the second set of chips available from GW20."
+        )
+        assert "past" not in text
+
+    def test_split_gameweek_is_last_of_first_half_for_draft(self):
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        store.append_rows(19, [make_history_row(gameweek=19, manager_key=1, manager_name="Alice")])
+
+        pack = build_notes_pack(store, 19, total_gameweeks=38, chip_split_gw=19)
+
+        text = pack.season_phase_entry.text
+        assert pack.phase is SeasonPhase.MIDPOINT
+        assert text == "GW19 is the season midpoint, the last gameweek of the first half."
+        assert "chip" not in text.lower()
+        assert "past" not in text
+
+    def test_split_gameweek_is_still_midpoint_and_carries_the_milestone_set_piece(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, manager_name="Alice", league_position=1)])
+        for gw in range(2, 20):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=2)])
+
+        pack = build_notes_pack(store, 19, total_gameweeks=38, chip_split_gw=19)
+
+        assert pack.phase is SeasonPhase.MIDPOINT
+        assert is_season_milestone(19) is True
+        entry = next(e for e in pack.season_count_entries if e.condition_key == "weeks_on_top")
+        assert entry.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+
+    def test_gameweeks_either_side_of_the_split_keep_their_lines(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (18, 20):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, manager_name="Alice")])
+
+        before = build_notes_pack(store, 18, total_gameweeks=38, chip_split_gw=19)
+        after = build_notes_pack(store, 20, total_gameweeks=38, chip_split_gw=19)
+
+        assert before.season_phase_entry.text == (
+            "GW18 is in the first half of the season, with the first set of chips "
+            "available up to and including GW19."
+        )
+        assert after.season_phase_entry.text == (
+            "GW20 is the season midpoint, past the GW19 chip boundary and before the run-in."
+        )
+
     def test_classic_pre_chip_boundary_text_names_the_chip_boundary(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, manager_name="Alice")])
@@ -1418,7 +1473,7 @@ class TestMidpointAndRunInPhases:
         pack = build_notes_pack(store, 2)
 
         assert pack.phase is SeasonPhase.PRE_CHIP_BOUNDARY
-        assert "chip-availability boundary" in pack.season_phase_entry.text
+        assert "first set of chips" in pack.season_phase_entry.text
 
 
 class TestDraftPhaseTextHasNoChipLanguage:

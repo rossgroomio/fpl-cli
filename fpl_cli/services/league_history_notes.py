@@ -61,7 +61,7 @@ from fpl_cli.models.league_history import (
     ManagerEarliestGameweekCache,
     weakest_tier,
 )
-from fpl_cli.season import CHIP_SPLIT_GW, TOTAL_GAMEWEEKS
+from fpl_cli.season import CHIP_SPLIT_GW, TOTAL_GAMEWEEKS, second_half_start
 from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore
 from fpl_cli.services.league_history_counters import (
     ConditionRunView,
@@ -118,12 +118,17 @@ def derive_season_phase(
 
     Only the opener and finale boundaries are handed down by the plan
     verbatim; midpoint and run_in split the remaining span at the
-    chip-availability boundary and at a trailing window sized to match the
+    chip split gameweek (the last of the first half) and at a trailing window sized to match the
     pack-builder's own raw-row read window (see `build_notes_pack`), rather
     than at some other arbitrary fraction of the season -- both boundaries
     are already-meaningful points elsewhere in the codebase, so reusing them
     here avoids inventing a third, unrelated notion of "how far into the
     season".
+
+    So midpoint runs from GW19, still the first half, to GW31, well into
+    the second: it says nothing about which chip half a gameweek is in. Ask
+    `second_half_start(chip_split_gw)` (GW20), never the phase, whether the
+    second set of chips is live.
     """
     if is_opening_gameweek(gameweek):
         return SeasonPhase.OPENER
@@ -148,8 +153,8 @@ def is_season_milestone(
     spans thirteen gameweeks, so gating a once-a-season set-piece on the
     phase would fire it thirteen times and turn the set-piece into
     wallpaper. The moment is the phase's own first gameweek -- the
-    chip-availability boundary, which is `TOTAL_GAMEWEEKS // 2` and so is
-    the halfway point too -- and the finale.
+    chip split gameweek, the last of the first half, which is
+    `TOTAL_GAMEWEEKS // 2` and so is the halfway point too -- and the finale.
 
     Both are compared exactly rather than asked of `derive_season_phase`,
     whose FINALE branch is deliberately open-ended (`>= total_gameweeks`, so
@@ -985,14 +990,30 @@ def _season_phase_text(
     if phase is SeasonPhase.PRE_CHIP_BOUNDARY:
         if fpl_format == "draft":
             return f"GW{gameweek} is before the season's halfway point (GW{chip_split_gw})."
-        return f"GW{gameweek} is before the GW{chip_split_gw} chip-availability boundary."
+        return (
+            f"GW{gameweek} is in the first half of the season, with the first set of chips "
+            f"available up to and including GW{chip_split_gw}."
+        )
     if phase is SeasonPhase.MIDPOINT:
-        if fpl_format == "draft":
+        second_half_start_gw = second_half_start(chip_split_gw)
+        if gameweek >= second_half_start_gw:
+            if fpl_format == "draft":
+                return (
+                    f"GW{gameweek} is the season midpoint, past the GW{chip_split_gw} halfway "
+                    "point and before the run-in."
+                )
             return (
-                f"GW{gameweek} is the season midpoint, past the GW{chip_split_gw} halfway "
-                "point and before the run-in."
+                f"GW{gameweek} is the season midpoint, past the GW{chip_split_gw} chip boundary "
+                "and before the run-in."
             )
-        return f"GW{gameweek} is the season midpoint, past the GW{chip_split_gw} chip boundary and before the run-in."
+        # The phase opens on the halfway milestone, still the first half's
+        # last gameweek, so the second set of chips is one gameweek away.
+        if fpl_format == "draft":
+            return f"GW{gameweek} is the season midpoint, the last gameweek of the first half."
+        return (
+            f"GW{gameweek} is the season midpoint, the last gameweek of the first half, "
+            f"with the second set of chips available from GW{second_half_start_gw}."
+        )
     if phase is SeasonPhase.RUN_IN:
         return f"GW{gameweek} is in the run-in to the season finale (GW{total_gameweeks})."
     return f"GW{gameweek} is the season finale."
@@ -1291,10 +1312,10 @@ def build_notes_pack(
         season_count_entries=_season_count_entries(
             gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
             milestone=is_season_milestone(gameweek, total_gameweeks, chip_split_gw),
-            # The chip boundary is the season's halfway point (GW19 of 38),
-            # so its deadline is where "second half" starts for the count
-            # policies' first-in-second-half and second-half-only rules.
-            second_half=gameweek > chip_split_gw,
+            # For the count policies' first-in-second-half and
+            # second-half-only rules: from GW20 of 38, so the GW19 milestone
+            # that closes the first half is not in it.
+            second_half=gameweek >= second_half_start(chip_split_gw),
         ),
         season_record_entries=_season_record_entries(
             store=store, gameweek=gameweek, league_start_gameweek=league_start_gameweek,

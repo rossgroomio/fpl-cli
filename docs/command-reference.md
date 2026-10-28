@@ -1384,7 +1384,7 @@ a line each, since one line could not tell them apart. The ledger and `--format 
 one record per manager per fine.
 
 **Season fines:** the season-to-date *table* appears on console and in the saved report only
-at the two milestone gameweeks — GW19 (the chip-availability boundary, which is also the
+at the two milestone gameweeks — GW19 (the last gameweek of the first half, which is also the
 halfway point) and the finale. Every other week those surfaces stay a this-week view, and
 [`fpl league-fines`](#season-fines) answers the season question on demand.
 
@@ -1696,10 +1696,10 @@ pack rescans every captured gameweek instead of a trailing six-gameweek window.
 | Phase | Gameweeks | Framing it states |
 |---|---|---|
 | `opener` | The first gameweek (GW1) | "the season opener" |
-| `pre_chip_boundary` (classic) | Up to the gameweek before the chip split (GW2-18) | "before the GW19 chip-availability boundary" |
-| `pre_chip_boundary` (draft) | Up to the gameweek before the chip split (GW2-18) | "before the season's halfway point (GW19)" |
-| `midpoint` (classic) | Chip split to the start of the run-in (GW19-31) | "the season midpoint, past the GW19 chip boundary and before the run-in" |
-| `midpoint` (draft) | Chip split to the start of the run-in (GW19-31) | "the season midpoint, past the GW19 halfway point and before the run-in" |
+| `pre_chip_boundary` (classic) | Second gameweek up to the one before the first half's last (GW2-18) | "in the first half of the season, with the first set of chips available up to and including GW19" |
+| `pre_chip_boundary` (draft) | Second gameweek up to the one before the first half's last (GW2-18) | "before the season's halfway point (GW19)" |
+| `midpoint` (classic) | The first half's last gameweek to the start of the run-in (GW19-31) | GW19: "the season midpoint, the last gameweek of the first half, with the second set of chips available from GW20"; GW20-31: "the season midpoint, past the GW19 chip boundary and before the run-in" |
+| `midpoint` (draft) | The first half's last gameweek to the start of the run-in (GW19-31) | GW19: "the season midpoint, the last gameweek of the first half"; GW20-31: "the season midpoint, past the GW19 halfway point and before the run-in" |
 | `run_in` | The last six gameweeks before the final one (GW32-37) | "in the run-in to the season finale (GW38)" |
 | `finale` | The final gameweek and anything past it (GW38+) | "the season finale" |
 
@@ -1711,6 +1711,12 @@ Boundaries derive from the season-length and chip-split constants rather than fi
 dates, so a season of a different length moves them and the stated gameweek numbers move
 with it. `metadata.season_phase` carries the live value, and is `null` on any run that built no
 notes pack — an unreadable store, or no league id configured for the format.
+
+`midpoint` covers GW19-31, so it doesn't tell you which chip half a gameweek is in: the second
+half starts at GW20. To ask whether the second set of chips is live, compare
+`metadata.gameweek` with 20 rather than reading `season_phase`. That 20 is FPL's chip rule
+(the second set opens at GW20 of 38), not a setting of this tool, so it moves only if FPL
+changes the rule.
 
 #### Capture warnings
 

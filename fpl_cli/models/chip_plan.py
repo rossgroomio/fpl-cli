@@ -11,7 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from fpl_cli.paths import user_data_file
-from fpl_cli.season import CHIP_SPLIT_GW
+from fpl_cli.season import SECOND_HALF_START_GW
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +64,13 @@ class ChipPlan(BaseModel):
     def get_available_chips(self, current_gw: int) -> list[ChipType]:
         """Get chips available in the current half of the season.
 
-        Each chip is available once before the GW19 deadline and once after.
+        Each chip is available once up to and including GW19 and once from GW20.
         """
-        in_second_half = current_gw > CHIP_SPLIT_GW
+        in_second_half = current_gw >= SECOND_HALF_START_GW
         used_in_half = {
             u.chip
             for u in self.chips_used
-            if (u.gameweek > CHIP_SPLIT_GW) == in_second_half
+            if (u.gameweek >= SECOND_HALF_START_GW) == in_second_half
         }
         return [c for c in ChipType if c.value not in used_in_half]
 

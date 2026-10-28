@@ -1,12 +1,15 @@
 """Tests for fpl_cli/season — season detection and format helpers."""
 
+import ast
 from datetime import date
 from pathlib import Path
 
 import pytest
 
+import fpl_cli
 from fpl_cli.season import (
     CHIP_SPLIT_GW,
+    SECOND_HALF_START_GW,
     TOTAL_GAMEWEEKS,
     core_insights_season,
     get_season_year,
@@ -19,6 +22,7 @@ from fpl_cli.season import (
     season_partition,
     season_start_year,
     season_year_from_gameweeks,
+    second_half_start,
     understat_season,
     vaastav_season,
     vaastav_season_range,
@@ -32,6 +36,52 @@ def test_total_gameweeks_is_38():
 
 def test_chip_split_is_half():
     assert CHIP_SPLIT_GW == TOTAL_GAMEWEEKS // 2
+
+
+def test_second_half_starts_the_gameweek_after_the_split():
+    """GW19 closes the first half and GW20 opens the second, whatever
+    season length the split is handed."""
+    assert (CHIP_SPLIT_GW, SECOND_HALF_START_GW) == (19, 20)
+    assert second_half_start(10) == 11
+
+
+def _chip_split_orderings(source: str) -> list[int]:
+    """Lines comparing something with `<`, `<=`, `>` or `>=` against
+    `CHIP_SPLIT_GW`, bare or as an attribute. Read from the syntax tree, so a
+    docstring that names the banned form is not a hit."""
+    orderings = (ast.Lt, ast.LtE, ast.Gt, ast.GtE)
+    lines: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Compare):
+            continue
+        operands = [node.left, *node.comparators]
+        for op, left, right in zip(node.ops, operands, operands[1:]):
+            names = {getattr(o, "id", None) or getattr(o, "attr", None) for o in (left, right)}
+            if isinstance(op, orderings) and "CHIP_SPLIT_GW" in names:
+                lines.append(node.lineno)
+    return lines
+
+
+def test_the_ordering_scan_catches_both_spellings():
+    assert _chip_split_orderings("gw > CHIP_SPLIT_GW\nseason.CHIP_SPLIT_GW <= gw\n") == [1, 2]
+    assert _chip_split_orderings("gw >= SECOND_HALF_START_GW\ngw == CHIP_SPLIT_GW\n") == []
+
+
+def test_no_module_asks_a_half_of_the_chip_split():
+    """`> CHIP_SPLIT_GW` is the second-half question one step removed, and
+    `>= CHIP_SPLIT_GW` puts GW19, the first half's last gameweek, in the
+    second half. Both are asked of `SECOND_HALF_START_GW` instead (#531)."""
+    repo_root = Path(fpl_cli.__file__).parent.parent
+    offenders = [
+        f"{source.relative_to(repo_root)}:{line}"
+        for directory in ("fpl_cli", "scripts")
+        for source in sorted((repo_root / directory).rglob("*.py"))
+        for line in _chip_split_orderings(source.read_text(encoding="utf-8"))
+    ]
+
+    assert offenders == [], (
+        "Compare gameweeks with SECOND_HALF_START_GW, not CHIP_SPLIT_GW: " + ", ".join(offenders)
+    )
 
 
 # -- get_season_year ---------------------------------------------------------

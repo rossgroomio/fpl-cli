@@ -155,7 +155,7 @@ Does not apply in 2026-27. AFCON is biennial: the 2025 edition ran Dec 2025 into
 Prices fluctuate based on transfer market popularity (changes begin when the season starts). Selling price includes a **50% sell-on fee** (rounded up to nearest £0.1m) on any profit, so the seller keeps half of a rise rounded down: bought at £5.0m, a player sells for £5.0m at £5.1m and £5.1m at £5.2m. A fall below the purchase price is taken in full: the selling price is the current price.
 
 ### Chips
-One chip per GW. Each chip is available **twice per season**, split at the GW19 deadline:
+One chip per GW. Each chip is available **twice per season**, one to use up to and including GW19 and the other from GW20 onwards:
 
 | Chip | Effect | Cancellable? |
 |------|--------|-------------|
