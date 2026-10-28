@@ -4575,8 +4575,8 @@ def _history_pack(
     *,
     season_count_entries: list[NotesPackEntry] | None = None,
     season_record_entries: list[NotesPackEntry] | None = None,
-    phase: SeasonPhase = SeasonPhase.MIDPOINT,
-    phase_text: str = "GW20 is the season midpoint.",
+    phase: SeasonPhase = SeasonPhase.POST_CHIP_BOUNDARY,
+    phase_text: str = "GW20 is in the second half of the season.",
     fpl_format: str = "classic",
 ) -> NotesPack:
     return NotesPack(

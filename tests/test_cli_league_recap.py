@@ -3641,8 +3641,8 @@ def _notes_pack(
     entries: list[NotesPackEntry] | None = None,
     coverage_entries: list[NotesPackEntry] | None = None,
     *,
-    phase: SeasonPhase = SeasonPhase.MIDPOINT,
-    phase_text: str = "GW20 is the season midpoint.",
+    phase: SeasonPhase = SeasonPhase.POST_CHIP_BOUNDARY,
+    phase_text: str = "GW20 is in the second half of the season.",
     gameweek: int = 20,
 ) -> NotesPack:
     return NotesPack(
@@ -3884,7 +3884,7 @@ class TestLeagueHistoryReportSection:
 
         agent = ReportAgent(config={"output_dir": str(tmp_path)})
         data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
-        data["league_history_phase_text"] = "GW20 is the season midpoint."
+        data["league_history_phase_text"] = "GW20 is in the second half of the season."
         data["league_history_streak_lines"] = ["Alice: 3 gameweeks on top of the league in a row (GW1-GW3)."]
         data["league_history_coverage_lines"] = ["Recorded history is complete from its start (GW1) through GW20."]
 
@@ -3895,14 +3895,14 @@ class TestLeagueHistoryReportSection:
         assert "## Streaks" in content
         assert "Alice: 3 gameweeks on top of the league in a row (GW1-GW3)." in content
         assert "Recorded history is complete from its start (GW1) through GW20." in content
-        assert "GW20 is the season midpoint." in content
+        assert "GW20 is in the second half of the season." in content
 
     async def test_season_counts_render_under_their_own_subheading(self, tmp_path: Path):
         from fpl_cli.agents.orchestration.report import ReportAgent
 
         agent = ReportAgent(config={"output_dir": str(tmp_path)})
         data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
-        data["league_history_phase_text"] = "GW20 is the season midpoint."
+        data["league_history_phase_text"] = "GW20 is in the second half of the season."
         data["league_history_streak_lines"] = []
         data["league_history_season_count_lines"] = [
             "Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek.",
