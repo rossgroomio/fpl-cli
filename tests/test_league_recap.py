@@ -4855,6 +4855,13 @@ class TestLeagueHistoryPromptSection:
             'the Manager and Dud of the Month from the Awards section and the "## Monthly Honours" section'
             in RECAP_SYNTHESIS_SYSTEM_PROMPT
         )
+        # Only the month's final totals and places are stated, so how its race
+        # stood along the way is not the editorial's to say (#528's A/B: "never
+        # in doubt" on a 2-point gap going into the month's last gameweek).
+        assert (
+            "stated as their lines give them and never with how the month's race stood before this"
+            " gameweek, which no section states" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        )
         assert (
             "Beyond that statement and those month awards, the Awards and GW Standings sections"
             " describe one gameweek" in RECAP_SYNTHESIS_SYSTEM_PROMPT

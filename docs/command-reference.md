@@ -1255,7 +1255,10 @@ Every other week those surfaces leave it out, since between month ends it only r
 With `--summarise` the same lines reach the editorial as a `## Monthly Honours` section with an
 explicit count of the months on those two recaps, so it can speak to the list the report prints,
 and on every month's last gameweek, so the two awards in its Awards section come with the months
-before them. `metadata.monthly_honours` carries the list every week. When
+before them. The system prompt lets it state a month's awards only as those lines give them, never
+how the month's race stood before the recapped gameweek, which no section states: the A/B behind
+#528 caught "never in doubt" said of a month led by 2 points going into its last gameweek.
+`metadata.monthly_honours` carries the list every week. When
 the months cannot be read off the bootstrap, both awards and the list are skipped with a
 `league_months_unavailable` warning.
 
