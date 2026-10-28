@@ -1631,6 +1631,12 @@ dates, so a season of a different length moves them and the stated gameweek numb
 with it. `metadata.season_phase` carries the live value, and is `null` on any run that built no
 notes pack — an unreadable store, or no league id configured for the format.
 
+`midpoint` covers GW19-31, so it doesn't tell you which chip half a gameweek is in: the second
+half starts at GW20. To ask whether the second set of chips is live, compare
+`metadata.gameweek` with 20 rather than reading `season_phase`. That 20 is FPL's chip rule
+(the second set opens at GW20 of 38), not a setting of this tool, so it moves only if FPL
+changes the rule.
+
 #### Capture warnings
 
 Every capture problem is reported on stderr as prose and, under `--format json`, in

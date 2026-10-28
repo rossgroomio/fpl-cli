@@ -53,6 +53,10 @@ class TestChipPlanModel:
         available = plan.get_available_chips(current_gw=19)
         assert ChipType.WILDCARD not in available
 
+    def test_a_gw19_chip_is_back_from_gw20(self):
+        plan = ChipPlan(chips_used=[_used("wildcard", 19)])
+        assert ChipType.WILDCARD in plan.get_available_chips(current_gw=20)
+
     def test_gw20_is_second_half(self):
         plan = ChipPlan(chips_used=[_used("wildcard", 20)])
         available = plan.get_available_chips(current_gw=25)

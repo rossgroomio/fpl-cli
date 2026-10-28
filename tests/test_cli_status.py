@@ -151,7 +151,7 @@ class TestStatusDashboard:
 
 
 class TestChipTwoHalvesRule:
-    """Chips are available twice per season, split at GW19.
+    """Chips are available twice per season: once up to and including GW19, once from GW20.
 
     Half-season logic is tested exhaustively in test_cli_chips.py via
     ChipPlan.get_available_chips(). These tests verify the status.py
