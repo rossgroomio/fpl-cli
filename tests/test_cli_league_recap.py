@@ -2226,7 +2226,7 @@ class TestKindScopedNets:
         assert "(2 moves: 1 waiver, 1 free agent; waivers -1, free agents +4, net +3 overall)" in first
         corrections = retry[len(first):]
         assert '"waiver claims netted +3" of Alice' in corrections
-        assert "never their waivers' or their free agents'" in corrections
+        assert 'or a generic waiver word ("his waiver work"), never a free-agent word' in corrections
         envelope = json.loads(result.stdout)
         assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
         assert not [w for w in envelope["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
