@@ -50,6 +50,7 @@ from fpl_cli.cli._league_recap_data import (
 )
 from fpl_cli.cli._league_recap_types import (
     STANDOUT_PPG_FROM_GW,
+    LeagueRecapData,
     PriorSeasonsSummary,
     RecapAcquisition,
     RecapAwardEntry,
@@ -98,6 +99,7 @@ from fpl_cli.prompts.league_recap_checks import (
     RECAP_WARNING_CONTESTED_MISATTRIBUTION,
     RECAP_WARNING_CONTESTED_ROLL_CALL,
     RECAP_WARNING_ESCAPE_MISATTRIBUTION,
+    RECAP_WARNING_FINE_CLAIM_CONTRADICTED,
     RECAP_WARNING_KIND_NET_MISATTRIBUTION,
     RECAP_WARNING_NET_MISATTRIBUTION,
     RECAP_WARNING_PENALTY_REPEATED,
@@ -108,6 +110,7 @@ from fpl_cli.prompts.league_recap_checks import (
     check_contested_attributions,
     check_contested_roll_calls,
     check_escape_claims,
+    check_fine_claims,
     check_gameweek_placings,
     check_kind_net_scopes,
     check_net_attributions,
@@ -9670,7 +9673,7 @@ class TestEditorialChecks:
             RECAP_WARNING_CONTESTED_MISATTRIBUTION, RECAP_WARNING_NET_MISATTRIBUTION,
             RECAP_WARNING_KIND_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE,
             RECAP_WARNING_WRONG_PLACING, RECAP_WARNING_ESCAPE_MISATTRIBUTION, RECAP_WARNING_CONTESTED_ROLL_CALL,
-            RECAP_WARNING_PENALTY_REPEATED, RECAP_WARNING_BRIEF_ECHOED,
+            RECAP_WARNING_PENALTY_REPEATED, RECAP_WARNING_BRIEF_ECHOED, RECAP_WARNING_FINE_CLAIM_CONTRADICTED,
         })
         assert all(check.lead and check.retry_instruction for check in EDITORIAL_CHECKS)
 
@@ -11600,3 +11603,256 @@ class TestBriefEchoes:
         assert "Write every sentence for the league, never about your instructions" in prompt
         instruction = next(c.retry_instruction for c in EDITORIAL_CHECKS if c.code == RECAP_WARNING_BRIEF_ECHOED)
         assert check_brief_echoes(instruction) == []
+
+
+# Issue #516's first sentence, with its manager masked.
+_SOLE_ON_TOP_SCORE = (
+    "Gus Peel climbed one to 18th, which is still 18th, though he was the only man in the league to "
+    "double-dip on the week's top score without a sniff of a fine."
+)
+
+
+def _fines_week(*fines: RecapFineResult, ruled: list[int] | None = None) -> LeagueRecapData:
+    """Gus Peel and Hal Penn share the week's top score of 61, Ivy Cole
+    scored 40 and Jo Marsh finished last on 30; the fines are the ones
+    given, every rule ruled on."""
+    managers = [
+        _make_manager(name="Gus Peel", entry_id=1, gw_points=61),
+        _make_manager(name="Hal Penn", entry_id=2, gw_points=61),
+        _make_manager(name="Ivy Cole", entry_id=3, gw_points=40),
+        _make_manager(name="Jo Marsh", entry_id=4, gw_points=30),
+    ]
+    data = _make_recap_data(managers=managers, fines=list(fines))
+    data["fine_rules_evaluated"] = ["last-place", "red-card"]
+    if ruled is not None:
+        data["fines_ruled_manager_keys"] = ruled
+    return data
+
+
+_JO_LAST = _fine("Jo Marsh", "last-place", _LAST, key=4)
+_HAL_RED = _fine("Hal Penn", "red-card", _PALMER, key=2)
+_IVY_RED = _fine("Ivy Cole", "red-card", _RICE, key=3)
+
+
+class TestFineClaimCheck:
+    """Issue #516: the Fines section counts the managers fined and names the
+    ones who were not (#502), and the editorial still called a manager the
+    only one on the week's top score without a fine when another unfined
+    manager shared it, and called one fine line "a double fine"."""
+
+    @staticmethod
+    def _check(summary: str, data: LeagueRecapData) -> list[str]:
+        return check_fine_claims(summary, data, RecapNames.of(data["managers"]))
+
+    def test_a_sole_claim_is_caught_while_another_manager_went_unfined(self):
+        assert self._check("Gus Peel was the only manager not fined.", _fines_week(_JO_LAST, _HAL_RED)) == [
+            'the editorial says Gus Peel was the only manager not fined ("the only manager not fined"), but '
+            '"Not fined this gameweek (2): Gus Peel, Ivy Cole"'
+        ]
+
+    def test_a_sole_claim_passes_when_the_not_fined_list_holds_that_manager_alone(self):
+        assert self._check("Gus Peel was the only manager not fined.", _fines_week(_JO_LAST, _HAL_RED, _IVY_RED)) == []
+
+    @pytest.mark.parametrize("tail", [
+        "without a fine", "without a sniff of a fine", "to escape a fine", "who was spared a fine",
+        "not fined", "who wasn't fined", "to stay fine-free", "unfined",
+    ])
+    def test_every_not_fined_phrasing_is_read(self, tail):
+        assert len(self._check(f"Gus Peel was the only one {tail}.", _fines_week(_JO_LAST, _HAL_RED))) == 1
+        assert self._check(f"Gus Peel was the only one {tail}.", _fines_week(_JO_LAST, _HAL_RED, _IVY_RED)) == []
+
+    @pytest.mark.parametrize("summary", [
+        "The only manager without a fine was Hal Penn.",
+        "The only manager without a fine is Hal Penn.",
+        "The only one to escape a fine was Hal Penn.",
+        "The only manager to avoid a fine was Hal Penn.",
+        "The only manager not fined this week was Hal Penn.",
+        "The only man spared a fine, Hal Penn, celebrated.",
+    ])
+    def test_a_manager_named_after_the_claim_is_whose_it_is(self, summary):
+        """PR #527 review: the "without a fine" forms ran on into "was" as if
+        it were a noun, so a name after them was never read."""
+        [problem] = self._check(summary, _fines_week(_JO_LAST, _HAL_RED))
+        assert problem.startswith("the editorial says Hal Penn was the only manager not fined")
+        assert 'the Fines section has one line for Hal Penn, "Hal Penn: Red card in starting XI (Palmer)' in problem
+
+    @pytest.mark.parametrize("summary", [
+        "Hal Penn took the pint, but the only manager not fined was Gus Peel.",
+        "Hal Penn took the pint while the only man not fined, Gus Peel, celebrated.",
+        "Hal Penn envied the only man not fined.",
+    ])
+    def test_a_manager_the_clause_names_before_for_something_else_is_not_blamed(self, summary):
+        """PR #527 review: true sentences with Gus Peel the one unfined
+        manager, once blamed on the fined Hal Penn named earlier."""
+        assert self._check(summary, _fines_week(_JO_LAST, _HAL_RED, _IVY_RED)) == []
+
+    def test_the_not_fined_line_it_quotes_is_the_one_the_fines_section_prints(self):
+        data = _fines_week(_JO_LAST, _HAL_RED)
+        [problem] = self._check("Gus Peel was the only one without a fine.", data)
+        assert problem.split(", but ")[1].strip('"') in format_recap_fines_context(data).splitlines()
+
+    def test_on_a_week_nobody_was_fined_it_quotes_the_line_the_section_printed(self):
+        """PR #527 review: that week prints no "Not fined" line, so the
+        retry quotes the count line it does print."""
+        data = _fines_week()
+        section = format_recap_fines_context(data)
+        assert section == "Nobody was fined this gameweek (0 of 4 managers)"
+        assert self._check("Gus Peel was the only one without a fine.", data) == [
+            'the editorial says Gus Peel was the only manager not fined ("the only one without a fine"), but '
+            f'"{section}"'
+        ]
+        assert self._check("Gus Peel was fined twice.", data) == [
+            'the editorial says Gus Peel was fined twice ("Gus Peel was fined twice"), but the Fines section has '
+            f'no fine line for Gus Peel; "{section}"'
+        ]
+
+    def test_a_sole_claim_about_a_fined_manager_quotes_their_line(self):
+        assert self._check("Hal Penn was the only one who wasn't fined.", _fines_week(_JO_LAST, _HAL_RED)) == [
+            'the editorial says Hal Penn was the only manager not fined ("the only one who wasn\'t fined"), but '
+            'the Fines section has one line for Hal Penn, "Hal Penn: Red card in starting XI (Palmer). Pint on video"'
+        ]
+
+    def test_the_issues_top_score_claim_is_caught_while_the_other_top_scorer_went_unfined(self):
+        assert self._check(_SOLE_ON_TOP_SCORE, _fines_week(_JO_LAST)) == [
+            'the editorial says Gus Peel was the only manager not fined ("the only man in the league to '
+            "double-dip on the week's top score without a sniff of a fine\"), but Hal Penn was on the week's "
+            'highest score of 61 pts too and not fined; "Not fined this gameweek (3): Gus Peel, Hal Penn, Ivy Cole"'
+        ]
+
+    def test_the_issues_top_score_claim_passes_when_the_other_top_scorer_was_fined(self):
+        """Ivy Cole went unfined too, but not on the top score, so the
+        narrowed claim holds."""
+        assert self._check(_SOLE_ON_TOP_SCORE, _fines_week(_JO_LAST, _HAL_RED)) == []
+
+    def test_a_score_narrowing_after_the_phrase_is_judged_the_same(self):
+        summary = "Gus Peel was the only one to escape a fine on the week's top score."
+        assert len(self._check(summary, _fines_week(_JO_LAST))) == 1
+        assert self._check(summary, _fines_week(_JO_LAST, _HAL_RED)) == []
+
+    def test_the_issue_comments_double_fine_is_caught_for_one_fine_line(self):
+        summary = "Gus Peel picked Palmer. He also played Palmer, so it was a double fine."
+        assert self._check(summary, _fines_week(_fine("Gus Peel", "red-card", _PALMER, key=1))) == [
+            'the editorial says Gus Peel was fined twice ("so it was a double fine"), but the Fines section has one '
+            'line for Gus Peel, "Gus Peel: Red card in starting XI (Palmer). Pint on video"'
+        ]
+
+    def test_the_double_fine_passes_for_two_fine_lines(self):
+        summary = "Gus Peel picked Palmer. He also played Palmer, so it was a double fine."
+        data = _fines_week(_fine("Gus Peel", "red-card", _PALMER, key=1), _fine("Gus Peel", "last-place", _LAST, key=1))
+        assert self._check(summary, data) == []
+
+    @pytest.mark.parametrize(("summary", "quoted"), [
+        ("Gus Peel was fined twice.", "Gus Peel was fined twice"),
+        ("Gus Peel copped two fines this week.", "Gus Peel copped two fines"),
+        ("Gus Peel, red-faced, picked up a double fine.", "picked up a double fine"),
+    ])
+    def test_every_count_phrasing_is_read_and_quoted_from_its_manager_or_stretch(self, summary, quoted):
+        """PR #527 review: the quote once started two words back, cutting a
+        name in half ("Penn was fined twice")."""
+        [problem] = self._check(summary, _fines_week(_JO_LAST))
+        assert f'("{quoted}")' in problem
+
+    def test_one_line_naming_two_red_cards_is_left_alone(self):
+        """A red-card fine is one line however many of the XI were sent off,
+        so "double fine" may be counting the players: not judged."""
+        fine = _fine("Gus Peel", "red-card", "Red card in starting XI (Palmer, Rice)", key=1)
+        fine["players"] = [{"name": "Palmer", "code": 1}, {"name": "Rice", "code": 2}]
+        assert self._check("Gus Peel had two sent off, a double fine.", _fines_week(fine)) == []
+
+    def test_a_manager_never_ruled_on_is_left_alone_and_the_others_still_judged(self):
+        ivy_unruled = _fines_week(_JO_LAST, ruled=[1, 2, 4])
+        assert self._check("Ivy Cole was the only one without a fine.", ivy_unruled) == []
+        assert self._check("Ivy Cole was fined twice.", ivy_unruled) == []
+        # Gus Peel and Hal Penn were both ruled on and cleared.
+        assert self._check("Gus Peel was the only one without a fine.", ivy_unruled) == [
+            'the editorial says Gus Peel was the only manager not fined ("the only one without a fine"), but '
+            '"Not fined this gameweek (2): Gus Peel, Hal Penn"'
+        ]
+        # With Hal Penn fined, Gus Peel is the only ruled manager cleared.
+        assert self._check("Gus Peel was the only one without a fine.", _fines_week(_JO_LAST, _HAL_RED, ruled=[1, 2, 4])) == []
+
+    # Each pair is one claim on the week Gus Peel, Hal Penn and Ivy Cole all
+    # went unfined: the second is caught, the first left alone only for the
+    # words that set it apart, so a guard cannot pass by tripping another.
+    @pytest.mark.parametrize(("left_alone", "caught"), [
+        # Another narrowing than the week's top or bottom score, after the
+        # claim or before it (PR #527 review).
+        ("Gus Peel was the only one of the four without a fine.", "Gus Peel was the only one without a fine."),
+        ("Gus Peel was the only one without a fine after Hal Penn's red card.",
+         "Gus Peel was the only one without a fine thanks to Hal Penn's red card."),
+        ("Of the top three, Gus Peel was the only one without a fine.", "Gus Peel was the only one without a fine."),
+        ("Among the top two Gus Peel was the only one not fined.", "Gus Peel was the only one not fined."),
+        ("In the top half Gus Peel was the only one who wasn't fined.",
+         "In the league Gus Peel was the only one who wasn't fined."),
+        # A span longer than the week, in the clause or the claim's stretch.
+        ("Gus Peel is the only one without a fine all season.", "Gus Peel is the only one without a fine this week."),
+        ("Gus Peel is still the only one without a fine.", "Gus Peel is the only one without a fine."),
+        ("Hal Penn was fined twice in a row.", "Hal Penn was fined twice."),
+        # ...but a "yet" joining stretches is no span (PR #527 review).
+        ("Gus Peel was the only one without a fine since GW5.",
+         "Gus Peel was the only one without a fine, and yet he still moaned."),
+        ("Gus Peel was the only one without a fine since GW5.",
+         "Hal Penn took the record score, yet Gus Peel was the only one without a fine."),
+        # A bracket after the claim is an aside, not a narrowing.
+        ("Gus Peel was the only one not fined in GW5 (Ivy Cole too).", "Gus Peel was the only one not fined (Ivy Cole too)."),
+        # A negation, a hedge, a forecast (PR #527 review).
+        ("Gus Peel wasn't the only one without a fine.", "Gus Peel was the only one without a fine."),
+        ("Hal Penn narrowly avoided a double fine.", "Hal Penn took a double fine."),
+        ("Hal Penn would have been fined twice.", "Hal Penn was fined twice."),
+        ("Hal Penn will be fined twice if he does it again.", "Hal Penn was fined twice."),
+        ("Hal Penn could be fined twice.", "Hal Penn was fined twice."),
+        ("Hal Penn is on a double fine.", "Hal Penn has a double fine."),
+        # A count said of the league, not the one manager named (PR #527 review).
+        ("Hal Penn's red card made it a double fine for the league.", "Hal Penn's red card made it a double fine."),
+        ("Hal Penn's red card was the first of a double fine for the group.", "Hal Penn took a double fine."),
+        ("Hal Penn took the pint as the league handed out a double fine.", "Hal Penn took the pint as a double fine."),
+        ("Jo Marsh finished last, and Hal Penn's red card made it a double fine week.", "Hal Penn took a double fine."),
+        ("Gus Peel was the only one without a fine week.", "Gus Peel was the only one without a fine."),
+        # Two managers, or one named after a claim a pronoun carries.
+        ("Gus Peel and Hal Penn both copped two fines.", "Hal Penn copped two fines."),
+        ("Hal Penn won the week. He also played Palmer, so a double fine for Gus Peel.",
+         "Hal Penn won the week. He also played Palmer, so a double fine."),
+    ])
+    def test_what_it_cannot_pin_down_is_left_alone(self, left_alone, caught):
+        data = _fines_week(_JO_LAST)
+        assert self._check(left_alone, data) == []
+        assert len(self._check(caught, data)) == 1
+
+    def test_a_group_claim_is_not_read(self):
+        """Out of scope (#516): the managers in "neither of them" are named
+        in an earlier sentence."""
+        summary = "Gus Peel and Hal Penn shared the top score. Neither of them was fined."
+        assert self._check(summary, _fines_week(_JO_LAST, _HAL_RED)) == []
+
+    def test_a_league_without_fine_rules_is_never_read(self):
+        data = _fines_week()
+        data["fine_rules_evaluated"] = []
+        assert self._check("Gus Peel was the only one without a fine.", data) == []
+
+    def test_a_fine_naming_a_manager_the_recap_did_not_collect_stands_it_down(self):
+        """The roll call is left out then (#502), so there is nothing to
+        hold the claim to."""
+        data = _fines_week(_fine("Kim Shaw", "red-card", _PALMER, key=99))
+        assert format_recap_fines_context(data).splitlines()[0].startswith("- Kim Shaw")
+        assert self._check("Gus Peel was the only one without a fine.", data) == []
+
+    def test_the_registry_runs_it_and_the_retry_says_where_to_look(self):
+        problems = check_recap_editorial(_SOLE_ON_TOP_SCORE, _fines_week(_JO_LAST))
+        assert list(problems) == [RECAP_WARNING_FINE_CLAIM_CONTRADICTED]
+        assert recap_editorial_flaw(problems) == "contradicts the data it was given"
+        prompt = get_recap_editorial_retry_prompt("ORIGINAL", problems)
+        assert 'only where the Fines section\'s lines and its "Not fined this gameweek" list say so' in prompt
+
+    def test_two_wrong_claims_are_two_sentences_of_one_warning_in_the_order_written(self):
+        summary = "Hal Penn took a double fine. Gus Peel was the only one without a fine."
+        problems = check_recap_editorial(summary, _fines_week(_JO_LAST, _HAL_RED))
+        found = problems[RECAP_WARNING_FINE_CLAIM_CONTRADICTED]
+        assert [problem.split(" (")[0] for problem in found] == [
+            "the editorial says Hal Penn was fined twice", "the editorial says Gus Peel was the only manager not fined",
+        ]
+        message = editorial_warning_message(RECAP_WARNING_FINE_CLAIM_CONTRADICTED, found)
+        assert message.startswith(
+            "The editorial gets wrong who was or was not fined this gameweek. The editorial says Hal Penn was fined twice"
+        )
+        assert '. The editorial says Gus Peel was the only manager not fined' in message
+        assert message.endswith('"Not fined this gameweek (2): Gus Peel, Ivy Cole".')

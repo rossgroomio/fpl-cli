@@ -35,6 +35,7 @@ from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     RecapContestedClaim,
     RecapFinePenalty,
+    RecapFineResult,
     RecapManagerEntry,
     RecapSeasonRecord,
     competition_rank,
@@ -48,7 +49,9 @@ from fpl_cli.cli._league_recap_types import (
     last_place_escape,
     place_label,
     points_label,
+    recap_fines_roll_call,
 )
+from fpl_cli.prompts.league_recap import format_recap_fines_roll_call
 from fpl_cli.utils.text import ORDINAL_WORDS, join_and
 
 # The JSON warning code each check raises when a claim it caught survives
@@ -62,6 +65,7 @@ RECAP_WARNING_ESCAPE_MISATTRIBUTION = "synthesis_escape_misattribution"
 RECAP_WARNING_CONTESTED_ROLL_CALL = "synthesis_contested_roll_call"
 RECAP_WARNING_PENALTY_REPEATED = "synthesis_penalty_repeated"
 RECAP_WARNING_BRIEF_ECHOED = "synthesis_brief_echoed"
+RECAP_WARNING_FINE_CLAIM_CONTRADICTED = "synthesis_fine_claim_contradicted"
 
 
 # =============================================================================
@@ -2536,6 +2540,382 @@ def check_brief_echoes(summary: str) -> list[str]:
 
 
 # =============================================================================
+# Who was and was not fined (#516)
+# =============================================================================
+
+# A sole claim: "the only one", "the only man", "the only manager".
+_FINE_SOLE_RE = re.compile(
+    r"(?<!\w)the\s+only\s+(?:one|man|woman|manager|person|soul|member|bloke|guy)(?!\w)", re.IGNORECASE,
+)
+# A fine as a noun ends its phrase or carries it on ("without a fine this
+# week", "without a fine to his name", "without a fine was Gus Peel"); one
+# that runs on into a noun is an adjective ("without a fine week", "a double
+# fine week" for the league).
+_FINE_NOUN_END = (
+    r"(?=\s*(?:$|[,.;:!?()'‘’\"“”–—]|-\s|(?:this|all|on|in|for|to|of|and|but|so|while|though|although|as"
+    r"|after|despite|at|again|either|between|among|from|because|thanks|was|is|were|has|had|will)(?!\w)))"
+)
+# Having gone unfined, as a sole claim finishes it: "without a fine",
+# "without a sniff of a fine", "not fined", "who wasn't fined", "to escape a
+# fine", "fine-free". A plain "wasn't fined" with no "who" before it is a
+# sentence of its own, not the end of a sole claim.
+_NOT_FINED_RE = re.compile(
+    r"(?<![\w-])(?:"
+    rf"without\s+(?:a|any)\s+(?:(?:sniff|whiff|hint|trace|sign|shred)\s+of\s+(?:a|any)\s+)?fine{_FINE_NOUN_END}"
+    r"|(?:to|who|that)\s+(?:escape[ds]?|avoid(?:s|ed)?|dodge[ds]?|evade[ds]?|swerve[ds]?|sidestep(?:s|ped)?)"
+    rf"\s+(?:a|the|any)\s+fine{_FINE_NOUN_END}"
+    rf"|(?:(?:who|that)\s+(?:was|got)\s+)?spared\s+(?:a|the|any)\s+fine{_FINE_NOUN_END}"
+    r"|(?:(?:who|that)\s+(?:was|is|got)\s*)?(?:n['’]t|not)\s+(?:(?:to\s+)?(?:be|get)\s+)?fined"
+    r"|(?:who|that)\s+(?:did|does)(?:n['’]t|\s+not)\s+get\s+fined"
+    r"|(?:(?:to|who|that)\s+(?:go|goes|went|stay|stays|stayed|remain|remains|remained|was|is|be)\s+)?"
+    r"(?:un-?fined|fine[-\s]free)"
+    r")(?![\w-])",
+    re.IGNORECASE,
+)
+# The words between a sole claim and its not-fined phrase that leave it
+# about the whole league's week: "the only man in the league", "the only one
+# this week". Anything else they say narrows the claim.
+_FINE_SOLE_NEUTRAL_RE = re.compile(
+    r"(?<!\w)(?:in\s+the\s+(?:whole\s+|entire\s+)?(?:league|mini-league|group)|(?:this|all)\s+(?:game)?week"
+    r"|(?:on|in|for)\s+the\s+(?:game)?week|of\s+the\s+lot|among\s+(?:them|us|the\s+lot)|left|here)(?![\w'’])",
+    re.IGNORECASE,
+)
+# A group named anywhere before a sole claim in its clause narrows it as
+# one after would: "Of the top three, Gus Peel was the only one without a
+# fine", "Among the managers who played Palmer, ...", "In the top half ...".
+# The whole league ("in the league") and "in the end" are no group.
+_FINE_SOLE_SCOPE_BEFORE_RE = re.compile(
+    r"(?<!\w)(?:(?:of|among(?:st)?|in|within|out\s+of)\s+(?:the|those|these|that|a|an|all|both|his|her|their)"
+    r"(?!\w)(?!\s+(?:whole\s+|entire\s+)?(?:league|mini-league|group|end)(?!\w))"
+    r"|(?:of|among(?:st)?)\s+(?:them|us|those)(?!\w))",
+    re.IGNORECASE,
+)
+# The one narrowing a sole claim is judged under: to the week's highest or
+# lowest score ("the only man to double-dip on the week's top score", "the
+# only one on the lowest score"). Any other is let pass.
+_FINE_SCORE_VERBS = (
+    r"share[ds]?|sharing|double[-\s]dip(?:s|ped|ping)?|land(?:s|ed)?|post(?:s|ed)?|hits?|scored?|scores|tie[ds]?"
+    r"|finish(?:es|ed)?|end(?:s|ed)?|sits?|sat|be|is|was|get|got|reach(?:es|ed)?|match(?:es|ed)?"
+)
+_FINE_SCORE_QUALIFIER_RE = re.compile(
+    rf"(?:(?:to|who|that)\s+(?:(?:{_FINE_SCORE_VERBS})\s+){{1,2}})?(?:(?:on|with|at)\s+)?(?:the\s+)?"
+    r"(?:(?:game)?week['’]s\s+)?(?:(?:joint|shared|equal)[-\s]+)?(?P<end>top|highest|best|lowest|bottom|worst)"
+    r"[-\s]+(?:score|total|tally|return)(?:\s+(?:of|on|for)\s+the\s+(?:game)?week)?",
+    re.IGNORECASE,
+)
+# What may follow a sole claim's not-fined phrase in its stretch and leave
+# the claim as it stood: "without a fine to his name", "not fined at all", a
+# reason ("thanks to his bench"). A bracket after it is an aside, not part
+# of the claim. A score qualifier there narrows it as one before would;
+# anything else ("without a fine after Palmer's red") is let pass.
+_FINE_SOLE_AFTER_RE = re.compile(
+    r"to\s+(?:his|her|their)\s+name|at\s+all|whatsoever|either|again|to\s+speak\s+of"
+    r"|(?:because|thanks\s+to|despite|courtesy\s+of)(?:\s.*)?",
+    re.IGNORECASE,
+)
+_FINE_TOP_WORDS = frozenset({"top", "highest", "best"})
+_FINE_QUALIFIER_MAX_WORDS = 12
+# A sole claim that names its manager after it, as its complement ("The only
+# one without a fine was Gus Peel") or in apposition ("the only man not
+# fined, Gus Peel, celebrated"). That name is whose it is, whoever the
+# clause named before.
+_FINE_SOLE_NAMED_AFTER_RE = re.compile(
+    r"\s*(?:,\s*|(?:this\s+(?:game)?week\s+)?(?:was|is)\s+)", re.IGNORECASE,
+)
+# What links a manager named before a sole claim to it, so the claim is said
+# of them: a copula ("Gus Peel was the only one", "he's the only one"), an
+# appositive comma ("Gus Peel, the only one"), a relative ("Gus Peel, who
+# was the only one") or nothing ("it left him the only one"). Anything else
+# makes them someone the clause says something else of: "Hal Penn envied
+# the only man not fined".
+_FINE_SOLE_LINK_RE = re.compile(
+    r"[\s,]*(?:(?:who|that)\s+)?(?:(?:also|still|then|now|again|easily|clearly|alone|thus|therefore|officially)\s+)*"
+    r"(?:(?:was|is|were|are|['’]s|became|becomes|remained|remains|stays?|stayed|ended\s+up(?:\s+as)?"
+    r"|finished\s+(?:up\s+)?as|went\s+down\s+as|stood\s+as|emerged\s+as|as)\s+"
+    r"(?:(?:also|still|easily|clearly|now|then|officially)\s+)*)?",
+    re.IGNORECASE,
+)
+# The pronoun a sole claim is said of when it follows the manager's name:
+# "Gus Peel climbed to 18th, though he was the only man ...".
+_FINE_SOLE_PRONOUN_RE = re.compile(r"(?<!\w)(?:he|she|they|him|them)(?!\w)", re.IGNORECASE)
+# A count of one manager's fines: "a double fine", "fined twice", "two
+# fines". "Two fines" is read only as what a manager took ("copped two
+# fines"), never a count of the week's ("one of two fines").
+_FINE_COUNT_RE = re.compile(
+    rf"(?<![\w-])(?:double[-\s]+fine(?:d(?!\w)|{_FINE_NOUN_END})|fined\s+twice(?!\w)|twice[-\s]+fined(?!\w)"
+    rf"|(?P<two>two|2)\s+fines{_FINE_NOUN_END})",
+    re.IGNORECASE,
+)
+_FINE_TWO_TAKEN_RE = re.compile(
+    r"(?<!\w)(?:cop(?:s|ped)?|took|takes?|got|gets|picked\s+up|picks\s+up|land(?:s|ed)?|earn(?:s|ed)?"
+    r"|collect(?:s|ed)?|rack(?:s|ed)\s+up|incur(?:s|red)?|owes?|owed)(?:\s+(?:him|her|them))?\s+$",
+    re.IGNORECASE,
+)
+# A count said of the week or the league, not a manager, from the words
+# before it ("the week's double fine", "the league handed out a double
+# fine", "the first of a double fine") or after it ("a double fine for the
+# league", "two fines between them").
+_FINE_COUNT_OWNER_RE = re.compile(
+    r"(?<!\w)(?:(?:the|(?:game)?week['’]s|league['’]s|group['’]s)\s+"
+    r"|(?:(?:hand|dish|dole)(?:ed|s|ing)?\s+out|issu(?:ed|es|ing)|(?:first|second|half|one|part|other)\s+of)"
+    r"\s+(?:a\s+|the\s+)?)$",
+    re.IGNORECASE,
+)
+_FINE_COUNT_SHARED_AFTER_RE = re.compile(
+    r"\s+(?:for|across|between|among(?:st)?|on|in|around)\s+(?:the\s+)?"
+    r"(?:league|group|lot|(?:game)?week|gw|them|us|everyone|everybody|all)(?!\w)",
+    re.IGNORECASE,
+)
+# Words before a fines claim, in its stretch, that make it a forecast, a
+# condition or a threat rather than this gameweek's ruling: "will be fined
+# twice", "could be fined twice", "faces a double fine", "is on a double
+# fine".
+_FINE_HEDGE_RE = re.compile(
+    r"(?<!\w)(?:will|may|might|can|could|would|should|shall|going\s+to|gonna|fac(?:e|es|ed|ing)"
+    r"|risk(?:s|ed|ing)?|if|unless|threat\w*|danger|(?:on\s+(?:course|track)|in\s+line|set)\s+for"
+    r"|on(?=\s+(?:a|for\s+a)\s*$))(?!\w)|['’](?:ll|d)(?!\w)",
+    re.IGNORECASE,
+)
+# A span longer than this gameweek makes a claim the season's or a run's,
+# which the Fines section does not rule on, so it is left alone. These words
+# mean one anywhere in the clause ("not fined all season", "fined twice in
+# a row"); the second set only in the claim's own stretch, since each is a
+# connective too ("and yet he still moaned", "took the record score").
+_FINE_SPAN_RE = re.compile(
+    r"(?<!\w)(?:season\w*|campaign|weeks|gameweeks|so\s+far|all\s+year|in\s+a\s+row|running|consecutive\w*"
+    r"|back[-\s]to[-\s]back|streak|all-time|years?|months?|career|(?:gw|gameweek)\s*\d+"
+    r"|(?:last|previous|prior|next)\s+(?:week|gameweek|gw)|(?:week|gameweek)\s+(?:before|ago|earlier))(?!\w)",
+    re.IGNORECASE,
+)
+_FINE_STRETCH_SPAN_RE = re.compile(
+    r"(?<!\w)(?:yet|since|already|ever|still|run|record|history|previously|straight)(?!\w)", re.IGNORECASE,
+)
+# A "yet" that opens the stretch joins it to the one before ("..., yet Gus
+# Peel was the only one without a fine") and is no span.
+_FINE_YET_OPENS_RE = re.compile(r"\s*(?:(?:and|but)\s+)?yet(?!\w)", re.IGNORECASE)
+
+
+def _fine_stretch_span(text: str, lo: int, hi: int) -> bool:
+    """Whether the claim's stretch, `lo` to `hi`, says it spans more than
+    the gameweek."""
+    opening = _FINE_YET_OPENS_RE.match(text, lo, hi)
+    return _FINE_STRETCH_SPAN_RE.search(text, opening.end() if opening else lo, hi) is not None
+
+
+def _fine_claim_hedged(text: str, start: int, stretch_start: int) -> bool:
+    """Whether the words before the fines claim at `start`, in its stretch,
+    say it did not happen, only nearly did or is yet to: "wasn't the only
+    one", "would have been a double fine", "narrowly avoided a double fine",
+    "will be fined twice"."""
+    before = text[max(stretch_start, _window_start(text, start, _PLACING_HEDGE_WORDS)):start]
+    return any(
+        pattern.search(before) for pattern in (_NEGATION_RE, _ESCAPE_HEDGE_RE, _ESCAPE_CUE_RE, _FINE_HEDGE_RE)
+    )
+
+
+def _fine_claim_subject(clause: _ReadClause, start: int, lo: int) -> tuple[str, int] | None:
+    """Who the fines claim at `start` is said of, as `_claim_subject()`
+    reads it, or None where another person or a relative clause sits between
+    the manager and the claim ("his rival was fined twice", "He beat the
+    manager who was fined twice"). A relative clause in an earlier stretch
+    is about something else: "Gus Peel climbed to 18th, which is still
+    18th, though he was the only one without a fine"."""
+    subject = _claim_subject(clause, start, lo)
+    if subject is None:
+        return None
+    text = clause.text
+    name_end = subject[1]
+    relatives = list(_RELATIVE_RE.finditer(text, max(lo, name_end), start))
+    if _PLACING_OTHER_PERSON_RE.search(text[name_end:start]) or (
+        relatives and (name_end == 0 or text[name_end:relatives[-1].start()].strip(" ,"))
+    ):
+        return None
+    return subject
+
+
+def _sole_claim_subject(clause: _ReadClause, start: int, after: int, lo: int) -> tuple[str, int] | None:
+    """Who the sole claim between `start` and `after` is said of: a manager
+    named straight after it ("... was Gus Peel", "..., Gus Peel,"), or else
+    the one `_fine_claim_subject()` finds before it, so long as nothing but
+    a copula, a comma or a relative joins them (or the pronoun standing for
+    them) to the claim. A manager before it that the clause says something
+    else of ("Hal Penn took the pint, but the only manager not fined ...",
+    "Hal Penn envied the only man not fined") is not whose it is, so the
+    claim is left alone."""
+    text = clause.text
+    if named_after := _FINE_SOLE_NAMED_AFTER_RE.match(text, after):
+        named = next(((who, end) for begin, end, who in clause.named if begin == named_after.end()), None)
+        if named is not None:
+            return named
+    subject = _fine_claim_subject(clause, start, lo)
+    if subject is None:
+        return None
+    anchor = max((m.end() for m in _FINE_SOLE_PRONOUN_RE.finditer(text, subject[1], start)), default=subject[1])
+    return subject if _FINE_SOLE_LINK_RE.fullmatch(text, anchor, start) else None
+
+
+def _fine_lines_said(name: str, lines: Sequence[RecapFineResult]) -> str:
+    """A manager's fines as the Fines section prints them."""
+    if not lines:
+        return f"the Fines section has no fine line for {name}"
+    quoted = ", ".join(f'"{name}: {fine["message"].strip().rstrip(".")}"' for fine in lines)
+    count = "one line" if len(lines) == 1 else f"{len(lines)} lines"
+    return f"the Fines section has {count} for {name}, {quoted}"
+
+
+def check_fine_claims(summary: str, data: LeagueRecapData, names: RecapNames) -> list[str]:
+    """Every claim about who was and was not fined this gameweek that the
+    Fines section contradicts (#516).
+
+    The Fines section counts the managers fined, prints one line per fine and
+    names the managers who were not (#502), and the prompt lets the editorial
+    call a manager "the only one without a fine" only where that list holds
+    them alone (#512). Shipped drafts broke it all the same: "the only man in
+    the league to double-dip on the week's top score without a sniff of a
+    fine" of a manager who shared that score with another unfined manager,
+    and "so it was a double fine" of a manager with one fine line.
+
+    Three shapes are read, and only where one manager can be named as their
+    subject: a sole claim to have gone unfined with nothing narrowing it,
+    judged against the "Not fined this gameweek" list; the same claim
+    narrowed to the week's highest or lowest score, judged against that
+    score's other holders; and "a double fine", "fined twice" or "two fines",
+    judged against the manager's own fine lines. Each is wrong too when the
+    manager was fined at all. Any other narrowing, before the claim or after
+    it ("Of the top three, ...", "the only one of the eight without a
+    fine"), a group claim ("neither of them was fined"), a count said of the
+    league ("a double fine for the league"), a span longer than the week
+    ("all season", "in a row"), a hedge, a forecast or a negation, and a
+    manager the section could not rule on are left alone, as is the whole
+    editorial where the section has no roll call. A double fine of a manager
+    whose one line names two players ("Red card in starting XI (Palmer,
+    Rice)") is left alone too, since it may count the players.
+
+    Who was and was not fined comes from `recap_fines_roll_call()`, and the
+    line quoted for the not-fined from `format_recap_fines_roll_call()`, the
+    lines the section prints, so this can never disagree with what the model
+    was shown. Returns one line per wrong claim, in the order the editorial
+    makes them, each saying who was and was not fined in the section's own
+    words.
+    """
+    # No section is written for a league without fine rules.
+    if not data.get("fines") and not data.get("fine_rules_evaluated"):
+        return []
+    roll = recap_fines_roll_call(data)
+    if roll is None:
+        return []
+    managers = data["managers"]
+    # Keyed as the names are read: stripped, as `_mention_aliases` keys them.
+    # A display name two managers share is left alone, since the section's
+    # lines cannot say which of them a claim is about.
+    rows: dict[str, list[RecapManagerEntry]] = {}
+    for m in managers:
+        rows.setdefault(m["manager_name"].strip(), []).append(m)
+    fined = {name.strip() for name in roll.fined}
+    clear = {name.strip() for name in roll.clear}
+    lines = {name.strip(): found for name, found in roll.lines.items()}
+    # The "Not fined" line where the section prints one, else its count line
+    # ("Nobody was fined this gameweek (0 of 4 managers)").
+    not_fined = f'"{roll.not_fined_line or format_recap_fines_roll_call(data)[0]}"'
+
+    def judged(name: str) -> bool:
+        return len(rows.get(name, [])) == 1 and (name in fined or name in clear)
+
+    aliases = _manager_aliases(names)
+    problems: list[str] = []
+
+    def report(problem: str) -> None:
+        if problem not in problems:
+            problems.append(problem)
+
+    for clause in _read_clauses(summary, names, aliases):
+        text = clause.text
+        if "respectively" in text.lower() or _FINE_SPAN_RE.search(text):
+            continue
+        for sole in _FINE_SOLE_RE.finditer(text):
+            lo, hi = _claim_stretch(text, sole.start(), sole.end())
+            tail = _NOT_FINED_RE.search(text, sole.end(), hi)
+            if (
+                tail is None
+                or _fine_claim_hedged(text, sole.start(), lo)
+                or _fine_stretch_span(text, lo, hi)
+                or _FINE_SOLE_SCOPE_BEFORE_RE.search(text, 0, sole.start())
+            ):
+                continue
+            qualifier = " ".join(_FINE_SOLE_NEUTRAL_RE.sub(" ", text[sole.end():tail.start()]).split())
+            rest = text[tail.end():hi].split("(", 1)[0]
+            trailing = " ".join(_FINE_SOLE_NEUTRAL_RE.sub(" ", rest).split())
+            quote_end = tail.end()
+            if (
+                trailing
+                and not _FINE_SOLE_NAMED_AFTER_RE.match(text, tail.end())
+                and not _FINE_SOLE_AFTER_RE.fullmatch(trailing)
+            ):
+                if qualifier:
+                    continue
+                qualifier, quote_end = trailing, tail.end() + len(rest.rstrip())
+            if len(qualifier.split()) > _FINE_QUALIFIER_MAX_WORDS:
+                continue
+            narrowed = _FINE_SCORE_QUALIFIER_RE.fullmatch(qualifier) if qualifier else None
+            if qualifier and narrowed is None:
+                continue
+            subject = _sole_claim_subject(clause, sole.start(), tail.end(), lo)
+            if subject is None or not judged(name := subject[0]):
+                continue
+            quoted = " ".join(_plain(text[sole.start():quote_end]).split())
+            said = f'the editorial says {name} was the only manager not fined ("{quoted}"), but '
+            if name in fined:
+                report(f"{said}{_fine_lines_said(name, lines[name])}")
+                continue
+            if narrowed is None:
+                if clear != {name}:
+                    report(f"{said}{not_fined}")
+                continue
+            top = narrowed.group("end").lower() in _FINE_TOP_WORDS
+            score = (max if top else min)(m["gw_points"] for m in managers)
+            if rows[name][0]["gw_points"] != score:
+                continue
+            others = sorted(
+                m["manager_name"].strip() for m in managers
+                if m["gw_points"] == score and m["manager_name"].strip() in clear - {name}
+            )
+            if others:
+                end = "highest" if top else "lowest"
+                verb = "was" if len(others) == 1 else "were"
+                report(
+                    f"{said}{join_and(others)} {verb} on the week's {end} score of {points_label(score)} "
+                    f"too and not fined; {not_fined}"
+                )
+        for count in _FINE_COUNT_RE.finditer(text):
+            lo, hi = _claim_stretch(text, count.start(), count.end())
+            before = text[lo:count.start()]
+            if (
+                (count.group("two") and not _FINE_TWO_TAKEN_RE.search(before))
+                or _FINE_COUNT_OWNER_RE.search(before)
+                or _FINE_COUNT_SHARED_AFTER_RE.match(text, count.end())
+                or _fine_claim_hedged(text, count.start(), lo)
+                or _fine_stretch_span(text, lo, hi)
+                or len({who for *_, who in clause.subjects}) > 1
+            ):
+                continue
+            subject = _fine_claim_subject(clause, count.start(), lo)
+            # A manager named after a claim carried by a pronoun may be whose
+            # it is: "He played Palmer too, so a double fine for Gus Peel".
+            if subject is None or (subject[1] == 0 and clause.subjects) or not judged(name := subject[0]):
+                continue
+            found = lines.get(name, [])
+            if len(found) == 2 or (len(found) == 1 and len(found[0].get("players", [])) > 1):
+                continue
+            # Quoted from the manager's name, or the stretch where that is
+            # further on, so the retry finds the sentence it got wrong.
+            named_at = next((begin for begin, end, _ in clause.named if end == subject[1]), lo)
+            quoted = " ".join(_plain(text[max(lo, named_at):count.end()]).split())
+            problem = f'the editorial says {name} was fined twice ("{quoted}"), but {_fine_lines_said(name, found)}'
+            report(f"{problem}; {not_fined}" if name in clear else problem)
+    return problems
+
+
+# =============================================================================
 # The registry, the retry and the warning
 # =============================================================================
 
@@ -2671,6 +3051,15 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
         ),
         run=lambda summary, data, names: check_brief_echoes(summary),
         broken_brief=True,
+    ),
+    EditorialCheck(
+        code=RECAP_WARNING_FINE_CLAIM_CONTRADICTED,
+        lead="The editorial gets wrong who was or was not fined this gameweek",
+        retry_instruction=(
+            "Say a manager was the only one not fined, or was fined more than once, only where the Fines "
+            'section\'s lines and its "Not fined this gameweek" list say so.'
+        ),
+        run=check_fine_claims,
     ),
 )
 _CHECKS_BY_CODE = {check.code: check for check in EDITORIAL_CHECKS}

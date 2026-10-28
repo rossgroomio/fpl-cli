@@ -1114,6 +1114,73 @@ def recap_reads_whole_league(data: LeagueRecapData) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class RecapFinesRollCall:
+    """Who this gameweek's fines reached, who they cleared and who was never
+    ruled on, each in collected order, with every manager's own fine lines.
+
+    The Fines section's roll call is written from this and the editorial
+    check that holds fines claims to it reads the same answer (#516), so the
+    two can never tell the model different things.
+    """
+
+    fined: list[str]
+    clear: list[str]
+    unruled: list[str]
+    # Each fined manager's fines, one per line the Fines section prints.
+    lines: dict[str, list[RecapFineResult]]
+
+    @property
+    def not_fined_line(self) -> str | None:
+        """The Fines section's "Not fined this gameweek" line, or None on a
+        week it prints none: nobody was fined (the count line then says so)
+        or nobody was cleared."""
+        if not self.fined or not self.clear:
+            return None
+        return f"Not fined this gameweek ({len(self.clear)}): {', '.join(sorted(self.clear))}"
+
+
+def recap_fines_roll_call(data: LeagueRecapData) -> RecapFinesRollCall | None:
+    """This gameweek's fines sorted against the managers the recap collected
+    (#502), or None when there are no managers to sort, or a fine names a
+    manager the recap did not collect (a replayed or hand-built ruling).
+
+    A manager whose own evaluation raised was never ruled on, so they are
+    neither fined nor clear. A fine is matched on `manager_key`, or on the
+    display name when a hand-built ruling carries no key, as `_fines_for`
+    does as a last resort: two collected managers sharing that name are then
+    both counted as fined, an overcount accepted for a ruling only a test or
+    a replay builds by hand.
+    """
+    managers = data.get("managers", [])
+    if not managers:
+        return None
+    fines = data.get("fines", [])
+    fined_keys = {f["manager_key"] for f in fines if "manager_key" in f}
+    fined_names = {f["manager_name"] for f in fines if "manager_key" not in f}
+    if not fined_keys <= {recap_manager_key(m) for m in managers} or not (
+        fined_names <= {m["manager_name"] for m in managers}
+    ):
+        return None
+    ruled = data.get("fines_ruled_manager_keys")
+    ruled_keys = None if ruled is None else set(ruled)
+
+    roll = RecapFinesRollCall(fined=[], clear=[], unruled=[], lines={})
+    for m in managers:
+        key = recap_manager_key(m)
+        name = m["manager_name"]
+        if key in fined_keys or name in fined_names:
+            roll.fined.append(name)
+            roll.lines.setdefault(name, []).extend(
+                f for f in fines if (f["manager_key"] == key if "manager_key" in f else f["manager_name"] == name)
+            )
+        elif ruled_keys is not None and key not in ruled_keys:
+            roll.unruled.append(name)
+        else:
+            roll.clear.append(name)
+    return roll
+
+
 # ---------------------------------------------------------------------------
 # Prior seasons (issue #131)
 # ---------------------------------------------------------------------------
