@@ -2178,10 +2178,13 @@ class TestEscapeClaims:
 class TestKindScopedNets:
     """#390: a draft editorial said of a manager who made one waiver (-1) and
     one free-agent pickup (+4) that "his waiver moves netted +3 overall", the
-    two moves' combined net. Checked like the other editorial claims: one
-    retry told what was wrong, then a warning if the retry still is."""
+    two moves' combined net. Since #539 a generic waiver word is every move,
+    so the same figure said of her waiver claims is the wrong one. Checked
+    like the other editorial claims: one retry told what was wrong, then a
+    warning if the retry still is."""
 
-    _WRONG = "Alice had a week to forget. Her waiver moves netted +3 overall."
+    _WRONG = "Alice had a week to forget. Her waiver claims netted +3 overall."
+    _GENERIC = "Alice had a week to forget. Her waiver moves netted +3 overall."
     _RIGHT = "Alice had a week to forget. Her waiver lost a point, and her moves netted +3 overall."
 
     def _data(self) -> LeagueRecapData:
@@ -2222,7 +2225,7 @@ class TestKindScopedNets:
         first, retry = stub.prompts
         assert "(2 moves: 1 waiver, 1 free agent; waivers -1, free agents +4, net +3 overall)" in first
         corrections = retry[len(first):]
-        assert '"waiver moves netted +3" of Alice' in corrections
+        assert '"waiver claims netted +3" of Alice' in corrections
         assert "never their waivers' or their free agents'" in corrections
         envelope = json.loads(result.stdout)
         assert self._RIGHT in envelope["metadata"]["synthesis_summary"]
@@ -2235,10 +2238,20 @@ class TestKindScopedNets:
         warnings = {w["code"]: w["message"] for w in json.loads(result.stdout)["metadata"]["warnings"]}
         assert warnings["synthesis_kind_net_misattribution"] == (
             "The editorial gives one kind of a manager's moves a figure that is not that kind's own. "
-            'The editorial says "waiver moves netted +3" of Alice, but +3 is Alice\'s net for the whole '
+            'The editorial says "waiver claims netted +3" of Alice, but +3 is Alice\'s net for the whole '
             "gameweek (2 moves: 1 waiver, 1 free agent), not the waivers' own net of -1."
         )
         assert "synthesis_net_misattribution" not in warnings
+
+    def test_the_net_overall_said_of_a_generic_waiver_word_ships_first_time(self):
+        """#539: "waiver moves" is every move, so +3 is right and no retry runs."""
+        stub, result = self._invoke(["--format", "json"], self._GENERIC)
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 1
+        envelope = json.loads(result.stdout)
+        assert self._GENERIC in envelope["metadata"]["synthesis_summary"]
+        assert not [w for w in envelope["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
 
 
 class TestTheEditorialIsToldHowToNameTheForfeit:
