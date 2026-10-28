@@ -83,6 +83,7 @@ from fpl_cli.prompts.league_recap import (
     format_recap_chips_context,
     format_recap_fines_context,
     format_recap_league_history_context,
+    format_recap_monthly_honours_context,
     format_recap_player_clubs_context,
     format_recap_prior_seasons_context,
     format_recap_season_fines_context,
@@ -124,6 +125,7 @@ from fpl_cli.prompts.league_recap_checks import (
     split_recap_problems,
 )
 from fpl_cli.services.league_history_fines import ManagerFineTally, SeasonFinesTally
+from fpl_cli.services.league_history_months import MonthAwards, MonthlyHonours, MonthTotal
 from fpl_cli.services.league_history_notes import (
     GameweekWindow,
     NoteKind,
@@ -137,6 +139,7 @@ from tests.conftest import (
     make_draft_team,
     make_gameweek_status,
     make_player,
+    make_season_months,
     make_team,
     team_code_for,
 )
@@ -4829,8 +4832,9 @@ class TestLeagueHistoryPromptSection:
         """League History for the league's own past; Prior Seasons (issue
         #131) for a manager's FPL record before it; Season Fines and Fines
         for where a fine sits in a season (#452, which rules 8, 11 and 12
-        allowed while this rule forbade). Every one is named in the blanket
-        rule itself, so none reads as a loophole in it."""
+        allowed while this rule forbade); the month awards and Monthly
+        Honours (#425) for a month. Every one is named in the blanket rule
+        itself, so none reads as a loophole in it."""
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
 
         assert (
@@ -4844,7 +4848,16 @@ class TestLeagueHistoryPromptSection:
         # Standings section carries, so it is named as a source rather than
         # left contradicting the previous-leader rule (#452 review).
         assert "the GW Standings section's previous-leader statement" in RECAP_SYNTHESIS_SYSTEM_PROMPT
-        assert "Beyond that statement, the Awards and GW Standings sections describe one gameweek" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        # The month's two awards sit in the Awards section, which the rule
+        # otherwise calls one gameweek's, so they are carved out by name.
+        assert (
+            'the Manager and Dud of the Month from the Awards section and the "## Monthly Honours" section'
+            in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        )
+        assert (
+            "Beyond that statement and those month awards, the Awards and GW Standings sections"
+            " describe one gameweek" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        )
 
     def test_the_season_count_rule_frames_counts_as_optional_colour(self):
         from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
@@ -11856,3 +11869,78 @@ class TestFineClaimCheck:
         )
         assert '. The editorial says Gus Peel was the only manager not fined' in message
         assert message.endswith('"Not fined this gameweek (2): Gus Peel, Ivy Cole".')
+
+
+# ---------------------------------------------------------------------------
+# Manager and Dud of the Month in the prompt (issue #425)
+# ---------------------------------------------------------------------------
+
+
+class TestMonthlyAwardsInThePrompt:
+    @staticmethod
+    def _honours() -> MonthlyHonours:
+        august, september = make_season_months()[:2]
+        return MonthlyHonours(
+            season="2026-27", fpl_format="classic", league_id=1, through_gameweek=5,
+            months=[
+                MonthAwards(month=august, withheld_reason="GW1-2 were never captured"),
+                MonthAwards(month=september, totals=[
+                    MonthTotal(manager_key=1, manager_name="Alice", points=245, rank=1),
+                    MonthTotal(manager_key=2, manager_name="Bob", points=172, rank=2),
+                ]),
+            ],
+        )
+
+    def test_the_awards_section_names_both_after_the_weeks_own(self):
+        data = _make_recap_data(awards=RecapAwards(
+            gw_winner=RecapAwardEntry(manager_name="Alice", value=80, detail="Alice with 80 pts"),
+            manager_of_the_month=RecapAwardEntry(
+                manager_name="Alice", value=245, detail="Alice with 245 pts across September (GW3-5)",
+            ),
+            dud_of_the_month=RecapAwardEntry(
+                manager_name="Bob", value=172, detail="Bob with 172 pts across September (GW3-5)",
+            ),
+        ))
+
+        assert format_recap_awards_context(data).splitlines() == [
+            "- **Gw Winner:** Alice with 80 pts",
+            "- **Manager of the Month:** Alice with 245 pts across September (GW3-5)",
+            "- **Dud of the Month:** Bob with 172 pts across September (GW3-5)",
+        ]
+
+    def test_a_withheld_month_is_stated_where_its_awards_would_be(self):
+        data = _make_recap_data()
+        data["month_awards_withheld"] = "Withheld for September (GW3-5), as GW4 was never captured."
+
+        assert format_recap_awards_context(data) == (
+            "- **Manager and Dud of the Month:** Withheld for September (GW3-5), as GW4 was never captured."
+        )
+
+    def test_the_honours_section_counts_the_months_and_lists_each(self):
+        lines = format_recap_monthly_honours_context(self._honours()).splitlines()
+
+        assert lines[1] == "Total months completed: 2"
+        assert lines[2:] == [
+            "- August (GW1-2): not awarded, as GW1-2 were never captured",
+            "- September (GW3-5): Manager of the Month Alice with 245 pts; Dud of the Month Bob with 172 pts",
+        ]
+
+    def test_no_honours_means_no_section(self):
+        empty = MonthlyHonours(season="2026-27", fpl_format="classic", league_id=1, through_gameweek=1)
+
+        assert format_recap_monthly_honours_context(None) == ""
+        assert format_recap_monthly_honours_context(empty) == ""
+        _, user = get_recap_synthesis_prompt(
+            gw=5, league_name="Test", fpl_format="classic", awards_text="x", standings_text="x", fines_text="",
+        )
+        assert "## Monthly Honours" not in user
+
+    def test_the_section_follows_league_history(self):
+        _, user = get_recap_synthesis_prompt(
+            gw=5, league_name="Test", fpl_format="classic", awards_text="x", standings_text="x",
+            fines_text="", league_history_text="history",
+            monthly_honours_text=format_recap_monthly_honours_context(self._honours()),
+        )
+
+        assert user.index("## League History") < user.index("## Monthly Honours")
+        assert "- September (GW3-5): Manager of the Month Alice with 245 pts" in user

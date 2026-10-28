@@ -1147,7 +1147,8 @@ a colon, pipe or spaced dash is removed — a gameweek callback inside a hook ("
 Gameweek 7") stays. The metadata lines sit between the title and the headline, so the editorial —
 headline and prose — is one contiguous block to copy out.
 
-**Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster.
+**Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster,
+and on the gameweek that closes one of FPL's months, Manager and Dud of the Month (below).
 Biggest Bench Haul ranks on what the bench actually cost: how many more points the best legal XI
 from the same 15 would have scored than the XI that counted, with the player whose points were
 doubled (the captain, or the vice when the captain did not play) held in place so the multiplier is
@@ -1184,6 +1185,66 @@ is the same length whether five managers tied or fifty. A captain tie the whole 
 an award at all — it collapses to one line counting each pick and naming no manager ("Captaincy was
 a wash — all 19 captains scored 2 pts (Haaland ×14, Salah ×5)"), and where Best and Worst Captain
 cover the same managers only Best is reported: the same fact under two headings is printed once.
+
+**Manager and Dud of the Month:** FPL divides the season into months (bootstrap-static's
+`phases`, the months the selector on a league's page offers: in 2026-27 August is GW1-2,
+September GW3-5, October GW6-9 and so on to May, GW34-38), and the recap of the gameweek that
+closes one adds two awards ([#425](https://github.com/rossgroomio/fpl-cli/issues/425)): Manager
+of the Month, the month's top scorer, named with the rest of the top three ("Alice with 245 pts
+across October (GW6-9), ahead of Bob (238) and Cara (230)"), and Dud of the Month, its lowest.
+Both formats get them: the draft game publishes no months, but its gameweeks are the main
+game's, so a draft league's months are the main game's too. A month is a run of gameweek ids,
+never dates, so a fixture postponed into a later calendar month still counts in its gameweek's
+month, as FPL's own table counts it.
+
+Each manager's month is summed from the league history ledger the way FPL's month table sums it:
+every gameweek's points net of its transfer hit, except the month's first gameweek, whose hit
+FPL's month table charges to no month at all, whatever its size. That was checked on 2026-10-28
+against the top 100 of the public Overall league's September and October tables (33 totals that
+included a hit) and three classic mini-leagues' own tables for August to October (31 more): every
+one matched that rule (a hit for GW3 or GW6 went uncharged, one for GW2, GW4, GW5, GW7 or GW8 was
+deducted, and a GW3 or GW6 hit left the month before alone too), and no other rule fits them all.
+It leaves a month table short of the season table by exactly that hit, so it reads as a quirk of
+FPL's tables rather than a rule anyone chose; the recap follows it because those tables are what a
+league checks the awards against, and the cross-check below is what would flag FPL changing it.
+It is neither the weekly awards' measure (gross, or net under `use_net_points`) nor the season win
+and loss counts' (each gameweek net of its hit). Draft has no hits, so a draft month is a plain sum.
+Ties share either award, competition-ranked like the league table (1, 2, 2, 4), and a league
+level on points has a Manager of the Month and no Dud, since the same managers under both
+headings would be one fact printed twice.
+
+A month where any manager has no score for one of its gameweeks (an unknown capture row, a
+gameweek never captured or unreadable, no row at all) awards neither, and says why in their
+place ("Withheld for October (GW6-9), as no score is recorded for Alice in GW8."): summing what
+is there would make the manager with the missing points the Dud by default, and a missing score
+could have won the month. The month's table is the league as the month closed, the managers
+with a row in its last gameweek, as FPL's own table lists the league's members, so one who left
+partway through is not in it and one who joined partway through is a gap. A month the league
+began partway through counts from the league's first gameweek, as FPL's own table for that league
+does (a league begun at GW2 has an August of GW2 alone), and that gameweek opens the month for the
+hit rule; no league checked had a hit there, so that part rests on the cross-check below. A month
+that ended before the league began is left out.
+A classic gap is usually filled by the same run's coarse backfill before the awards are read;
+a draft gameweek never captured is reconstructed by `--backfill-detail` while the draft API
+still serves it, after which the month is awarded.
+
+The awards are derived, never stored: every run sums the ledger afresh, as the season fines
+tally does, so a gameweek re-captured or repaired since takes its month's awards with it and a
+past season's honours stay computable from its own partition. For classic, a month the recap
+awards is also checked against FPL's own table for it (`leagues-classic/{id}/standings/?phase=N`,
+first page): a manager whose total there differs from the ledger's raises a
+`league_month_table_disagrees` warning naming both totals, and the awards stand on the ledger.
+The check is skipped while FPL is still updating its league tables (see [When to run
+it](#league-recap)), and quietly when the table cannot be read.
+
+**Monthly honours:** every recap from the end of the first month on carries a `# Monthly
+Honours` report section listing each completed month's Manager and Dud of the Month, or why it
+has none, so the GW38 recap is the season's honours board with no extra step. With
+`--summarise` the same lines reach the editorial as a `## Monthly Honours` section with an
+explicit count of the months, but only on the recap of a gameweek that closes a month, when the
+two awards reach its Awards section too; mid-month the list has nothing new to say. When the
+months cannot be read off the bootstrap, both awards and the list are skipped with a
+`league_months_unavailable` warning.
 
 **Standings movement:** position changes derived from point differentials, per-manager highlights. Both tables — this gameweek's and the one before it — are ranked the same way, so managers level on points share a place on each and no arrow is reported for a tie nobody left.
 
@@ -1421,7 +1482,14 @@ gameweek with a file on disk appears there with a status, a damaged one as
 (every entry, including those below their reporting minimum and every nonzero season
 count whether or not it grew this gameweek, plus the season's highest and lowest gameweek
 score under `season_record_entries`, see [Season records](#league-recap)), `season_fines` (the whole
-season tally, emitted every week regardless of the milestone gate the printed surfaces use), `standout_players`
+season tally, emitted every week regardless of the milestone gate the printed surfaces use),
+`monthly_honours` (every month the recapped gameweek has completed, each with `id` (FPL's phase id
+for it), `name`, `first_gameweek` (the league's own first gameweek, for a month it began partway
+through), `last_gameweek`, `awarded`, `withheld_reason`,
+`manager_of_the_month` and `dud_of_the_month` as `{manager_key, manager_name, points}` lists,
+`totals` (every manager in the month's table, best first, with `rank`) and `text`, the line the
+report prints; emitted every week, with `months` empty before the first month ends, and `null`
+when the months or the ledger could not be read), `standout_players`
 (`managers` and `whole_league`, the `top_scorers` and `blanks` lists, `top_scorers_omitted` /
 `blanks_omitted` counting the players the cap left out level with the last one listed, and
 `blanks_order` (`managers`, `draft_rank` or `points_per_game`); each player row carries the main
@@ -1635,13 +1703,13 @@ notes pack — an unreadable store, or no league id configured for the format.
 
 Every capture problem is reported on stderr as prose and, under `--format json`, in
 `metadata.warnings` as a `{"code", "message"}` pair. The prose is rewritable; the codes
-are stable, so scripts should key on those. Sixteen non-capture codes share the list, since
+are stable, so scripts should key on those. Eighteen non-capture codes share the list, since
 they share the channel: `synthesis_provider_unavailable`, `synthesis_stopped_early`,
 `synthesis_contested_misattribution`, `synthesis_net_misattribution`,
 `synthesis_kind_net_misattribution`, `synthesis_unsupported_tie`, `synthesis_wrong_gameweek_placing`,
 `synthesis_escape_misattribution`, `synthesis_contested_roll_call`, `synthesis_penalty_repeated`,
-`synthesis_brief_echoed`, `synthesis_fine_claim_contradicted`, `league_standings_moved_on`, `league_tables_updating`, `draft_provenance_unavailable`
-and `draft_rounds_unknown`.
+`synthesis_brief_echoed`, `synthesis_fine_claim_contradicted`, `league_standings_moved_on`, `league_tables_updating`, `draft_provenance_unavailable`,
+`draft_rounds_unknown`, `league_months_unavailable` and `league_month_table_disagrees`.
 
 | Code | Raised when |
 |---|---|
@@ -1681,6 +1749,8 @@ and `draft_rounds_unknown`.
 | `league_tables_updating` | FPL's processing feed for the recapped game covers the recapped gameweek and says bonus is not yet confirmed for every match day, or the league tables are still updating, so the positions and totals the recap read may be stale. The gameweek is recorded anyway; re-run before the next deadline and the later capture supersedes this one — see [When to run it](#league-recap) |
 | `draft_provenance_unavailable` | Draft only. The Standout Players lines could not say how each player came to his manager, so they read without it: the history of the league's draft, waivers and trades (or its list of drafts) could not be read, did not end where FPL's own ownership list says everyone is, did not match the squads the gameweek recorded, or the draft's picks are held by neither the choices feed nor a saved snapshot (see [How a draft player came to his manager](#league-recap)). The message names which. Nothing else in the recap changes |
 | `draft_rounds_unknown` | Draft only. A held draft's picks are held by neither the choices feed nor a saved snapshot (a redraft was scheduled before the first snapshot was taken), so the Standout Players lines say who drafted each player but not in which round: each manager's drafted set was rebuilt from their squad at the draft's gameweek and the moves made before it. A notice, not a failure: the lines are labelled all the same. The message says where a copy of the draft's choices response would restore the rounds, and the warning stops once one exists or the redraft is held (see [How a draft player came to his manager](#league-recap)) |
+| `league_months_unavailable` | FPL's bootstrap lists no months, or lists one that cannot be read, so the recap has no Manager or Dud of the Month and no Monthly Honours section; `metadata.monthly_honours` is `null`. Everything else, the ledger capture included, runs as normal (see [Manager and Dud of the Month](#league-recap)) |
+| `league_month_table_disagrees` | Classic only. FPL's own table for the month the recapped gameweek closed gives a manager a different total from the one the ledger sums for them. The message names each manager with both totals. The awards stand on the ledger's figures; the check reads only the table's first page and is skipped while FPL is still updating its league tables |
 
 None of these change the exit code — `league-recap` exits 0 whenever the recap itself
 rendered, and a skipped, truncated, self-contradicting or brief-breaking editorial (`synthesis_provider_unavailable`,

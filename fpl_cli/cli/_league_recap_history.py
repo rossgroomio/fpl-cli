@@ -81,11 +81,15 @@ from fpl_cli.services.league_history_drafts import (
     snapshot_draft_choices,
 )
 from fpl_cli.services.league_history_fines import SeasonFinesTally, build_season_fines_tally
+from fpl_cli.services.league_history_months import MonthlyHonours, build_monthly_honours
 from fpl_cli.services.league_history_notes import NotesPack, build_notes_pack
 from fpl_cli.utils.gameweek import format_gameweek_list
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from fpl_cli.cli._league_recap_data import ManagerHistoryClient
+    from fpl_cli.models.season_month import SeasonMonth
 
 # Replays one finished gameweek through the collectors Phase A corrected, and
 # returns what they collected (or None when that gameweek cannot be rebuilt).
@@ -140,6 +144,10 @@ class CaptureResult:
     # None for the same reason `notes_pack` is: the tally is a fold over the
     # store, so an unreadable store costs it rather than costing the recap.
     fines_tally: SeasonFinesTally | None = None
+    # Each completed month's Manager and Dud of the Month (issue #425), folded
+    # over the store like the tally. None for the same reason, and when the
+    # caller had no months to fold over.
+    month_honours: MonthlyHonours | None = None
     # Set only on this partition's very first capture -- computed once here,
     # from the same `is_first_season_capture` check the stderr notice below
     # already makes, rather than a second, independent probe against a fresh
@@ -2398,11 +2406,18 @@ async def capture_recap_history(
     backfill_detail: bool = False,
     fines_config: FinesConfig | None = None,
     use_net_points: bool = False,
+    months: Sequence[SeasonMonth] = (),
 ) -> CaptureResult:
     """Record this gameweek, fill what the API still allows, and report the rest.
 
     Never raises for a store problem: the message goes to stderr, the rows come
     back regardless, and the caller carries on rendering (R4).
+
+    `months` are the season's months as FPL divides them, which the honours
+    list is folded over once the backfill has filled what it can (issue
+    #425). Draft gameweeks are the main game's, so a draft capture is handed
+    the main game's months too. Empty means none could be read, and the
+    result carries no honours.
 
     `history_client` enables the coarse classic tier, which runs
     unconditionally because it costs one call per manager for the whole season.
@@ -2644,6 +2659,15 @@ async def capture_recap_history(
         rule_types=data.get("fine_rules_evaluated") or [],
     )
 
+    # The same kind of fold, after the backfill for the same reason: a month
+    # withheld for a gap this run filled is awarded on this run, not the next.
+    month_honours = (
+        build_monthly_honours(
+            store, months, data["gameweek"], league_start_gameweek=start_gameweek,
+        )
+        if months else None
+    )
+
     return CaptureResult(
         rows=rows,
         written=written,
@@ -2652,6 +2676,7 @@ async def capture_recap_history(
         coverage=coverage,
         notes_pack=notes_pack,
         fines_tally=fines_tally,
+        month_honours=month_honours,
         first_capture_store_path=first_capture_store_path,
     )
 

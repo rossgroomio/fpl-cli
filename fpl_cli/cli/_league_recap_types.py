@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict
 
 from fpl_cli.api.fpl_draft import draft_claim_priority_rank
 from fpl_cli.season import TOTAL_GAMEWEEKS
 from fpl_cli.utils.text import join_and, ordinal_suffix, ordinal_word
+
+if TYPE_CHECKING:
+    from fpl_cli.services.league_history_months import MonthAwards, MonthTotal
 
 # Most managers, moves or picks one line of the recap names before it counts
 # the rest instead: the awards' tie details and the Standout Players lines
@@ -524,6 +527,14 @@ class RecapAwards(TypedDict, total=False):
     # -- and `value` is how many claimed him. The detail names every manager
     # beaten to him and the priority each gave the claim.
     most_contested: RecapAwardEntry
+    # Both formats, and only on the gameweek that closes a month (issue #425):
+    # the month's top and lowest scorer, from the ledger's rows over the
+    # month's gameweeks. `value` is the month's total, and a tie joins the
+    # names with " and ". Absent when the month is withheld for a gap, which
+    # `LeagueRecapData.month_awards_withheld` then says, and the Dud is also
+    # absent when every manager finished level.
+    manager_of_the_month: RecapAwardEntry
+    dud_of_the_month: RecapAwardEntry
 
 
 # How the blanks are ordered, best story first. Classic: the blank that
@@ -1087,6 +1098,14 @@ class LeagueRecapData(TypedDict):
     # absent outside the league's opening gameweek, when nothing was fetched.
     prior_seasons_lines: NotRequired[list[str]]
     prior_seasons_coverage_lines: NotRequired[list[str]]
+    # Why the month this gameweek closed has no Manager or Dud of the Month
+    # (issue #425), as the sentence the awards print in their place. Absent
+    # on every other gameweek, and when the month's awards stand.
+    month_awards_withheld: NotRequired[str]
+    # Every completed month's awards so far, one `format_month_honours_line`
+    # each, for the report's Monthly Honours section (issue #425). Absent
+    # until a month has completed, and when the months could not be read.
+    monthly_honours_lines: NotRequired[list[str]]
 
 
 def recap_manager_key(m: RecapManagerEntry) -> int:
@@ -1588,6 +1607,41 @@ def last_place_escape(managers: Sequence[RecapManagerEntry]) -> str | None:
 def place_label(rank: int) -> str:
     """A league position as the table reads it: "1st", "7th", "12th"."""
     return f"{rank}{ordinal_suffix(rank)}"
+
+
+# ---------------------------------------------------------------------------
+# Manager and Dud of the Month (issue #425)
+# ---------------------------------------------------------------------------
+
+
+def month_holders(totals: Sequence[MonthTotal]) -> str:
+    """Who holds a month award and on what: "Alice Smith with 245 pts", or
+    "Alice Smith and Bob Jones with 245 pts each" for a tie, which is always
+    on one total."""
+    each = " each" if len(totals) > 1 else ""
+    return f"{join_and([t.manager_name for t in totals])} with {points_label(totals[0].points)}{each}"
+
+
+def format_month_honours_line(awards: MonthAwards) -> str:
+    """One completed month on the honours list, worded once for the report's
+    Monthly Honours section, the editorial's and the JSON's `text`:
+    "October (GW6-9): Manager of the Month Alice Smith with 245 pts; Dud of
+    the Month Dan Evans with 172 pts", or "October (GW6-9): not awarded, as
+    GW8 was never captured"."""
+    if not awards.awarded:
+        return f"{awards.month.label}: not awarded, as {awards.withheld_reason}"
+    duds = awards.duds_of_the_month
+    dud = (
+        f"Dud of the Month {month_holders(duds)}" if duds
+        else "no Dud of the Month, as nobody finished below them"
+    )
+    return f"{awards.month.label}: Manager of the Month {month_holders(awards.managers_of_the_month)}; {dud}"
+
+
+def month_awards_withheld_line(awards: MonthAwards) -> str:
+    """What the Awards print in place of a withheld month's two awards:
+    "Withheld for October (GW6-9), as GW8 was never captured."."""
+    return f"Withheld for {awards.month.label}, as {awards.withheld_reason}."
 
 
 def recap_title(gameweek: int, league_name: str | None) -> str:

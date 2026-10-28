@@ -38,6 +38,8 @@ from fpl_cli.cli._league_recap_types import (
     PriorSeasonsSummary,
     RecapSeasonRecord,
     RecapStandoutPlayers,
+    format_month_honours_line,
+    month_awards_withheld_line,
     recap_reads_whole_league,
     standout_blanks_heading,
     standout_players_lines,
@@ -80,11 +82,20 @@ RECAP_WARNING_DRAFT_PROVENANCE_UNAVAILABLE = DRAFT_PROVENANCE_UNAVAILABLE
 # because the draft's picks are held by neither the API nor a snapshot and were
 # rebuilt from the squads (#458). A notice: the lines are labelled all the same.
 RECAP_WARNING_DRAFT_ROUNDS_UNKNOWN = "draft_rounds_unknown"
+# FPL's division of the season into months could not be read off the
+# bootstrap, so no Manager or Dud of the Month and no honours list (#425).
+RECAP_WARNING_MONTHS_UNAVAILABLE = "league_months_unavailable"
+# Classic only: FPL's own table for the month just closed disagrees with the
+# month totals the ledger gives (#425). The awards stand on the ledger.
+RECAP_WARNING_MONTH_TABLE_DISAGREES = "league_month_table_disagrees"
 
 if TYPE_CHECKING:
+    from fpl_cli.api.fpl import FPLClient
     from fpl_cli.api.providers import LLMResponse, TokenUsage
     from fpl_cli.cli._league_recap_history import FetchDraftChoices
     from fpl_cli.cli._synthesis_retry import SynthesisAttempt
+    from fpl_cli.models.season_month import SeasonMonth
+    from fpl_cli.services.league_history_months import MonthAwards, MonthlyHonours, MonthTotal
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +132,7 @@ def league_recap_command(
         collect_draft_recap_data,
         configured_fine_rule_types,
         evaluate_league_fines,
+        month_award_entries,
     )
     from fpl_cli.cli._league_recap_history import capture_draft_picks, capture_recap_history
     from fpl_cli.cli.review import GameweekResolutionError, _review_resolve_gw
@@ -482,6 +494,13 @@ def league_recap_command(
                 )
                 return replayed
 
+            # The season's months (#425), off the bootstrap already in hand.
+            # Draft gameweeks are this game's, so a draft league's months are
+            # too. Unreadable months cost the monthly awards, never the recap.
+            months, months_problem = await _season_months(client)
+            if months_problem:
+                error_console.print(f"[yellow]{_months_unavailable_message(months_problem)}[/yellow]")
+
             # Record the gameweek, then fill what the API still allows.
             # Deliberately before synthesis: rendering happens after the LLM
             # call, so capturing at render time would be too late for anything
@@ -515,6 +534,7 @@ def league_recap_command(
                     # manager-history endpoint never returns (issue #136).
                     fines_config=parse_fines_config(settings),
                     use_net_points=bool(settings.get("use_net_points", False)),
+                    months=months,
                 )
                 # Each held draft's picks, kept beside the ledger while the
                 # API still serves them (#461). A no-op off draft.
@@ -584,6 +604,37 @@ def league_recap_command(
                 collected_data["prior_seasons_lines"] = prior_seasons.lines
                 collected_data["prior_seasons_coverage_lines"] = prior_seasons.coverage_lines
 
+            # Manager and Dud of the Month (#425): the month this gameweek
+            # closed gets its two awards, or the reason it has none, and every
+            # month completed so far reaches the report's honours list --
+            # every week, so the finale's recap is the season's honours board.
+            month_honours = capture_result.month_honours
+            closing_month = month_honours.ending_at(gw) if month_honours is not None else None
+            if closing_month is not None:
+                if closing_month.awarded:
+                    collected_data["awards"].update(month_award_entries(closing_month))
+                else:
+                    collected_data["month_awards_withheld"] = month_awards_withheld_line(closing_month)
+            if month_honours is not None and month_honours.months:
+                collected_data["monthly_honours_lines"] = [
+                    format_month_honours_line(awards) for awards in month_honours.months
+                ]
+
+            # FPL's own table for the month, against the ledger's totals. Only
+            # classic has month tables, and only a settled one is worth reading:
+            # while FPL is still refreshing the league tables it may not have
+            # caught up with the month's last gameweek.
+            month_table_problem: str | None = None
+            if (
+                closing_month is not None and closing_month.awarded
+                and not is_draft and not still_processing
+            ):
+                month_table_problem = await _month_table_disagreement(
+                    client, collected_data.get("league_id"), closing_month,
+                )
+                if month_table_problem:
+                    error_console.print(f"[yellow]{rich_escape(month_table_problem)}[/yellow]")
+
             # The *printed* season table is a set-piece, not a weekly
             # fixture: a full standings-style table answers "who owes what
             # this season", which is worth reading at the halfway boundary
@@ -639,6 +690,9 @@ def league_recap_command(
                         # every week and chooses whether to use them.
                         fines_tally=capture_result.fines_tally,
                         prior_seasons=prior_seasons,
+                        # Gated, unlike the fines: mid-month the honours list
+                        # holds nothing new for the editorial to say (#425).
+                        month_honours=month_honours if closing_month is not None else None,
                     )
                 except ProviderError as e:
                     error_console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")
@@ -710,6 +764,13 @@ def league_recap_command(
                         "season_fines": (
                             _serialize_fines_tally(capture_result.fines_tally)
                             if capture_result.fines_tally is not None else None
+                        ),
+                        # Every completed month's Manager and Dud of the Month
+                        # (#425), every week like `season_fines`; null when the
+                        # months could not be read or the ledger could not be.
+                        "monthly_honours": (
+                            _serialize_monthly_honours(month_honours)
+                            if month_honours is not None else None
                         ),
                         # The week's top scorers and costliest blanks, every
                         # player row with the main game's `id` and the shared
@@ -796,6 +857,16 @@ def league_recap_command(
                                 "code": RECAP_WARNING_DRAFT_ROUNDS_UNKNOWN,
                                 "message": rounds_notice,
                             }] if rounds_notice else []
+                        ) + (
+                            [{
+                                "code": RECAP_WARNING_MONTHS_UNAVAILABLE,
+                                "message": _months_unavailable_message(months_problem),
+                            }] if months_problem else []
+                        ) + (
+                            [{
+                                "code": RECAP_WARNING_MONTH_TABLE_DISAGREES,
+                                "message": month_table_problem,
+                            }] if month_table_problem else []
                         ),
                         # Only set on this partition's very first capture --
                         # the one moment a container-local data directory is
@@ -881,6 +952,64 @@ def _still_processing_message(gw: int, reason: str) -> str:
         f"FPL has not finished processing GW{gw}: {reason}, so league positions and"
         " totals may be stale. Re-run the recap once FPL finishes, before the next"
         " deadline, to record the settled table."
+    )
+
+
+async def _season_months(client: FPLClient) -> tuple[list[SeasonMonth], str | None]:
+    """The season's months (#425), or none and why they could not be read.
+
+    The bootstrap is already cached by the time this runs, so the only way
+    to fail is a payload that has lost or reshaped its months.
+    """
+    from pydantic import ValidationError
+
+    try:
+        months = await client.get_months()
+    except ValidationError as exc:
+        return [], f"a month in FPL's bootstrap could not be read ({exc.error_count()} problem(s))"
+    if not months:
+        return [], "FPL's bootstrap lists no months"
+    return months, None
+
+
+def _months_unavailable_message(reason: str) -> str:
+    """The stderr line and the JSON warning's message, worded once for both."""
+    return (
+        f"Manager and Dud of the Month skipped: {reason}, so the season's months are unknown."
+        " Everything else in this recap, the ledger capture included, ran normally."
+    )
+
+
+async def _month_table_disagreement(
+    client: FPLClient, league_id: Any, awards: MonthAwards,
+) -> str | None:
+    """Where FPL's own table for the month disagrees with the ledger's totals
+    (#425), as the warning that says so, or None.
+
+    An optional cross-check: a table that cannot be read is a debug line, and
+    a disagreement a warning, since the awards stand on the ledger either way.
+    Only the table's first page is read, which holds the month's top 50, so
+    a larger league is checked for those.
+    """
+    import httpx
+
+    from fpl_cli.cli._league_recap_data import month_table_mismatches
+
+    try:
+        response = await client.get_classic_league_standings(league_id, month_id=awards.month.id)
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.debug("FPL's %s table could not be read for the cross-check: %s", awards.month.name, exc)
+        return None
+    standings = response.get("standings") if isinstance(response, dict) else None
+    rows = standings.get("results") if isinstance(standings, dict) else None
+    mismatches = month_table_mismatches(awards, rows if isinstance(rows, list) else [])
+    if not mismatches:
+        return None
+    detail = "; ".join(f"{name}: {ours} here, {theirs} on FPL" for name, ours, theirs in mismatches)
+    return (
+        f"FPL's own {awards.month.name} table disagrees with the ledger's totals for"
+        f" {len(mismatches)} manager(s) ({detail}). The Manager and Dud of the Month follow"
+        " the ledger's figures."
     )
 
 
@@ -994,6 +1123,43 @@ def _serialize_fines_tally(tally: SeasonFinesTally) -> dict[str, Any]:
     }
 
 
+def _serialize_monthly_honours(honours: MonthlyHonours) -> dict[str, Any]:
+    """Every completed month's awards, JSON-shaped, every month's full table
+    included (#425). A withheld month carries its reason and empty lists, and
+    `text` is the line the report and the editorial print."""
+    def _total(total: MonthTotal, *, ranked: bool = False) -> dict[str, Any]:
+        row = {
+            "manager_key": total.manager_key,
+            "manager_name": total.manager_name,
+            "points": total.points,
+        }
+        if ranked:
+            row["rank"] = total.rank
+        return row
+
+    return {
+        "season": honours.season,
+        "fpl_format": honours.fpl_format,
+        "league_id": honours.league_id,
+        "through_gameweek": honours.through_gameweek,
+        "months": [
+            {
+                "id": awards.month.id,
+                "name": awards.month.name,
+                "first_gameweek": awards.month.first_gameweek,
+                "last_gameweek": awards.month.last_gameweek,
+                "awarded": awards.awarded,
+                "withheld_reason": awards.withheld_reason,
+                "manager_of_the_month": [_total(total) for total in awards.managers_of_the_month],
+                "dud_of_the_month": [_total(total) for total in awards.duds_of_the_month],
+                "totals": [_total(total, ranked=True) for total in awards.totals],
+                "text": format_month_honours_line(awards),
+            }
+            for awards in honours.months
+        ],
+    }
+
+
 def _render_console_highlights(
     data: LeagueRecapData,
     notes_pack: NotesPack | None = None,
@@ -1028,6 +1194,16 @@ def _render_console_highlights(
         console.print(f"[red]Waiver Disaster:[/red] {awards['waiver_disaster']['detail']}")
     if fmt == "draft" and awards.get("most_contested"):
         console.print(f"[yellow]Most Contested:[/yellow] {awards['most_contested']['detail']}")
+    # The month's two awards (#425), on the gameweek that closes it. Escaped,
+    # as they carry manager names Rich could read as markup.
+    if awards.get("manager_of_the_month"):
+        console.print(
+            f"[green]Manager of the Month:[/green] {rich_escape(awards['manager_of_the_month']['detail'])}"
+        )
+    if awards.get("dud_of_the_month"):
+        console.print(f"[red]Dud of the Month:[/red] {rich_escape(awards['dud_of_the_month']['detail'])}")
+    if withheld := data.get("month_awards_withheld"):
+        console.print(f"[dim]Manager and Dud of the Month: {rich_escape(withheld)}[/dim]")
 
     # Standout players (#455), the same sentences the editorial gets; the
     # saved report leaves them out (#482). Escaped: they carry manager names, which are
@@ -1220,6 +1396,7 @@ async def _recap_llm_summarise(
     notes_pack: NotesPack | None = None,
     fines_tally: SeasonFinesTally | None = None,
     prior_seasons: PriorSeasonsSummary | None = None,
+    month_honours: MonthlyHonours | None = None,
 ) -> None:
     """Run LLM summarisation for league recap. Mutates collected_data to add summaries."""
     from fpl_cli.prompts.league_recap import (
@@ -1229,6 +1406,7 @@ async def _recap_llm_summarise(
         format_recap_chips_context,
         format_recap_fines_context,
         format_recap_league_history_context,
+        format_recap_monthly_honours_context,
         format_recap_player_clubs_context,
         format_recap_prior_seasons_context,
         format_recap_season_fines_context,
@@ -1258,6 +1436,7 @@ async def _recap_llm_summarise(
     waivers_text = format_recap_waivers_context(collected_data)
     fines_text = format_recap_fines_context(collected_data, fines_tally)
     league_history_text = format_recap_league_history_context(notes_pack)
+    monthly_honours_text = format_recap_monthly_honours_context(month_honours)
     season_fines_text = format_recap_season_fines_context(fines_tally)
     prior_seasons_text = format_recap_prior_seasons_context(prior_seasons)
 
@@ -1275,6 +1454,7 @@ async def _recap_llm_summarise(
         waivers_text=waivers_text,
         player_clubs_text=player_clubs_text,
         league_history_text=league_history_text,
+        monthly_honours_text=monthly_honours_text,
         prior_seasons_text=prior_seasons_text,
         standout_players_text=standout_players_text,
         is_bgw=is_bgw,

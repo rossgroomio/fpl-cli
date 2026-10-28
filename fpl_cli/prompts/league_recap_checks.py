@@ -2432,7 +2432,7 @@ def check_penalty_repetitions(summary: str, penalties: Sequence[RecapFinePenalty
 _BRIEF_SECTIONS = (
     "Awards", "GW Standings", "Standout Players", "Captains", "Chips Played", "Transfers",
     "Waivers and Free Agents", "Player Clubs", "Fines", "Season Fines", "League History",
-    "Prior Seasons", "GW Context",
+    "Monthly Honours", "Prior Seasons", "GW Context",
 )
 # Quote marks and emphasis a section's name may be wrapped in, as the brief
 # quotes it ('the "## Fines" section') or a draft bolds it.

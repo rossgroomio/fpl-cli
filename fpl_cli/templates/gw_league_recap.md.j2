@@ -91,6 +91,15 @@
 {% if awards.most_contested is defined %}
 **Most Contested:** {{ awards.most_contested.detail }}
 {% endif %}
+{% if awards.manager_of_the_month is defined %}
+**Manager of the Month:** {{ awards.manager_of_the_month.detail }}
+{% endif %}
+{% if awards.dud_of_the_month is defined %}
+**Dud of the Month:** {{ awards.dud_of_the_month.detail }}
+{% endif %}
+{% if month_awards_withheld is defined and month_awards_withheld %}
+**Manager and Dud of the Month:** {{ month_awards_withheld }}
+{% endif %}
 
 ---
 
@@ -126,6 +135,16 @@
 *{{ line }}*
 {% endfor %}
 {% endif %}
+{% endif %}
+
+{% if monthly_honours_lines is defined and monthly_honours_lines %}
+---
+
+# Monthly Honours
+
+{% for line in monthly_honours_lines %}
+- {{ line }}
+{% endfor %}
 {% endif %}
 
 {% if (prior_seasons_lines is defined and prior_seasons_lines) or (prior_seasons_coverage_lines is defined and prior_seasons_coverage_lines) %}
