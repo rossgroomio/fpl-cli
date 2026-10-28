@@ -96,8 +96,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from fpl_cli.api.fpl import FPLClient
+    from fpl_cli.api.premier_league import MonthlyAward
     from fpl_cli.api.providers import LLMResponse, TokenUsage
     from fpl_cli.cli._league_recap_history import FetchDraftChoices
+    from fpl_cli.cli._league_recap_vouchers import FetchMonthlyAwards
     from fpl_cli.cli._synthesis_retry import SynthesisAttempt
     from fpl_cli.models.season_month import SeasonMonth
     from fpl_cli.services.league_history_months import MonthAwards, MonthlyHonours, MonthTotal
@@ -130,17 +132,27 @@ def league_recap_command(
     """Recap a completed gameweek for the whole league - awards, standings, and banter."""
     from fpl_cli.agents.orchestration.report import ReportAgent
     from fpl_cli.api.fpl import FPLClient, finished_gameweek_ids
-    from fpl_cli.cli._fines_config import parse_fines_config
+    from fpl_cli.cli._fines_config import PLAYER_OF_THE_MONTH_VOUCHER, parse_fines_config
     from fpl_cli.cli._league_recap_data import (
         RecapReconciliationError,
         collect_classic_recap_data,
         collect_draft_recap_data,
         configured_fine_rule_types,
         evaluate_league_fines,
+        league_first_gameweek,
         month_award_entries,
     )
     from fpl_cli.cli._league_recap_history import capture_draft_picks, capture_recap_history
+    from fpl_cli.cli._league_recap_vouchers import (
+        capture_player_of_the_month,
+        player_of_the_month_line,
+        player_of_the_month_unchecked_line,
+        recap_vouchers,
+        serialize_player_of_the_month,
+        voucher_penalties,
+    )
     from fpl_cli.cli.review import GameweekResolutionError, _review_resolve_gw
+    from fpl_cli.services.league_history import LeagueHistoryStore
 
     settings = get_settings(ctx)
     fmt = get_format(ctx)
@@ -418,6 +430,11 @@ def league_recap_command(
             if is_draft and waiver_deadline:
                 collected_data["waiver_deadline"] = waiver_deadline  # type: ignore[typeddict-unknown-key]
 
+            # Parsed once for the ruling, the ledger's coarse tier and the
+            # Player of the Month voucher; a malformed block has already been
+            # refused by `config_failure_boundary` on the way in.
+            fines_config = parse_fines_config(settings)
+
             # Evaluate fines per manager (graceful skip when unconfigured)
             ruling = evaluate_league_fines(
                 collected_data["managers"], settings, collected_data["fpl_format"],
@@ -537,7 +554,7 @@ def league_recap_command(
                     # last place and below-threshold, both derivable from
                     # cohort points; a red card needs a squad the
                     # manager-history endpoint never returns (issue #136).
-                    fines_config=parse_fines_config(settings),
+                    fines_config=fines_config,
                     use_net_points=bool(settings.get("use_net_points", False)),
                     months=months,
                 )
@@ -663,6 +680,46 @@ def league_recap_command(
                 # what the tie check reads a month tie against.
                 collected_data["month_tables"] = recap_month_tables(editorial_honours)
 
+            # The Player of the Month voucher (#492), a draft house rule the
+            # league opts into under `fines.draft_vouchers`. After the
+            # capture, so the ledger it reads ownership from holds this
+            # gameweek; and only the latest finished gameweek's recap
+            # announces a month, so a replay never claims one. Its prose is
+            # suppressed in JSON mode, where its warnings ride the payload.
+            potm_voucher = (
+                fines_config.draft_voucher(PLAYER_OF_THE_MONTH_VOUCHER)
+                if is_draft and fines_config is not None else None
+            )
+            potm = None
+            if (
+                potm_voucher is not None and fines_config is not None and months
+                and capture_result.store_readable and league_id is not None
+            ):
+                with error_console.capture() if output_format == "json" else nullcontext():
+                    potm = await capture_player_of_the_month(
+                        LeagueHistoryStore(season, "draft", league_id),
+                        months, gw,
+                        voucher=potm_voucher,
+                        fetch_awards=_monthly_awards_source(season),
+                        may_announce=is_max_finished,
+                        league_start_gameweek=league_first_gameweek(collected_data.get("league_start_event")),
+                        bootstrap_names={p.code: p.web_name for p in players if p.code},
+                    )
+                if announced := potm.fold.announced_at(gw):
+                    collected_data["player_of_the_month_lines"] = [
+                        player_of_the_month_line(month) for month in announced
+                    ]
+                if vouchers := recap_vouchers(potm, gw, potm_voucher):
+                    collected_data["player_of_the_month_vouchers"] = vouchers
+                    # The voucher's forfeit is named by the editorial's
+                    # once-only rule like a fine's (#503).
+                    if penalties := voucher_penalties(
+                        vouchers, fines_config, collected_data.get("fine_penalties", []),
+                    ):
+                        collected_data["fine_penalties"] = penalties
+                if (unchecked := player_of_the_month_unchecked_line(potm)) is not None:
+                    collected_data["player_of_the_month_unchecked"] = unchecked
+
             # The *printed* season table is a set-piece, not a weekly
             # fixture: a full standings-style table answers "who owes what
             # this season", which is worth reading at the halfway boundary
@@ -761,6 +818,7 @@ def league_recap_command(
                         # consumer to look (#474).
                         codes = list(dict.fromkeys(
                             w["code"] for w in capture_result.warnings + draft_picks.warnings
+                            + (potm.warnings if potm is not None else [])
                         ))
                         if codes:
                             message += f" (the ledger capture also reported: {', '.join(codes)})"
@@ -800,6 +858,13 @@ def league_recap_command(
                             _serialize_monthly_honours(month_honours)
                             if month_honours is not None else None
                         ),
+                        # Every completed month's Player of the Month and who
+                        # held him (#492), every week like `monthly_honours`;
+                        # null off draft, where no voucher is configured, and
+                        # when the months or the ledger could not be read.
+                        "player_of_the_month": (
+                            serialize_player_of_the_month(potm, gw) if potm is not None else None
+                        ),
                         # The week's top scorers and costliest blanks, every
                         # player row with the main game's `id` and the shared
                         # `code` beside it, and each line's sentence as `text`
@@ -818,6 +883,8 @@ def league_recap_command(
                         # capture's own warnings: `synthesis_summary` being
                         # null does not say whether it was asked for.
                         "warnings": capture_result.warnings + draft_picks.warnings + (
+                            potm.warnings if potm is not None else []
+                        ) + (
                             [{
                                 "code": "synthesis_provider_unavailable",
                                 "message": (
@@ -962,6 +1029,19 @@ def _draft_choices_source(held: dict[str, Any] | None) -> FetchDraftChoices:
     request is made once; a fresh read when the replay had none."""
     async def fetch(league_id: int) -> dict[str, Any]:
         return held if held is not None else await _fetch_draft_choices(league_id)
+
+    return fetch
+
+
+def _monthly_awards_source(season: str) -> FetchMonthlyAwards:
+    """Where the Player of the Month voucher reads the Premier League's
+    awards (#492): a client opened for them alone, and only when a month
+    needs it."""
+    async def fetch() -> list[MonthlyAward]:
+        from fpl_cli.api.premier_league import PremierLeagueClient
+
+        async with PremierLeagueClient() as awards_client:
+            return await awards_client.get_monthly_awards(season)
 
     return fetch
 
@@ -1239,6 +1319,12 @@ def _render_console_highlights(
         console.print(f"[red]Dud of the Month:[/red] {rich_escape(awards['dud_of_the_month']['detail'])}")
     if withheld := data.get("month_awards_withheld"):
         console.print(f"[dim]Manager and Dud of the Month: {rich_escape(withheld)}[/dim]")
+    # Draft's Player of the Month (#492), on the recap that announces him.
+    # Escaped, as the lines carry manager names.
+    for line in data.get("player_of_the_month_lines", []):
+        console.print(f"[green]Player of the Month:[/green] {rich_escape(line)}")
+    if unchecked := data.get("player_of_the_month_unchecked"):
+        console.print(f"[dim]Player of the Month: {rich_escape(unchecked)}[/dim]")
 
     # Standout players (#455), the same sentences the editorial gets; the
     # saved report leaves them out (#482). Escaped: they carry manager names, which are
@@ -1257,11 +1343,14 @@ def _render_console_highlights(
                 console.print(f"  [red]{rich_escape(line)}[/red]")
 
     # Fines, grouped by the fine where several managers took the same one
-    # (#504), the same lines the saved report prints. Escaped: they carry
-    # manager names, which Rich would otherwise read as markup.
+    # (#504), then any Player of the Month voucher (#492): the same lines the
+    # saved report prints. Escaped: they carry manager names, which Rich
+    # would otherwise read as markup.
     fines = data.get("fines", [])
-    if fines:
+    vouchers = data.get("player_of_the_month_vouchers", [])
+    if fines or vouchers:
         from fpl_cli.cli._league_recap_data import recap_fine_lines
+        from fpl_cli.cli._league_recap_vouchers import recap_voucher_lines
 
         console.print("\n[bold]Fines:[/bold]")
         for line in recap_fine_lines(fines, data.get("fine_rules_evaluated", [])):
@@ -1270,6 +1359,8 @@ def _render_console_highlights(
                 console.print(f"  [red]{lead}[/red] - {detail}")
             else:
                 console.print(f"  [red]{lead}:[/red] {detail}")
+        for line in recap_voucher_lines(vouchers):
+            console.print(f"  [green]{rich_escape(line.lead)}:[/green] {rich_escape(line.detail)}")
 
     # Season totals, at the milestone gameweeks the caller gates on -- a
     # `None` tally here means either "not a milestone week" or "no fine

@@ -69,7 +69,7 @@ The lines a league quotes back in its group chat are short and dry, and they are
 
 <rules>
 - This is a recap, not a preview: no advice, no recommendations, and nothing about future gameweeks
-- Stick to what happened this gameweek. The only facts spanning more than this gameweek you may state are the ones a section hands you, with its counts, spans and qualifiers kept exactly as it states them: streaks, season counts and the season's highest and lowest gameweek scores from the "## League History" section, a manager's FPL seasons before this one as the "## Prior Seasons" rule below allows, season fine totals from the "## Season Fines" section, where this gameweek's fine sits in a manager's season from the "## Fines" section, who led before this gameweek from the GW Standings section's previous-leader statement, and the Manager and Dud of the Month from the Awards section and the "## Monthly Honours" section, stated as their lines give them and never with how the month's race stood before this gameweek, which no section states. A streak, trend, total or season-arc fact none of them states is not yours to mention, however obvious it looks. Beyond that statement and those month awards, the Awards and GW Standings sections describe one gameweek and are never a source of history
+- Stick to what happened this gameweek. The only facts spanning more than this gameweek you may state are the ones a section hands you, with its counts, spans and qualifiers kept exactly as it states them: streaks, season counts and the season's highest and lowest gameweek scores from the "## League History" section, a manager's FPL seasons before this one as the "## Prior Seasons" rule below allows, season fine totals from the "## Season Fines" section, where this gameweek's fine sits in a manager's season from the "## Fines" section, who led before this gameweek from the GW Standings section's previous-leader statement, the Manager and Dud of the Month from the Awards section and the "## Monthly Honours" section, stated as their lines give them and never with how the month's race stood before this gameweek, which no section states, and the Player of the Month and who held him during the month from the Awards section, as its line states them. A streak, trend, total or season-arc fact none of them states is not yours to mention, however obvious it looks. Beyond that statement and those month awards, the Awards and GW Standings sections describe one gameweek and are never a source of history
 - Every League History entry is about one named manager only. Never combine two managers into a shared record, streak, or "club" - phrasing like "joined by X", "joins Y in that club", or "the two of them share" is forbidden unless a single League History entry explicitly names both managers together. Two managers who each had a one-off gameweek in a different week (e.g. one finished last in GW1, a different one finished last in GW2) do not form a joint record for either of them - each stays a separate, single-gameweek fact, and under the previous rule a single gameweek's worth of an event is not itself a reportable streak at all
 - A claim that a manager "topped the table", "was previously top", "led before this gameweek", or "fell from the top/first place" must match the "Previous gameweek's leader" statement at the top of the GW Standings section exactly - never infer the previous leader yourself from the size of a fall, the Prev column, or anything else. If that statement names no leader, make no such claim about anyone
 - "Joint", "tied", "level", "shared", "equal" and every other tie word may only be used where the data states the tie. The GW Standings section names the gameweek's highest and lowest scores, says whether each was one manager's alone, and lists every gameweek score and every league position (Pos, and Prev where any is shared) more than one manager holds, plus any season totals that are level but placed apart by the league's tie-break: a score or position it does not list as shared belonged to one manager, so it is "the lowest", never "the joint-lowest". A tie on season totals in the table's Pos column is not a tie on gameweek scores, and a tie on gameweek scores is not one in the table. Managers level on points but placed apart are "level on points", never "joint" in position. The same goes for superlatives: "the highest" or "the lowest" score of the week belongs only to the manager(s) that section names for it. A "## League History" season-record line says how many times the season's highest or lowest score was scored: one scored more than once is shared, and one scored once is that score's alone
@@ -81,6 +81,7 @@ The lines a league quotes back in its group chat are short and dry, and they are
 - A manager's FPL seasons before this one - how many they have played, how they finished last season, their best season, whether they are "returning", a "veteran" or a "newcomer", "entering their Nth season" - may be described only when the "## Prior Seasons" section is present and says so of that manager, with its season names, points, ranks, percentages and counts kept exact. That record is FPL-wide, never this league's: write "their 11th season of FPL", never "their 11th season in this league", "a founder member" or "back for another year in this league" - the section cannot say when anyone joined this league, and neither can you. A manager it lists under "No prior FPL seasons on record" is in their first recorded season and has no past to describe; one it lists under "could not be fetched" gets no claim about their past in either direction. Never derive a trajectory the section does not state ("improving", "declining", "off the pace they set last year") - one gameweek's points against a full season's total is no comparison at all. Without a "## Prior Seasons" section, mention nobody's earlier seasons
 - If fines were triggered, make them a highlight
 - A fine's forfeit is the league's own rule, so it never changes in your telling: never more of it, a different drink or forfeit, or a part of it dropped, unless a line in the data says it doubles or escalates. The "## Fines" section names each forfeit under "Naming the forfeit". Write a forfeit word for word at most once in the whole editorial, headline included; every other mention says the same forfeit in other words. Where that section gives the league's own phrasings for it, every other mention in the prose that names the forfeit is one of those, varied rather than repeated, and nothing else, and a bare "the forfeit" is such a mention. A short aside that only alludes to it - what it involves, where it happens or who sees it - may be in your own words, as long as it keeps the forfeit as it is. The headline is the one place you may play on the forfeit in words of your own, as long as it stays the same forfeit: never more of it than one per fine (a single fine is never a pub crawl or a long night at the bar), and never a different act in its place, such as paying, buying or standing a round
+- A Player of the Month voucher lets its holder hand out one fine to anyone they choose: it is no fine on them, and nobody has received it yet. Mention one only where the "## Fines" section states it, and only for the manager it names: never work out who holds one from the squads, or from the Awards section's line on who held the player during the month
 - The "## Season Fines" section is optional colour, not a required beat. Use it when a season total sharpens what already happened this gameweek ("Bob's fourth last-place of the season"), and leave it out entirely when it adds nothing - do not open or close on the season table, do not list it out, and never pad the recap with it. A gameweek where nobody was fined rarely needs it at all
 - Season fine totals come from the "## Season Fines" section exactly, never from adding up the "## Fines" section, which covers this gameweek alone, and a total that section qualifies as incomplete carries its qualification or stays out. Where this gameweek's fine sits in a manager's season - their first, their third, their "another" or "again" - is stated for you under the "## Fines" section; use that placement and no other, and never count a fine ("second", "twice", "back-to-back", "in a row", "still") beyond what it says. A bare total of 1 is one fine, this gameweek: two managers each on 1 are two first offences, not a repeat, and the league-wide total is nobody's running count
 - Call a manager "the only one", "the only manager", "alone in" or "the one exception", or say "nobody else" did what they did, only where a section says so of them outright, or the group it puts them in holds that one manager, and that goes for every section, this gameweek's and the season's alike. The "## Fines" section counts the managers fined this gameweek and names the ones who were not, and the "## Season Fines" section names who holds the season's most fines and who has none: "the only one without a fine" needs one of those not-fined lists to hold that manager alone, and "the only manager on three fines" needs the most-fines line to name them alone. Those are the only fines groups such a claim can rest on: no line names who holds a lower season total, so nobody is the only manager on one, and where the "## Season Fines" section says a total may be short, neither of its lines carries the claim. Never count a section's list yourself to make a manager the only one in it; where the group holds more than one manager, say they were one of the number the section gives, or leave the claim out. The same goes the other way: "nobody was spared", "everyone paid" or "no one got away" holds only where the "## Fines" section names nobody under "Not fined". The not-fined lists are there to count from, never to recite: give their count ("one of the eight who stayed dry"), and name an unfined manager only for a story of their own, never as one of a group
@@ -303,7 +304,10 @@ def format_recap_awards_context(data: LeagueRecapData) -> str:
 
     A month withheld on the gameweek that closed it (#425) is stated where
     its awards would be, so its absence reads as a decision rather than an
-    invitation to name a winner.
+    invitation to name a winner. A draft recap announcing a Player of the
+    Month (#492) gives him a line each, with who held him; a month that
+    could not be checked is left out, since the editorial has nothing to say
+    about it and the rules forbid naming a voucher no section states.
     """
     awards = data.get("awards", {})
     lines = []
@@ -321,6 +325,7 @@ def format_recap_awards_context(data: LeagueRecapData) -> str:
             lines.append(f"- **{label}:** {award['detail']}")
     if withheld := data.get("month_awards_withheld"):
         lines.append(f"- **Manager and Dud of the Month:** {withheld}")
+    lines.extend(f"- **Player of the Month:** {line}" for line in data.get("player_of_the_month_lines", []))
 
     return "\n".join(lines) if lines else "No notable awards."
 
@@ -1206,26 +1211,41 @@ def format_recap_fines_context(
     The count of managers fined and the names of those who were not are
     stated the same way (#502), and on a week the rules were ruled on and
     nobody was caught the section is that statement alone.
+
+    A draft Player of the Month voucher this recap announces (#492) follows
+    the fines, apart from the count, since it is a fine its holder hands out
+    rather than one they owe; it carries the section on a week with no fine
+    rules at all.
     """
     fines = data.get("fines", [])
-    if not fines:
+    lines: list[str] = []
+    if fines:
+        roll_call = format_recap_fines_roll_call(data)
+        lines.extend(roll_call[:1])
+        lines.extend(f"- {f['manager_name']}: {f['message']}" for f in fines)
+        lines.extend(roll_call[1:])
+        placements = _season_fine_placements(data, tally)
+        if placements:
+            lines.append("")
+            lines.append(
+                "Where each of these sits in that manager's season (already counted from "
+                "the season table -- use these words rather than counting fines yourself):",
+            )
+            lines.extend(placements)
+    elif data.get("fine_rules_evaluated"):
         # A week the rules were ruled on and nobody was caught is a fact of
         # its own, stated so "the only one" has a count to be held to (#502).
-        if not data.get("fine_rules_evaluated"):
-            return ""
-        return "\n".join(format_recap_fines_roll_call(data))
-    roll_call = format_recap_fines_roll_call(data)
-    lines = roll_call[:1]
-    lines.extend(f"- {f['manager_name']}: {f['message']}" for f in fines)
-    lines.extend(roll_call[1:])
-    placements = _season_fine_placements(data, tally)
-    if placements:
-        lines.append("")
+        lines.extend(format_recap_fines_roll_call(data))
+    if vouchers := data.get("player_of_the_month_vouchers"):
+        if lines:
+            lines.append("")
         lines.append(
-            "Where each of these sits in that manager's season (already counted from "
-            "the season table -- use these words rather than counting fines yourself):",
+            "Player of the Month vouchers: each lets the manager it names hand out one fine to "
+            "anyone they choose. It is no fine on them, and nobody has received it yet:",
         )
-        lines.extend(placements)
+        lines.extend(f"- {voucher['lead']}: {voucher['detail']}" for voucher in vouchers)
+    if not lines:
+        return ""
     penalties = _fine_penalty_lines(data)
     if penalties:
         lines.append("")

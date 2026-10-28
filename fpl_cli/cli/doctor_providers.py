@@ -1,6 +1,6 @@
 """Live provider probes for `fpl doctor --providers`.
 
-The counterpart to doctor's local checks, one layer down (#97): the six
+The counterpart to doctor's local checks, one layer down (#97): the
 external data sources honour no versioned contract, so the only way to
 know one has drifted is to ask it. Each probe asserts shape and volume —
 not just reachability — against the same column constants the parsers
@@ -1404,6 +1404,91 @@ async def _football_data_checks(short_names: list[str] | None) -> list[CheckResu
 
 
 # ---------------------------------------------------------------------------
+# Premier League awards (#492)
+# ---------------------------------------------------------------------------
+
+
+async def _premier_league_awards_checks(
+    season_year: int, element_codes: set[int] | None,
+) -> list[CheckResult]:
+    """The awards feed the draft Player of the Month voucher reads.
+
+    Shape through the parser itself, which refuses any monthly entry missing
+    a key of `AWARD_REQUIRED_KEYS` or carrying a month or id it cannot read.
+    Volume from last season, whose Players of the Month are all published:
+    this season's list is legitimately empty until mid-September. Then the
+    join the voucher stands on, the award's player id being FPL's `code`: an
+    id scheme that moved would leave every winner found in nobody's squad,
+    which reads as "a free agent at the month's end", not as an error.
+    """
+    from fpl_cli.api.premier_league import (
+        AWARD_REQUIRED_KEYS,
+        PLAYER_OF_THE_MONTH,
+        AwardsFeedError,
+        PremierLeagueClient,
+        parse_monthly_awards,
+    )
+    from fpl_cli.season import season_label
+
+    name = "Premier League awards"
+    codes_name = "Player of the Month codes"
+    this_season, last_season = season_label(season_year), season_label(season_year - 1)
+    async with PremierLeagueClient() as client:
+        try:
+            payloads = [await client.get_awards(this_season), await client.get_awards(last_season)]
+        except httpx.HTTPError as exc:
+            return [CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))]
+        except json.JSONDecodeError:
+            return [CheckResult(
+                name, CheckStatus.BROKEN, "the awards endpoint did not return JSON — the API may have moved",
+            )]
+    try:
+        current, previous = (
+            [award for award in parse_monthly_awards(payload) if award.type == PLAYER_OF_THE_MONTH]
+            for payload in payloads
+        )
+    except AwardsFeedError as exc:
+        return [CheckResult(
+            name, CheckStatus.BROKEN,
+            f"{exc} — every month's Player of the Month would read as not checked",
+        )]
+    if not previous:
+        return [CheckResult(
+            name, CheckStatus.BROKEN,
+            f"{last_season} lists no Player of the Month — the award's type code may have changed "
+            "and every month would read as not yet awarded",
+        )]
+    results = [CheckResult(
+        name, CheckStatus.OK,
+        f"{len(current)} Player of the Month award(s) for {this_season}, {len(previous)} for "
+        f"{last_season}, each carrying {', '.join(sorted(AWARD_REQUIRED_KEYS))}",
+    )]
+
+    if element_codes is None:
+        results.append(CheckResult(
+            codes_name, CheckStatus.UNCHECKED, "could not fetch the live player list to compare against",
+        ))
+        return results
+    # This season's winners, or last season's before the first award: most
+    # of last season's are still in the league, and some always leave.
+    probe, season = (current, this_season) if current else (previous, last_season)
+    matched = [award for award in probe if award.code in element_codes]
+    if not matched:
+        results.append(CheckResult(
+            codes_name, CheckStatus.BROKEN,
+            f"none of {season}'s {len(probe)} Player of the Month winners matches an FPL player code "
+            "— the award's player id may no longer be FPL's code, and every winner would read as "
+            "owned by nobody",
+        ))
+    else:
+        results.append(CheckResult(
+            codes_name, CheckStatus.OK,
+            f"{len(matched)} of {season}'s {len(probe)} Player of the Month winners match an FPL player code",
+        ))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -1411,10 +1496,10 @@ async def _football_data_checks(short_names: list[str] | None) -> list[CheckResu
 async def provider_checks() -> tuple[list[CheckResult], int]:
     """Run every provider probe, containing per-provider failures.
 
-    The FPL bootstrap runs first because four later probes compare against
-    the live team list and gameweek state (the draft game's club list among
-    them); when it is unreachable those comparisons report unchecked rather
-    than guessing.
+    The FPL bootstrap runs first because five later probes compare against
+    the live team list, player codes and gameweek state (the draft game's
+    club list among them); when it is unreachable those comparisons report
+    unchecked rather than guessing.
 
     Returns the season year alongside the results so `fpl doctor --providers`
     can label its report without a second `bootstrap-static/` download:
@@ -1471,4 +1556,11 @@ async def provider_checks() -> tuple[list[CheckResult], int]:
         team_name_by_id=team_name_by_id,
     )
     results += await _football_data_checks(short_names)
-    return results, resolve_season_year((bootstrap or {}).get("events") or [])
+    season_year = resolve_season_year((bootstrap or {}).get("events") or [])
+    from fpl_cli.models.player import usable_code
+
+    results += await _premier_league_awards_checks(
+        season_year,
+        {code for e in elements if (code := usable_code(e.get("code"))) is not None} if elements else None,
+    )
+    return results, season_year

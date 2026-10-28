@@ -153,11 +153,14 @@ def _prompt_fines_config(fmt: str, existing: dict[str, Any]) -> dict[str, Any]:
 
 
 def _forfeits(fines: dict[str, Any]) -> set[str]:
-    """Every penalty a `fines:` block names, across both formats."""
+    """Every penalty a `fines:` block names, across both formats and the
+    draft vouchers (#492), whose forfeit the block's phrasings can describe
+    too. Init never asks about vouchers, so a reconfigure keeps them as they
+    were and they count the same on both sides of the comparison."""
     named = {
         str(rule.get("penalty", "")).strip()
-        for fmt in ("classic", "draft")
-        for rule in fines.get(fmt) or []
+        for key in ("classic", "draft", "draft_vouchers")
+        for rule in fines.get(key) or []
         if isinstance(rule, dict)
     }
     return named - {"", DEFAULT_PENALTY}

@@ -930,6 +930,26 @@ class RecapFinePenalty(TypedDict):
     phrasings: list[str]
 
 
+class RecapVoucher(TypedDict):
+    """A fine one manager may hand out to anyone, announced by this recap
+    (#492): the draft house rule that rewards owning the Premier League's
+    Player of the Month at the end of the month. A grant, never a fine on
+    them, so never in `fines` and never on the ledger."""
+
+    # The ledger key and name of the manager who held him at the month's end.
+    manager_key: int
+    manager_name: str
+    # FPL's name for the month ("September") and the winner's.
+    month: str
+    player: str
+    # The forfeit as the voucher configured it, or None where it named none.
+    penalty: str | None
+    # The Fines section line: "Player of the Month voucher (September)" and
+    # "Alice may hand out one fine to anyone they choose (Pint on video)".
+    lead: str
+    detail: str
+
+
 class RecapSeasonRecord(TypedDict):
     """The league's highest or lowest gameweek score this season, as the
     editorial's League History section states it (issue #494)."""
@@ -1010,10 +1030,22 @@ class LeagueRecapData(TypedDict):
     # Absent entirely means the caller ruled every manager it collected.
     fines_ruled_manager_keys: NotRequired[list[int]]
     # Each distinct forfeit `fines` carries, from the rules that triggered
-    # (#503). Read by the editorial's prompt and by the check that holds it
-    # to naming each one word for word at most once; never by the ledger.
-    # Absent when nothing was fined, or no triggered rule set a `penalty:`.
+    # (#503), and each one `player_of_the_month_vouchers` carries (#492).
+    # Read by the editorial's prompt and by the check that holds it to naming
+    # each one word for word at most once; never by the ledger. Absent when
+    # nothing was fined or announced, or none of it set a `penalty:`.
     fine_penalties: NotRequired[list[RecapFinePenalty]]
+    # Draft only (#492): each month's Player of the Month this recap
+    # announces, as the Awards print it (`player_of_the_month_line`), and the
+    # vouchers they give, for the Fines section and the editorial. Absent on
+    # a recap that announces none, which is every recap but the latest
+    # gameweek's first after a month's award is published.
+    player_of_the_month_lines: NotRequired[list[str]]
+    player_of_the_month_vouchers: NotRequired[list[RecapVoucher]]
+    # Draft only (#492): why a month that may have an award could not be
+    # checked, as the Awards print it ("not checked, as ..."). Absent when
+    # every month could be.
+    player_of_the_month_unchecked: NotRequired[str]
     synthesis_summary: NotRequired[str]
     # The provider's own stop reason for the editorial, recorded only when it
     # was not a normal completion (#266), on the attempt that shipped (#372).

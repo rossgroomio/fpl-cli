@@ -244,10 +244,11 @@ def _ranked(totals: Mapping[int, int], names: Mapping[int, str]) -> list[MonthTo
     ]
 
 
-def _played_by_league(month: SeasonMonth, league_start_gameweek: int) -> SeasonMonth:
+def month_played_by_league(month: SeasonMonth, league_start_gameweek: int) -> SeasonMonth:
     """The part of the month the league played: all of it, or from its first
     gameweek when it began partway through, as FPL's own table for the league
-    counts it (a league begun at GW2 has an August of GW2 alone)."""
+    counts it (a league begun at GW2 has an August of GW2 alone). The Player
+    of the Month voucher reads the month the same way (#492)."""
     if month.first_gameweek >= league_start_gameweek:
         return month
     return month.model_copy(update={"first_gameweek": league_start_gameweek})
@@ -328,7 +329,7 @@ def build_monthly_honours(
     """
     completed = sorted(
         (
-            _played_by_league(month, league_start_gameweek) for month in months
+            month_played_by_league(month, league_start_gameweek) for month in months
             if league_start_gameweek <= month.last_gameweek <= through_gameweek
         ),
         key=lambda month: month.first_gameweek,

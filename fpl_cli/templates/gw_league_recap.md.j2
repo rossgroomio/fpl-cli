@@ -100,6 +100,14 @@
 {% if month_awards_withheld is defined and month_awards_withheld %}
 **Manager and Dud of the Month:** {{ month_awards_withheld }}
 {% endif %}
+{% if player_of_the_month_lines is defined and player_of_the_month_lines %}
+{% for line in player_of_the_month_lines %}
+**Player of the Month:** {{ line }}
+{% endfor %}
+{% endif %}
+{% if player_of_the_month_unchecked is defined and player_of_the_month_unchecked %}
+**Player of the Month:** {{ player_of_the_month_unchecked }}
+{% endif %}
 
 ---
 

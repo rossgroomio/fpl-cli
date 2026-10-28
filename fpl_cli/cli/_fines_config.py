@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from fpl_cli.cli._context import ConfigError
 
 VALID_RULE_TYPES = frozenset({"last-place", "red-card", "below-threshold"})
+
+# The draft house rule that gives the manager owning the Premier League's
+# Player of the Month at the month's end one fine to hand out (#492).
+PLAYER_OF_THE_MONTH_VOUCHER = "player-of-the-month"
+VALID_VOUCHER_TYPES = frozenset({PLAYER_OF_THE_MONTH_VOUCHER})
 
 # The whole of the block `fpl init` writes and the example in defaults.yaml
 # documents. Checked, unlike the keys inside a rule, because the two typos
@@ -16,11 +23,25 @@ VALID_RULE_TYPES = frozenset({"last-place", "red-card", "below-threshold"})
 # fines configured" -- which stamps `fine_rules_evaluated: []` onto the ledger
 # for a gameweek whose rules were never read (#136's false acquittal, and
 # append-only). A rule list that silently disappears has to be an error.
-VALID_FINES_KEYS = frozenset({"classic", "draft", "escalation_note", "penalty_phrasings"})
+VALID_FINES_KEYS = frozenset({
+    "classic", "draft", "draft_vouchers", "escalation_note", "penalty_phrasings",
+})
 
 # What a rule carries when its `penalty:` is left out. Nobody chose it, so it
 # is no league's forfeit and the editorial is never told to vary it (#503).
 DEFAULT_PENALTY = "Fine triggered"
+
+# A voucher override's month, as the awards feed keys one: "2026-09", or
+# "2026-9" as the feed itself writes it.
+_OVERRIDE_MONTH_RE = re.compile(r"(\d{4})-(\d{1,2})")
+
+
+def _named_forfeit(penalty: str) -> str | None:
+    """`penalty` as the league configured it, or None where it named none:
+    left unset, or set blank. Only a named forfeit is the editorial's to
+    vary."""
+    penalty = penalty.strip()
+    return penalty if penalty and penalty != DEFAULT_PENALTY else None
 
 
 @dataclass(frozen=True)
@@ -44,8 +65,32 @@ class FineRule:
         """The penalty as the league configured it, or None where it named
         none: left unset, or set blank. Only a named forfeit is the
         editorial's to vary."""
-        penalty = self.penalty.strip()
-        return penalty if penalty and penalty != DEFAULT_PENALTY else None
+        return _named_forfeit(self.penalty)
+
+
+@dataclass(frozen=True)
+class VoucherRule:
+    """A fine one manager may hand out to anyone, never one ruled against
+    them (#492).
+
+    Kept apart from `FineRule` rather than added as a rule type: every rule
+    type rules against a manager (`_RULE_HANDLERS` in `_fines.py`), so a
+    voucher there would be recorded, and counted by `fpl league-fines`, as a
+    fine on the manager who earned it. Nothing here reaches the ledger.
+    """
+
+    type: str
+    penalty: str = DEFAULT_PENALTY
+    # As a rule's (#503): the league's own ways of naming `penalty`.
+    penalty_phrasings: tuple[str, ...] | None = None
+    # The winner by month ("2026-09" -> his FPL `code`), for when the awards
+    # feed breaks or names the wrong man. Wins over the feed.
+    overrides: Mapping[str, int] = field(default_factory=dict)
+
+    @property
+    def forfeit(self) -> str | None:
+        """The penalty as the league configured it, or None where it named none."""
+        return _named_forfeit(self.penalty)
 
 
 @dataclass(frozen=True)
@@ -57,6 +102,13 @@ class FinesConfig:
     escalation_note: str | None = None
     # Phrasings for the one forfeit no rule-level list claims.
     penalty_phrasings: tuple[str, ...] = ()
+    # Grants rather than rules, read by the draft recap alone (#492).
+    draft_vouchers: list[VoucherRule] = field(default_factory=list)
+
+    def draft_voucher(self, voucher_type: str) -> VoucherRule | None:
+        """The configured draft voucher of `voucher_type`, if any. At most
+        one each: `parse_fines_config` refuses a second."""
+        return next((voucher for voucher in self.draft_vouchers if voucher.type == voucher_type), None)
 
     def phrasings_for(self, forfeit: str) -> tuple[str, ...]:
         """The phrasings the editorial may use for `forfeit`.
@@ -67,10 +119,11 @@ class FinesConfig:
         alone, merged, and never the block's -- a rule's own list replaces
         the block's, and an empty one opts out. Otherwise the block's list,
         which `parse_fines_config` only accepts when it can describe a
-        single forfeit.
+        single forfeit. A voucher's list counts as a rule's: its forfeit is
+        named in the same prompt section.
         """
         own = [
-            rule.penalty_phrasings for rule in (*self.classic, *self.draft)
+            rule.penalty_phrasings for rule in (*self.classic, *self.draft, *self.draft_vouchers)
             if rule.forfeit == forfeit and rule.penalty_phrasings is not None
         ]
         if not own:
@@ -114,26 +167,32 @@ def parse_fines_config(settings: dict[str, Any]) -> FinesConfig | None:
 
     classic_raw = _rule_list(fines_raw.get("classic"), "classic")
     draft_raw = _rule_list(fines_raw.get("draft"), "draft")
+    vouchers_raw = _rule_list(fines_raw.get("draft_vouchers"), "draft_vouchers", noun="vouchers")
 
-    if not classic_raw and not draft_raw:
+    # A block of vouchers alone is still a block: it configures no rule, so
+    # every reader of the rule lists sees the empty ones it always saw.
+    if not classic_raw and not draft_raw and not vouchers_raw:
         return None
 
     classic = [_parse_rule(r, "classic") for r in classic_raw]
     draft = [_parse_rule(r, "draft") for r in draft_raw]
+    draft_vouchers = [_parse_voucher(v) for v in vouchers_raw]
+    _check_one_voucher_each(draft_vouchers)
     escalation_note = fines_raw.get("escalation_note")
     penalty_phrasings = _phrasings(fines_raw.get("penalty_phrasings"), "'fines.penalty_phrasings'") or ()
     if penalty_phrasings:
-        _check_block_phrasings_name_one_forfeit([*classic, *draft])
+        _check_block_phrasings_name_one_forfeit([*classic, *draft, *draft_vouchers])
 
     return FinesConfig(
         classic=classic,
         draft=draft,
         escalation_note=escalation_note,
         penalty_phrasings=penalty_phrasings,
+        draft_vouchers=draft_vouchers,
     )
 
 
-def _check_block_phrasings_name_one_forfeit(rules: list[FineRule]) -> None:
+def _check_block_phrasings_name_one_forfeit(rules: Sequence[FineRule | VoucherRule]) -> None:
     """Refuse a block-level list that would have to describe two forfeits.
 
     The block's list covers every forfeit no rule-level list claims, so with
@@ -180,14 +239,84 @@ def _phrasings(raw: Any, where: str) -> tuple[str, ...] | None:
     return tuple(phrasings)
 
 
-def _rule_list(raw: Any, format_name: str) -> list[Any]:
-    """The rules configured for one format, still unparsed."""
+def _rule_list(raw: Any, key: str, *, noun: str = "rules") -> list[Any]:
+    """The rules (or vouchers) configured under one key, still unparsed."""
     if not raw:
         return []
     if not isinstance(raw, list):
-        msg = f"'fines.{format_name}' must be a list of rules, got {type(raw).__name__}"
+        msg = f"'fines.{key}' must be a list of {noun}, got {type(raw).__name__}"
         raise ConfigError(msg)
     return raw
+
+
+def _parse_voucher(raw: Any) -> VoucherRule:
+    """Parse one `draft_vouchers` entry into a VoucherRule."""
+    if not isinstance(raw, dict):
+        msg = f"Voucher in 'draft_vouchers' must be a mapping with a 'type' field, got {type(raw).__name__}"
+        raise ConfigError(msg)
+
+    voucher_type = raw.get("type")
+    if not voucher_type:
+        msg = "Voucher in 'draft_vouchers' is missing required 'type' field"
+        raise ConfigError(msg)
+    if voucher_type not in VALID_VOUCHER_TYPES:
+        msg = f"Unknown voucher type '{voucher_type}'. Valid types: {', '.join(sorted(VALID_VOUCHER_TYPES))}"
+        raise ConfigError(msg)
+
+    penalty = raw.get("penalty", DEFAULT_PENALTY)
+    if not isinstance(penalty, str):
+        msg = f"Voucher '{voucher_type}' penalty must be a string, got {type(penalty).__name__}"
+        raise ConfigError(msg)
+
+    return VoucherRule(
+        type=voucher_type,
+        penalty=penalty,
+        penalty_phrasings=_phrasings(
+            raw.get("penalty_phrasings"), f"Voucher '{voucher_type}' penalty_phrasings",
+        ),
+        overrides=_voucher_overrides(raw.get("overrides"), voucher_type),
+    )
+
+
+def _voucher_overrides(raw: Any, voucher_type: str) -> dict[str, int]:
+    """A voucher's `overrides`, month ("2026-09") to player code, the months
+    normalised to two digits; empty where the key is absent.
+
+    Checked rather than coerced, like `threshold`: a quoted code would never
+    match a squad's integer one, so the override would quietly name nobody,
+    and `2026-09-01` (which YAML reads as a date) is no month.
+    """
+    if raw is None:
+        return {}
+    where = f"Voucher '{voucher_type}' overrides"
+    if not isinstance(raw, dict):
+        msg = f'{where} must map a month ("2026-09") to a player code, got {type(raw).__name__}'
+        raise ConfigError(msg)
+    overrides: dict[str, int] = {}
+    for month, code in raw.items():
+        match = _OVERRIDE_MONTH_RE.fullmatch(month) if isinstance(month, str) else None
+        if match is None or not 1 <= int(match.group(2)) <= 12:
+            msg = f'{where}: {month!r} is not a month. Write it as "2026-09"'
+            raise ConfigError(msg)
+        if isinstance(code, bool) or not isinstance(code, int) or code <= 0:
+            msg = (
+                f"{where}: the player for {month} must be his FPL code, a whole number "
+                f"(`code` in `fpl player <name> --format json`), got {code!r}"
+            )
+            raise ConfigError(msg)
+        overrides[f"{match.group(1)}-{int(match.group(2)):02d}"] = code
+    return overrides
+
+
+def _check_one_voucher_each(vouchers: Sequence[VoucherRule]) -> None:
+    """Refuse a voucher type listed twice: each would announce the same
+    award, with no telling which penalty the holder hands out."""
+    seen: set[str] = set()
+    for voucher in vouchers:
+        if voucher.type in seen:
+            msg = f"'fines.draft_vouchers' lists '{voucher.type}' more than once"
+            raise ConfigError(msg)
+        seen.add(voucher.type)
 
 
 def _parse_rule(raw: Any, format_name: str) -> FineRule:

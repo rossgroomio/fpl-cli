@@ -76,12 +76,18 @@ llm:
 #     - type: below-threshold      # Fine if you score below a points threshold
 #       threshold: 25              # Required for below-threshold
 #       penalty: "Pint on video"
+#   draft_vouchers:                # Optional - fines a manager may hand out, never ones they owe
+#     - type: player-of-the-month  # The Premier League's Player of the Month's owner at the
+#       penalty: "Pint on video"   # month's end may hand out one fine to anyone they choose
+#       overrides:                 # Optional - the winner by month, for when the awards feed breaks:
+#         "2026-09": 60307         # the month to the player's FPL code
 #
 # Valid rule types: last-place, red-card, below-threshold
-# Valid keys under 'fines': classic, draft, escalation_note, penalty_phrasings - a misspelled one is
-# refused by name rather than ignored, since an ignored key silently disables the
+# Valid voucher types: player-of-the-month (draft only; never ruled, recorded or counted as a fine)
+# Valid keys under 'fines': classic, draft, draft_vouchers, escalation_note, penalty_phrasings - a
+# misspelled one is refused by name rather than ignored, since an ignored key silently disables the
 # rules under it. 'threshold' must be an unquoted number. A rule may carry its own
 # 'penalty_phrasings' list, which replaces the block's for that rule's penalty ('[]'
 # opts it out). The block's list covers the one penalty no rule's list claims, and is
-# refused if rules without a list carry different penalties.
+# refused if rules without a list carry different penalties. A voucher counts as a rule here.
 # Net points (transfer hits) controlled by top-level use_net_points setting

@@ -152,3 +152,45 @@ class TestReconfigureKeepsPenaltyPhrasings:
         err = capsys.readouterr().err
         assert "Dropped this rule's penalty_phrasings" in err
         assert "Dropped the fines block's penalty_phrasings" in err
+
+
+class TestReconfigureKeepsDraftVouchers:
+    """#492: init never asks about the Player of the Month voucher, so a
+    reconfigure leaves it as settings.yaml has it."""
+
+    _VOUCHERS = [{"type": "player-of-the-month", "penalty": "Pint on video", "overrides": {"2026-09": 60307}}]
+
+    def test_a_reconfigure_keeps_the_vouchers(self, monkeypatch):
+        from fpl_cli.cli.init import _tier_fines
+
+        confirms = iter([True, True, False])  # reconfigure, last-place (draft), no below-threshold
+        monkeypatch.setattr("click.confirm", lambda *_a, **_kw: next(confirms))
+        monkeypatch.setattr("click.prompt", lambda text, **kw: kw.get("default", ""))
+        data = {"fines": {"draft": [{"type": "last-place"}], "draft_vouchers": list(self._VOUCHERS)}}
+
+        _tier_fines(data, "draft")
+
+        assert data["fines"]["draft_vouchers"] == self._VOUCHERS
+
+    def test_block_phrasings_describing_the_vouchers_forfeit_survive_a_rule_taking_it_on(self, monkeypatch):
+        """The block's list described the voucher's forfeit before and still
+        describes the one forfeit after the rule takes the same penalty."""
+        from fpl_cli.cli.init import _tier_fines
+
+        confirms = iter([True, True, False])
+        monkeypatch.setattr("click.confirm", lambda *_a, **_kw: next(confirms))
+
+        def prompt(text, **kw):
+            return "Pint on video" if text.strip().startswith("Penalty") else kw.get("default", "")
+
+        monkeypatch.setattr("click.prompt", prompt)
+        data = {"fines": {
+            "penalty_phrasings": ["pint of shame"],
+            "draft": [{"type": "last-place"}],
+            "draft_vouchers": list(self._VOUCHERS),
+        }}
+
+        _tier_fines(data, "draft")
+
+        assert data["fines"]["penalty_phrasings"] == ["pint of shame"]
+        assert data["fines"]["draft"] == [{"type": "last-place", "penalty": "Pint on video"}]

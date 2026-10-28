@@ -3,7 +3,12 @@
 import pytest
 
 from fpl_cli.cli._context import ConfigError
-from fpl_cli.cli._fines_config import FineRule, parse_fines_config
+from fpl_cli.cli._fines_config import (
+    PLAYER_OF_THE_MONTH_VOUCHER,
+    FineRule,
+    VoucherRule,
+    parse_fines_config,
+)
 
 
 class TestParseFinesConfig:
@@ -324,3 +329,131 @@ class TestPenaltyPhrasings:
             parse_fines_config({"fines": {"classic": [
                 {"type": "red-card", "penalty_phrasings": ["the round", 5]},
             ]}})
+
+
+class TestDraftVouchers:
+    """#492: the Player of the Month voucher, a grant configured beside the
+    rules but never ruled against anyone."""
+
+    def test_a_voucher_parses_with_its_penalty_and_overrides(self):
+        settings = {"fines": {
+            "draft": [{"type": "last-place", "penalty": "Pint on video"}],
+            "draft_vouchers": [{
+                "type": "player-of-the-month", "penalty": "Pint on video",
+                "overrides": {"2026-09": 60307, "2026-10": 475168},
+            }],
+        }}
+
+        config = parse_fines_config(settings)
+
+        assert config is not None
+        assert config.draft_vouchers == [VoucherRule(
+            type="player-of-the-month", penalty="Pint on video",
+            overrides={"2026-09": 60307, "2026-10": 475168},
+        )]
+        assert config.draft_voucher(PLAYER_OF_THE_MONTH_VOUCHER) == config.draft_vouchers[0]
+        assert config.draft_vouchers[0].forfeit == "Pint on video"
+
+    def test_vouchers_alone_are_a_config_that_rules_nothing(self):
+        """A league can opt into the voucher without a single fine rule, and
+        every reader of the rule lists still sees none."""
+        config = parse_fines_config({"fines": {"draft_vouchers": [{"type": "player-of-the-month"}]}})
+
+        assert config is not None
+        assert config.classic == config.draft == []
+        assert config.draft_vouchers[0].forfeit is None
+
+    def test_a_month_written_as_the_feed_writes_it_is_padded(self):
+        config = parse_fines_config({"fines": {"draft_vouchers": [
+            {"type": "player-of-the-month", "overrides": {"2026-9": 60307}},
+        ]}})
+
+        assert config is not None
+        assert config.draft_vouchers[0].overrides == {"2026-09": 60307}
+
+    def test_no_voucher_of_a_type_is_none(self):
+        config = parse_fines_config({"fines": {"draft": [{"type": "last-place"}]}})
+
+        assert config is not None
+        assert config.draft_voucher(PLAYER_OF_THE_MONTH_VOUCHER) is None
+
+    @pytest.mark.parametrize(("vouchers", "expected"), [
+        pytest.param("player-of-the-month", "'fines.draft_vouchers' must be a list of vouchers", id="scalar"),
+        pytest.param(["player-of-the-month"], "must be a mapping with a 'type' field", id="bare-string"),
+        pytest.param([{"penalty": "Pint"}], "missing required 'type' field", id="no-type"),
+        pytest.param([{"type": "last-place"}], "Unknown voucher type 'last-place'", id="a-rule-type"),
+        pytest.param([{"type": "player-of-the-month", "penalty": 5}], "penalty must be a string", id="penalty"),
+        pytest.param(
+            [{"type": "player-of-the-month"}, {"type": "player-of-the-month"}],
+            "lists 'player-of-the-month' more than once", id="twice",
+        ),
+        pytest.param(
+            [{"type": "player-of-the-month", "overrides": [60307]}],
+            'must map a month \\("2026-09"\\) to a player code', id="overrides-list",
+        ),
+        pytest.param(
+            [{"type": "player-of-the-month", "overrides": {"September": 60307}}],
+            "'September' is not a month", id="month-name",
+        ),
+        pytest.param(
+            [{"type": "player-of-the-month", "overrides": {"2026-13": 60307}}],
+            "'2026-13' is not a month", id="month-13",
+        ),
+        pytest.param(
+            [{"type": "player-of-the-month", "overrides": {"2026-09": "60307"}}],
+            "must be his FPL code, a whole number", id="quoted-code",
+        ),
+        pytest.param(
+            [{"type": "player-of-the-month", "overrides": {"2026-09": True}}],
+            "must be his FPL code, a whole number", id="bool-code",
+        ),
+        pytest.param(
+            [{"type": "player-of-the-month", "penalty_phrasings": "pint of shame"}],
+            "penalty_phrasings must be a list of strings", id="phrasings",
+        ),
+    ])
+    def test_every_mistake_is_a_config_error_saying_what_is_wrong(self, vouchers, expected):
+        with pytest.raises(ConfigError, match=expected):
+            parse_fines_config({"fines": {"draft_vouchers": vouchers}})
+
+    def test_a_date_yaml_read_as_a_date_is_no_month(self):
+        """`2026-09-01:` unquoted is a date to YAML, never a month."""
+        import datetime
+
+        with pytest.raises(ConfigError, match="is not a month"):
+            parse_fines_config({"fines": {"draft_vouchers": [
+                {"type": "player-of-the-month", "overrides": {datetime.date(2026, 9, 1): 60307}},
+            ]}})
+
+    def test_a_misspelled_block_key_is_still_refused_by_name(self):
+        with pytest.raises(ConfigError, match="Unknown key.*'draft_voucher'"):
+            parse_fines_config({"fines": {"draft_voucher": [{"type": "player-of-the-month"}]}})
+
+    def test_the_vouchers_own_phrasings_name_its_forfeit(self):
+        config = parse_fines_config({"fines": {"draft_vouchers": [{
+            "type": "player-of-the-month", "penalty": "Shot of Jäger",
+            "penalty_phrasings": ["the Jäger", "a shot"],
+        }]}})
+
+        assert config is not None
+        assert config.phrasings_for("Shot of Jäger") == ("the Jäger", "a shot")
+
+    def test_the_block_list_covers_a_voucher_sharing_the_rules_forfeit(self):
+        config = parse_fines_config({"fines": {
+            "penalty_phrasings": ["pint of shame"],
+            "draft": [{"type": "last-place", "penalty": "Pint on video"}],
+            "draft_vouchers": [{"type": "player-of-the-month", "penalty": "Pint on video"}],
+        }})
+
+        assert config is not None
+        assert config.phrasings_for("Pint on video") == ("pint of shame",)
+
+    def test_a_block_list_over_a_rule_and_a_voucher_with_different_forfeits_is_refused(self):
+        """The block's list would hand the rule's phrasings to the voucher's
+        forfeit, which changes it."""
+        with pytest.raises(ConfigError, match="2 different ones"):
+            parse_fines_config({"fines": {
+                "penalty_phrasings": ["pint of shame"],
+                "draft": [{"type": "last-place", "penalty": "Pint on video"}],
+                "draft_vouchers": [{"type": "player-of-the-month", "penalty": "Buy the round"}],
+            }})

@@ -1,0 +1,1406 @@
+{
+  "manager_awards": [
+    {
+      "currentTeam": {
+        "name": "Liverpool",
+        "id": "14",
+        "shortName": "Liverpool"
+      },
+      "date": "2025-8",
+      "country": {
+        "isoCode": "NL",
+        "country": "Netherlands",
+        "demonym": "Dutch"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025",
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "2444473",
+        "seasonsAtCurrentTeam": [
+          "2025",
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Slot",
+        "first": "Arne"
+      },
+      "dates": {
+        "joinedClub": "2024-06-01",
+        "birth": "1978-09-17"
+      },
+      "id": "52174",
+      "type": "MOTM"
+    },
+    {
+      "currentTeam": {
+        "name": "Nottingham Forest",
+        "id": "17",
+        "shortName": "Nott'm Forest"
+      },
+      "date": "2025-9",
+      "country": {
+        "isoCode": "AT",
+        "country": "Austria",
+        "demonym": "Austrian"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025",
+          "2026",
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "2367793",
+        "seasonsAtCurrentTeam": [
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Glasner",
+        "first": "Oliver"
+      },
+      "dates": {
+        "joinedClub": "2026-07-06",
+        "birth": "1974-08-28"
+      },
+      "id": "44410",
+      "type": "MOTM"
+    },
+    {
+      "currentTeam": {
+        "name": "Milan",
+        "id": "120",
+        "shortName": "Milan"
+      },
+      "date": "2025-10",
+      "country": {
+        "isoCode": "PT",
+        "country": "Portugal",
+        "demonym": "Portugese"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025"
+        ],
+        "firstPremierLeagueFixtureId": "2444585",
+        "seasonsAtCurrentTeam": []
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Marques Diogo Amorim",
+        "known": "Ruben Amorim",
+        "first": "Ruben Filipe"
+      },
+      "dates": {
+        "joinedClub": "2026-06-16",
+        "birth": "1985-01-27"
+      },
+      "id": "53637",
+      "type": "MOTM"
+    },
+    {
+      "currentTeam": {
+        "name": "Manchester City",
+        "id": "43",
+        "shortName": "Man City"
+      },
+      "date": "2025-11",
+      "country": {
+        "isoCode": "IT",
+        "country": "Italy",
+        "demonym": "Italian"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025",
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "2444478",
+        "seasonsAtCurrentTeam": [
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Maresca",
+        "first": "Enzo"
+      },
+      "dates": {
+        "joinedClub": "2026-06-29",
+        "birth": "1980-02-10"
+      },
+      "id": "48549",
+      "type": "MOTM"
+    },
+    {
+      "currentTeam": {
+        "name": "Aston Villa",
+        "id": "7",
+        "shortName": "Aston Villa"
+      },
+      "date": "2025-12",
+      "country": {
+        "isoCode": "ES",
+        "country": "Spain",
+        "demonym": "Spanish"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025",
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "987593",
+        "seasonsAtCurrentTeam": [
+          "2025",
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Emery",
+        "first": "Unai"
+      },
+      "dates": {
+        "joinedClub": "2022-11-01",
+        "birth": "1971-11-03"
+      },
+      "id": "37569",
+      "type": "MOTM"
+    },
+    {
+      "currentTeam": {
+        "name": "Manchester United",
+        "id": "1",
+        "shortName": "Man Utd"
+      },
+      "date": "2026-1",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025",
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "2210395",
+        "seasonsAtCurrentTeam": [
+          "2025",
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Carrick",
+        "first": "Michael"
+      },
+      "dates": {
+        "joinedClub": "2026-01-13",
+        "birth": "1981-07-28"
+      },
+      "id": "56407",
+      "type": "MOTM"
+    },
+    {
+      "currentTeam": {
+        "name": "Manchester City",
+        "id": "43",
+        "shortName": "Man City"
+      },
+      "date": "2026-2",
+      "country": {
+        "isoCode": "ES",
+        "country": "Spain",
+        "demonym": "Spanish"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025",
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "855179",
+        "seasonsAtCurrentTeam": [
+          "2025",
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Guardiola",
+        "first": "Pep"
+      },
+      "dates": {
+        "joinedClub": "2016-07-01",
+        "birth": "1971-01-18"
+      },
+      "id": "37974",
+      "type": "MOTM"
+    },
+    {
+      "currentTeam": {
+        "name": "Arsenal",
+        "id": "3",
+        "shortName": "Arsenal"
+      },
+      "date": "2026-3",
+      "country": {
+        "isoCode": "ES",
+        "country": "Spain",
+        "demonym": "Spanish"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025",
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "1059882",
+        "seasonsAtCurrentTeam": [
+          "2025",
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Arteta",
+        "first": "Mikel"
+      },
+      "dates": {
+        "joinedClub": "2019-12-22",
+        "birth": "1982-03-26"
+      },
+      "id": "51018",
+      "type": "MOTM"
+    },
+    {
+      "currentTeam": {
+        "name": "Manchester City",
+        "id": "43",
+        "shortName": "Man City"
+      },
+      "date": "2026-4",
+      "country": {
+        "isoCode": "ES",
+        "country": "Spain",
+        "demonym": "Spanish"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025",
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "855179",
+        "seasonsAtCurrentTeam": [
+          "2025",
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Guardiola",
+        "first": "Pep"
+      },
+      "dates": {
+        "joinedClub": "2016-07-01",
+        "birth": "1971-01-18"
+      },
+      "id": "37974",
+      "type": "MOTM"
+    },
+    {
+      "currentTeam": {
+        "name": "Arsenal",
+        "id": "3",
+        "shortName": "Arsenal"
+      },
+      "date": "2026-5",
+      "country": {
+        "isoCode": "ES",
+        "country": "Spain",
+        "demonym": "Spanish"
+      },
+      "career": {
+        "seasonsInPremierLeague": [
+          "2025",
+          "2026"
+        ],
+        "firstPremierLeagueFixtureId": "1059882",
+        "seasonsAtCurrentTeam": [
+          "2025",
+          "2026"
+        ]
+      },
+      "role": "Manager",
+      "name": {
+        "last": "Arteta",
+        "first": "Mikel"
+      },
+      "dates": {
+        "joinedClub": "2019-12-22",
+        "birth": "1982-03-26"
+      },
+      "id": "51018",
+      "type": "MOTS"
+    }
+  ],
+  "player_awards": [
+    {
+      "currentTeam": {
+        "loan": 1,
+        "name": "Everton",
+        "id": "11",
+        "shortName": "Everton"
+      },
+      "date": "2025-8",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 18,
+      "weight": 77,
+      "dates": {
+        "joinedClub": "2025-08-12",
+        "birth": "1995-09-10"
+      },
+      "type": "POTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Grealish",
+        "display": "Jack Grealish",
+        "first": "Jack"
+      },
+      "id": "114283",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 180
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Liverpool",
+        "id": "14",
+        "shortName": "Liverpool"
+      },
+      "date": "2025-8",
+      "country": {
+        "isoCode": "HU",
+        "country": "Hungary",
+        "demonym": "Hungarian"
+      },
+      "shirtNum": 8,
+      "weight": 74,
+      "dates": {
+        "joinedClub": "2023-07-02",
+        "birth": "2000-10-25"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "Hungary",
+      "name": {
+        "last": "Szoboszlai",
+        "display": "Dominik Szoboszlai",
+        "first": "Dominik"
+      },
+      "id": "424876",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 186
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Manchester City",
+        "id": "43",
+        "shortName": "Man City"
+      },
+      "date": "2025-8",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 1,
+      "weight": 83,
+      "dates": {
+        "joinedClub": "2025-07-29",
+        "birth": "2002-10-10"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Trafford",
+        "display": "James Trafford",
+        "first": "James"
+      },
+      "id": "432720",
+      "position": "Goalkeeper",
+      "preferredFoot": "Right",
+      "height": 197
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Manchester City",
+        "id": "43",
+        "shortName": "Man City"
+      },
+      "date": "2025-9",
+      "country": {
+        "isoCode": "NO",
+        "country": "Norway",
+        "demonym": "Norwegian"
+      },
+      "shirtNum": 9,
+      "weight": 94,
+      "dates": {
+        "joinedClub": "2022-07-01",
+        "birth": "2000-07-21"
+      },
+      "type": "POTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Haaland",
+        "display": "Erling Haaland",
+        "first": "Erling"
+      },
+      "id": "223094",
+      "position": "Forward",
+      "preferredFoot": "Left",
+      "height": 195
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Arsenal",
+        "id": "3",
+        "shortName": "Arsenal"
+      },
+      "date": "2025-9",
+      "country": {
+        "isoCode": "ES",
+        "country": "Spain",
+        "demonym": "Spanish"
+      },
+      "shirtNum": 36,
+      "weight": 74,
+      "dates": {
+        "joinedClub": "2025-07-06",
+        "birth": "1999-02-02"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "Spain",
+      "name": {
+        "last": "Zubimendi",
+        "display": "Martín Zubimendi",
+        "first": "Martín"
+      },
+      "id": "481655",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 181
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Manchester City",
+        "id": "43",
+        "shortName": "Man City"
+      },
+      "date": "2025-9",
+      "country": {
+        "isoCode": "IT",
+        "country": "Italy",
+        "demonym": "Italian"
+      },
+      "shirtNum": 25,
+      "weight": 90,
+      "dates": {
+        "joinedClub": "2025-09-01",
+        "birth": "1999-02-25"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "Italy",
+      "name": {
+        "last": "Donnarumma",
+        "display": "Gianluigi Donnarumma",
+        "first": "Gianluigi"
+      },
+      "id": "204936",
+      "position": "Goalkeeper",
+      "preferredFoot": "Right",
+      "height": 196
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Manchester United",
+        "id": "1",
+        "shortName": "Man Utd"
+      },
+      "date": "2025-10",
+      "country": {
+        "isoCode": "CM",
+        "country": "Cameroon",
+        "demonym": "Cameroonian"
+      },
+      "shirtNum": 19,
+      "weight": 64,
+      "dates": {
+        "joinedClub": "2025-07-21",
+        "birth": "1999-08-07"
+      },
+      "type": "POTM",
+      "countryOfBirth": "France",
+      "name": {
+        "last": "Mbeumo",
+        "display": "Bryan Mbeumo",
+        "first": "Bryan"
+      },
+      "id": "446008",
+      "position": "Forward",
+      "preferredFoot": "Left",
+      "height": 173
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Aston Villa",
+        "id": "7",
+        "shortName": "Aston Villa"
+      },
+      "date": "2025-10",
+      "country": {
+        "isoCode": "AR",
+        "country": "Argentina",
+        "demonym": null
+      },
+      "shirtNum": 10,
+      "weight": 75,
+      "dates": {
+        "joinedClub": "2021-06-10",
+        "birth": "1996-12-25"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "Argentina",
+      "name": {
+        "last": "Buendía",
+        "display": "Emiliano Buendía",
+        "first": "Emiliano"
+      },
+      "id": "195546",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 172
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Burnley",
+        "id": "90",
+        "shortName": "Burnley"
+      },
+      "date": "2025-10",
+      "country": {
+        "isoCode": "SK",
+        "country": "Slovakia",
+        "demonym": "Slovak"
+      },
+      "shirtNum": 1,
+      "weight": 83,
+      "dates": {
+        "joinedClub": "2025-08-07",
+        "birth": "1989-01-15"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "Slovakia",
+      "name": {
+        "last": "Dúbravka",
+        "display": "Martin Dúbravka",
+        "first": "Martin"
+      },
+      "id": "67089",
+      "position": "Goalkeeper",
+      "preferredFoot": "Right",
+      "height": 190
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Brentford",
+        "id": "94",
+        "shortName": "Brentford"
+      },
+      "date": "2025-11",
+      "country": {
+        "isoCode": "BR",
+        "country": "Brazil",
+        "demonym": "Brazilian"
+      },
+      "shirtNum": 9,
+      "weight": 95,
+      "dates": {
+        "joinedClub": "2024-07-01",
+        "birth": "2001-06-26"
+      },
+      "type": "POTM",
+      "countryOfBirth": "Brazil",
+      "name": {
+        "last": "Nascimento Rodrigues",
+        "display": "Igor Thiago",
+        "first": "Igor Thiago"
+      },
+      "id": "502500",
+      "position": "Forward",
+      "preferredFoot": "Right",
+      "height": 190
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Bournemouth",
+        "id": "91",
+        "shortName": "Bournemouth"
+      },
+      "date": "2025-11",
+      "country": {
+        "isoCode": "US",
+        "country": "United States",
+        "demonym": "American"
+      },
+      "shirtNum": 12,
+      "weight": 72,
+      "dates": {
+        "joinedClub": "2023-08-20",
+        "birth": "1999-02-14"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "USA",
+      "name": {
+        "last": "Adams",
+        "display": "Tyler Adams",
+        "first": "Tyler"
+      },
+      "id": "200785",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 175
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Everton",
+        "id": "11",
+        "shortName": "Everton"
+      },
+      "date": "2025-11",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 1,
+      "weight": 77,
+      "dates": {
+        "joinedClub": "2017-07-01",
+        "birth": "1994-03-07"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Pickford",
+        "display": "Jordan Pickford",
+        "first": "Jordan"
+      },
+      "id": "111234",
+      "position": "Goalkeeper",
+      "preferredFoot": "Left",
+      "height": 185
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Leeds United",
+        "id": "2",
+        "shortName": "Leeds"
+      },
+      "date": "2025-12",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 9,
+      "weight": 71,
+      "dates": {
+        "joinedClub": "2025-08-15",
+        "birth": "1997-03-16"
+      },
+      "type": "POTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Calvert-Lewin",
+        "display": "Dominic Calvert-Lewin",
+        "first": "Dominic"
+      },
+      "id": "177815",
+      "position": "Forward",
+      "preferredFoot": "Right",
+      "height": 187
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Fulham",
+        "id": "54",
+        "shortName": "Fulham"
+      },
+      "date": "2025-12",
+      "country": {
+        "isoCode": "GB-WLS",
+        "country": "Wales",
+        "demonym": "Welsh"
+      },
+      "shirtNum": 8,
+      "weight": 63,
+      "dates": {
+        "joinedClub": "2021-07-24",
+        "birth": "1997-03-22"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "Wales",
+      "name": {
+        "last": "Wilson",
+        "display": "Harry Wilson",
+        "first": "Harry"
+      },
+      "id": "153682",
+      "position": "Forward",
+      "preferredFoot": "Left",
+      "height": 173
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Arsenal",
+        "id": "3",
+        "shortName": "Arsenal"
+      },
+      "date": "2025-12",
+      "country": {
+        "isoCode": "ES",
+        "country": "Spain",
+        "demonym": "Spanish"
+      },
+      "shirtNum": 1,
+      "weight": 80,
+      "dates": {
+        "joinedClub": "2024-07-04",
+        "birth": "1995-09-15"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "Spain",
+      "name": {
+        "last": "Raya",
+        "display": "David Raya",
+        "first": "David"
+      },
+      "id": "154561",
+      "position": "Goalkeeper",
+      "preferredFoot": "Right",
+      "height": 183
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Brentford",
+        "id": "94",
+        "shortName": "Brentford"
+      },
+      "date": "2026-1",
+      "country": {
+        "isoCode": "BR",
+        "country": "Brazil",
+        "demonym": "Brazilian"
+      },
+      "shirtNum": 9,
+      "weight": 95,
+      "dates": {
+        "joinedClub": "2024-07-01",
+        "birth": "2001-06-26"
+      },
+      "type": "POTM",
+      "countryOfBirth": "Brazil",
+      "name": {
+        "last": "Nascimento Rodrigues",
+        "display": "Igor Thiago",
+        "first": "Igor Thiago"
+      },
+      "id": "502500",
+      "position": "Forward",
+      "preferredFoot": "Right",
+      "height": 190
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Fulham",
+        "id": "54",
+        "shortName": "Fulham"
+      },
+      "date": "2026-1",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 6,
+      "weight": 72,
+      "dates": {
+        "joinedClub": "2020-08-30",
+        "birth": "1995-01-27"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Reed",
+        "display": "Harrison Reed",
+        "first": "Harrison"
+      },
+      "id": "153366",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 181
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "West Ham United",
+        "id": "21",
+        "shortName": "West Ham"
+      },
+      "date": "2026-1",
+      "country": {
+        "isoCode": "FR",
+        "country": "France",
+        "demonym": "French"
+      },
+      "shirtNum": 23,
+      "weight": 94,
+      "dates": {
+        "joinedClub": "2022-07-01",
+        "birth": "1993-02-27"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "France",
+      "name": {
+        "last": "Areola",
+        "display": "Alphonse Areola",
+        "first": "Alphonse"
+      },
+      "id": "84182",
+      "position": "Goalkeeper",
+      "preferredFoot": "Right",
+      "height": 195
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Manchester City",
+        "id": "43",
+        "shortName": "Man City"
+      },
+      "date": "2026-2",
+      "country": {
+        "isoCode": "GH",
+        "country": "Ghana",
+        "demonym": "Ghanan"
+      },
+      "shirtNum": 42,
+      "weight": 74,
+      "dates": {
+        "joinedClub": "2026-01-09",
+        "birth": "2000-01-07"
+      },
+      "type": "POTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Semenyo",
+        "display": "Antoine Semenyo",
+        "first": "Antoine"
+      },
+      "id": "437730",
+      "position": "Forward",
+      "preferredFoot": "Right",
+      "height": 185
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Tottenham Hotspur",
+        "id": "6",
+        "shortName": "Spurs"
+      },
+      "date": "2026-2",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 19,
+      "weight": 80,
+      "dates": {
+        "joinedClub": "2024-08-10",
+        "birth": "1997-09-14"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Solanke",
+        "display": "Dominic Solanke",
+        "first": "Dominic"
+      },
+      "id": "154566",
+      "position": "Forward",
+      "preferredFoot": "Right",
+      "height": 187
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Everton",
+        "id": "11",
+        "shortName": "Everton"
+      },
+      "date": "2026-2",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 1,
+      "weight": 77,
+      "dates": {
+        "joinedClub": "2017-07-01",
+        "birth": "1994-03-07"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Pickford",
+        "display": "Jordan Pickford",
+        "first": "Jordan"
+      },
+      "id": "111234",
+      "position": "Goalkeeper",
+      "preferredFoot": "Left",
+      "height": 185
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Manchester United",
+        "id": "1",
+        "shortName": "Man Utd"
+      },
+      "date": "2026-3",
+      "country": {
+        "isoCode": "PT",
+        "country": "Portugal",
+        "demonym": "Portugese"
+      },
+      "shirtNum": 8,
+      "weight": 64,
+      "dates": {
+        "joinedClub": "2020-01-30",
+        "birth": "1994-09-08"
+      },
+      "type": "POTM",
+      "countryOfBirth": "Portugal",
+      "name": {
+        "last": "Borges Fernandes",
+        "display": "Bruno Fernandes",
+        "first": "Bruno Miguel"
+      },
+      "id": "141746",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 183
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Newcastle United",
+        "id": "4",
+        "shortName": "Newcastle"
+      },
+      "date": "2026-3",
+      "country": {
+        "isoCode": "DK",
+        "country": "Denmark",
+        "demonym": null
+      },
+      "shirtNum": 18,
+      "weight": 81,
+      "dates": {
+        "joinedClub": "2024-08-08",
+        "birth": "2003-08-04"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "Denmark",
+      "name": {
+        "last": "Osula",
+        "display": "William Osula",
+        "first": "William"
+      },
+      "id": "538207",
+      "position": "Forward",
+      "preferredFoot": "Right",
+      "height": 180
+    },
+    {
+      "currentTeam": {
+        "loan": 1,
+        "name": "Newcastle United",
+        "id": "4",
+        "shortName": "Newcastle"
+      },
+      "date": "2026-3",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 32,
+      "weight": 88,
+      "dates": {
+        "joinedClub": "2025-08-02",
+        "birth": "1998-05-14"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Ramsdale",
+        "display": "Aaron Ramsdale",
+        "first": "Aaron"
+      },
+      "id": "225321",
+      "position": "Goalkeeper",
+      "preferredFoot": "Right",
+      "height": 190
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Nottingham Forest",
+        "id": "17",
+        "shortName": "Nott'm Forest"
+      },
+      "date": "2026-4",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 10,
+      "weight": 66,
+      "dates": {
+        "joinedClub": "2022-08-19",
+        "birth": "2000-01-27"
+      },
+      "type": "POTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Gibbs-White",
+        "display": "Morgan Gibbs-White",
+        "first": "Morgan"
+      },
+      "id": "222531",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 171
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Brighton and Hove Albion",
+        "id": "36",
+        "shortName": "Brighton"
+      },
+      "date": "2026-4",
+      "country": {
+        "isoCode": "JP",
+        "country": "Japan",
+        "demonym": "Japanese"
+      },
+      "shirtNum": 22,
+      "weight": 73,
+      "dates": {
+        "joinedClub": "2021-08-09",
+        "birth": "1997-05-20"
+      },
+      "type": "GOTM",
+      "countryOfBirth": "Japan",
+      "name": {
+        "last": "Mitoma",
+        "display": "Kaoru Mitoma",
+        "first": "Kaoru"
+      },
+      "id": "451340",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 178
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Leeds United",
+        "id": "2",
+        "shortName": "Leeds"
+      },
+      "date": "2026-4",
+      "country": {
+        "isoCode": "GB-WLS",
+        "country": "Wales",
+        "demonym": "Welsh"
+      },
+      "shirtNum": 26,
+      "weight": 88,
+      "dates": {
+        "joinedClub": "2023-07-29",
+        "birth": "1990-10-08"
+      },
+      "type": "SOTM",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Darlow",
+        "display": "Karl Darlow",
+        "first": "Karl"
+      },
+      "id": "59735",
+      "position": "Goalkeeper",
+      "preferredFoot": "Right",
+      "height": 190
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Manchester United",
+        "id": "1",
+        "shortName": "Man Utd"
+      },
+      "date": "2026-5",
+      "country": {
+        "isoCode": "PT",
+        "country": "Portugal",
+        "demonym": "Portugese"
+      },
+      "shirtNum": 8,
+      "weight": 64,
+      "dates": {
+        "joinedClub": "2020-01-30",
+        "birth": "1994-09-08"
+      },
+      "type": "POTS",
+      "countryOfBirth": "Portugal",
+      "name": {
+        "last": "Borges Fernandes",
+        "display": "Bruno Fernandes",
+        "first": "Bruno Miguel"
+      },
+      "id": "141746",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 183
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Manchester City",
+        "id": "43",
+        "shortName": "Man City"
+      },
+      "date": "2026-5",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 33,
+      "weight": 77,
+      "dates": {
+        "joinedClub": "2022-12-16",
+        "birth": "2005-03-21"
+      },
+      "type": "YPOTS",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "O'Reilly",
+        "display": "Nico O'Reilly",
+        "first": "Nico"
+      },
+      "id": "472769",
+      "position": "Midfielder",
+      "preferredFoot": "Left",
+      "height": 193
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Fulham",
+        "id": "54",
+        "shortName": "Fulham"
+      },
+      "date": "2026-5",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 6,
+      "weight": 72,
+      "dates": {
+        "joinedClub": "2020-08-30",
+        "birth": "1995-01-27"
+      },
+      "type": "GOTS",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Reed",
+        "display": "Harrison Reed",
+        "first": "Harrison"
+      },
+      "id": "153366",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 181
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Everton",
+        "id": "11",
+        "shortName": "Everton"
+      },
+      "date": "2026-5",
+      "country": {
+        "isoCode": "GB-ENG",
+        "country": "England",
+        "demonym": "English"
+      },
+      "shirtNum": 1,
+      "weight": 77,
+      "dates": {
+        "joinedClub": "2017-07-01",
+        "birth": "1994-03-07"
+      },
+      "type": "SOTS",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Pickford",
+        "display": "Jordan Pickford",
+        "first": "Jordan"
+      },
+      "id": "111234",
+      "position": "Goalkeeper",
+      "preferredFoot": "Left",
+      "height": 185
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Arsenal",
+        "id": "3",
+        "shortName": "Arsenal"
+      },
+      "date": "2026-5",
+      "country": {
+        "isoCode": "ES",
+        "country": "Spain",
+        "demonym": "Spanish"
+      },
+      "shirtNum": 1,
+      "weight": 80,
+      "dates": {
+        "joinedClub": "2024-07-04",
+        "birth": "1995-09-15"
+      },
+      "type": "GG",
+      "countryOfBirth": "Spain",
+      "name": {
+        "last": "Raya",
+        "display": "David Raya",
+        "first": "David"
+      },
+      "id": "154561",
+      "position": "Goalkeeper",
+      "preferredFoot": "Right",
+      "height": 183
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Manchester City",
+        "id": "43",
+        "shortName": "Man City"
+      },
+      "date": "2026-5",
+      "country": {
+        "isoCode": "NO",
+        "country": "Norway",
+        "demonym": "Norwegian"
+      },
+      "shirtNum": 9,
+      "weight": 94,
+      "dates": {
+        "joinedClub": "2022-07-01",
+        "birth": "2000-07-21"
+      },
+      "type": "GB",
+      "countryOfBirth": "England",
+      "name": {
+        "last": "Haaland",
+        "display": "Erling Haaland",
+        "first": "Erling"
+      },
+      "id": "223094",
+      "position": "Forward",
+      "preferredFoot": "Left",
+      "height": 195
+    },
+    {
+      "currentTeam": {
+        "loan": 0,
+        "name": "Manchester United",
+        "id": "1",
+        "shortName": "Man Utd"
+      },
+      "date": "2026-5",
+      "country": {
+        "isoCode": "PT",
+        "country": "Portugal",
+        "demonym": "Portugese"
+      },
+      "shirtNum": 8,
+      "weight": 64,
+      "dates": {
+        "joinedClub": "2020-01-30",
+        "birth": "1994-09-08"
+      },
+      "type": "PM",
+      "countryOfBirth": "Portugal",
+      "name": {
+        "last": "Borges Fernandes",
+        "display": "Bruno Fernandes",
+        "first": "Bruno Miguel"
+      },
+      "id": "141746",
+      "position": "Midfielder",
+      "preferredFoot": "Right",
+      "height": 183
+    }
+  ]
+}

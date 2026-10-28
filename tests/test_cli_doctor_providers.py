@@ -7,6 +7,7 @@ same way it passes against the live provider.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -26,6 +27,7 @@ from fpl_cli.api.core_insights import (
     season_dir,
 )
 from fpl_cli.api.historical import historical_season_windows
+from fpl_cli.api.premier_league import BASE_URL as PL_BASE
 from fpl_cli.api.vaastav import (
     BASE_URL as VAASTAV_BASE,
 )
@@ -34,7 +36,7 @@ from fpl_cli.api.vaastav import (
 )
 from fpl_cli.cli import main
 from fpl_cli.models.player import Player
-from fpl_cli.season import core_insights_season, understat_season
+from fpl_cli.season import core_insights_season, get_season_year, understat_season
 
 FPL_BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 DRAFT_BOOTSTRAP_URL = "https://draft.premierleague.com/api/bootstrap-static"
@@ -43,6 +45,11 @@ UNDERSTAT_URL = f"https://understat.com/getLeagueData/EPL/{understat_season()}"
 # most minutes; the harness answers every id the same way.
 ELEMENT_SUMMARY_URL = r"https://fantasy\.premierleague\.com/api/element-summary/\d+/"
 FD_STANDINGS_URL = "https://api.football-data.org/v4/competitions/PL/standings"
+# The Premier League's awards for a season, by its start year (#492). The
+# probe asks for this season's and last season's.
+AWARDS_URL = f"{PL_BASE}/competitions/8/seasons/{{year}}/awards"
+SEASON_YEAR = get_season_year()
+FIXTURES = Path(__file__).parent / "fixtures" / "premier_league_awards"
 
 # The allocation the probes read from (#101): vaastav the two oldest seasons
 # of the window, Core-Insights last season and the one in progress.
@@ -58,6 +65,9 @@ PLAYER_KEYS = [field.alias or name for name, field in Player.model_fields.items(
 def _element(pid: int, drop: tuple[str, ...] = (), joins: bool = False) -> dict:
     element = {key: 0 for key in PLAYER_KEYS if key not in drop}
     element["id"] = pid
+    if "code" not in drop:
+        # Unlike the id, as a live element's is: the awards probe joins on it.
+        element["code"] = 10_000 + pid
     if joins:
         # A player the name-join probe will actually ask about: minutes played,
         # at team `pid`, named as `_understat_players` names that team's row.
@@ -157,6 +167,23 @@ def _fd_standings(tlas: list[str]) -> dict:
     }
 
 
+def _awards(*codes: int, month: int = 8, year: int = SEASON_YEAR) -> dict:
+    """A season's awards response as the live feed shapes it: one Player of
+    the Month per code from `month` on, beside a goal of the month and a
+    season award the probe has to leave alone."""
+    player_awards: list[dict] = []
+    for offset, code in enumerate(codes):
+        calendar = (month + offset - 1) % 12 + 1
+        award_year = year if calendar >= 8 else year + 1
+        player_awards.append({
+            "type": "POTM", "date": f"{award_year}-{calendar}", "id": str(code),
+            "name": {"display": f"Player {code}", "first": "Player", "last": str(code)},
+        })
+        player_awards.append({"type": "GOTM", "date": f"{award_year}-{calendar}", "id": "1"})
+    player_awards.append({"type": "POTS", "date": f"{year + 1}-5"})
+    return {"manager_awards": [], "player_awards": player_awards}
+
+
 def _register_routes(
     *,
     finished_gws: int = 5,
@@ -178,6 +205,8 @@ def _register_routes(
     draft_error: Exception | None = None,
     element_summary: Response | None = None,
     understat_response: Response | None = None,
+    awards_now: Response | Exception | None = None,
+    awards_last: Response | None = None,
 ) -> None:
     bootstrap = _bootstrap(
         finished_gws=finished_gws,
@@ -266,6 +295,15 @@ def _register_routes(
 
     tlas = fd_tlas if fd_tlas is not None else [f"T{i:02d}" for i in range(1, 21)]
     respx.get(FD_STANDINGS_URL).mock(return_value=Response(200, json=_fd_standings(tlas)))
+
+    now_route = respx.get(AWARDS_URL.format(year=SEASON_YEAR))
+    if isinstance(awards_now, Exception):
+        now_route.mock(side_effect=awards_now)
+    else:
+        now_route.mock(return_value=awards_now or Response(200, json=_awards(10_001)))
+    respx.get(AWARDS_URL.format(year=SEASON_YEAR - 1)).mock(
+        return_value=awards_last or Response(200, json=_awards(10_002, 10_003, 10_004, year=SEASON_YEAR - 1)),
+    )
 
 
 def _run(args: list[str] | None = None):
@@ -1246,3 +1284,128 @@ class TestPlayerHistoryProbe:
         )
         payload = json.loads(_run(["--format", "json"]).output)
         assert "FPL player history" not in [c["name"] for c in payload["data"]["providers"]]
+
+
+class TestPremierLeagueAwards:
+    """The awards feed the draft Player of the Month voucher reads (#492)."""
+
+    @staticmethod
+    def _rows(result) -> dict[str, dict]:
+        payload = json.loads(result.output)
+        return {
+            row["name"]: row for row in payload["data"]["providers"]
+            if row["name"] in ("Premier League awards", "Player of the Month codes")
+        }
+
+    @respx.mock
+    def test_a_healthy_feed_is_ok_and_its_winners_join_on_fpl_codes(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes()
+
+        result = _run(["--format", "json"])
+
+        rows = self._rows(result)
+        assert rows["Premier League awards"]["status"] == "ok"
+        assert "1 Player of the Month award(s)" in rows["Premier League awards"]["detail"]
+        assert "3 for" in rows["Premier League awards"]["detail"]
+        assert rows["Player of the Month codes"]["status"] == "ok"
+        assert "1 of" in rows["Player of the Month codes"]["detail"]
+
+    @respx.mock
+    def test_the_recorded_live_response_passes_the_shape_check(self, monkeypatch):
+        """The response captured on 2026-10-28, season awards and all."""
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        recorded = json.loads((FIXTURES / "season-2026.json").read_text(encoding="utf-8"))
+        _register_routes(awards_now=Response(200, json=recorded))
+
+        rows = self._rows(_run(["--format", "json"]))
+
+        assert rows["Premier League awards"]["status"] == "ok"
+        assert "2 Player of the Month award(s)" in rows["Premier League awards"]["detail"]
+
+    @respx.mock
+    def test_an_unreachable_feed_is_unchecked_not_broken(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(awards_now=httpx.ConnectError(
+            "blocked", request=httpx.Request("GET", AWARDS_URL.format(year=SEASON_YEAR)),
+        ))
+
+        result = _run(["--format", "json"])
+
+        assert result.exit_code == 0
+        row = self._rows(result)["Premier League awards"]
+        assert row["status"] == "unchecked"
+        assert "could not reach the provider" in row["detail"]
+
+    @respx.mock
+    @pytest.mark.parametrize(("response", "detail"), [
+        (Response(200, text="<html>moved</html>"), "did not return JSON"),
+        (Response(200, json={"awards": []}), "no `player_awards` list"),
+        (Response(200, json={"player_awards": [{"type": "POTM", "date": "2026-9"}]}), "is missing id"),
+        (
+            Response(200, json={"player_awards": [{"type": "POTM", "date": "September", "id": "60307"}]}),
+            "naming no month",
+        ),
+    ], ids=["not-json", "no-list", "no-id", "no-month"])
+    def test_a_reshaped_feed_is_broken(self, monkeypatch, response, detail):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(awards_now=response)
+
+        result = _run(["--format", "json"])
+
+        assert result.exit_code == 1
+        row = self._rows(result)["Premier League awards"]
+        assert row["status"] == "broken"
+        assert detail in row["detail"]
+
+    @respx.mock
+    def test_a_last_season_with_no_player_of_the_month_is_broken(self, monkeypatch):
+        """A renamed type code would read every month as not yet awarded."""
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(awards_last=Response(200, json={"player_awards": [
+            {"type": "PLAYER_OF_THE_MONTH", "date": f"{SEASON_YEAR}-1", "id": "10002"},
+        ]}))
+
+        result = _run(["--format", "json"])
+
+        assert result.exit_code == 1
+        row = self._rows(result)["Premier League awards"]
+        assert row["status"] == "broken"
+        assert "lists no Player of the Month" in row["detail"]
+
+    @respx.mock
+    def test_winners_matching_no_fpl_code_are_broken(self, monkeypatch):
+        """An id scheme that moved off FPL's codes: every winner would read as
+        held by nobody rather than as an error."""
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(awards_now=Response(200, json=_awards(999_001, 999_002)))
+
+        result = _run(["--format", "json"])
+
+        assert result.exit_code == 1
+        row = self._rows(result)["Player of the Month codes"]
+        assert row["status"] == "broken"
+        assert "none of" in row["detail"]
+
+    @respx.mock
+    def test_before_the_first_award_last_seasons_winners_are_joined(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(awards_now=Response(200, json=_awards()))
+
+        rows = self._rows(_run(["--format", "json"]))
+
+        assert rows["Premier League awards"]["status"] == "ok"
+        assert "0 Player of the Month award(s)" in rows["Premier League awards"]["detail"]
+        assert rows["Player of the Month codes"]["status"] == "ok"
+        assert "3 of" in rows["Player of the Month codes"]["detail"]
+
+    @respx.mock
+    def test_an_unreachable_bootstrap_leaves_the_join_unchecked(self, monkeypatch):
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(fpl_error=httpx.ConnectError(
+            "boom", request=httpx.Request("GET", FPL_BOOTSTRAP_URL),
+        ))
+
+        rows = self._rows(_run(["--format", "json"]))
+
+        assert rows["Player of the Month codes"]["status"] == "unchecked"
