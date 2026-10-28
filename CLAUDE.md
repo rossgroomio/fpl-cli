@@ -90,7 +90,7 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 
 ## FPL Domain Knowledge
 `docs/fpl-rules.md` is the authority on scoring, BPS, chips, transfers, waivers and the classic/draft split — read it rather than reasoning from memory, and correct it there when a rule changes. The shape that drives most code:
-- Chips: each available **twice** per season, split at the GW19 deadline (Wildcard, Free Hit, Bench Boost, Triple Captain); one chip per gameweek
+- Chips: each available **twice** per season, one up to and including GW19, the other from GW20 (Wildcard, Free Hit, Bench Boost, Triple Captain); one chip per gameweek
 - Transfers: 1 free/GW, banked up to 5; extras cost 4pts each; Wildcard/Free Hit preserve banked transfers
 - Draft has no captains, no budget, no transfers and no chips — acquisition is via waivers and free agents
 

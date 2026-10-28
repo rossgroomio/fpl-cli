@@ -24,7 +24,7 @@ TOTAL_GAMEWEEKS: int = 38
 """Number of gameweeks in a Premier League season (unchanged since 1995)."""
 
 CHIP_SPLIT_GW: int = TOTAL_GAMEWEEKS // 2
-"""Gameweek boundary for chip availability (each chip once per half)."""
+"""Last gameweek of the first half: each chip is available once up to and including it, and once more from the next."""
 
 PROMOTED_CLUBS_PER_SEASON: int = 3
 """Clubs promoted into the Premier League each season (three up, three down since 1995-96)."""
