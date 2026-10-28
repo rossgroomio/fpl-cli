@@ -4845,6 +4845,7 @@ def _history_pack(
     *,
     season_count_entries: list[NotesPackEntry] | None = None,
     season_record_entries: list[NotesPackEntry] | None = None,
+    personal_record_entries: list[NotesPackEntry] | None = None,
     phase: SeasonPhase = SeasonPhase.MIDPOINT,
     phase_text: str = "GW20 is the season midpoint.",
     fpl_format: str = "classic",
@@ -4859,6 +4860,7 @@ def _history_pack(
         entries=entries or [],
         season_count_entries=season_count_entries or [],
         season_record_entries=season_record_entries or [],
+        personal_record_entries=personal_record_entries or [],
         coverage_entries=coverage_entries if coverage_entries is not None else [
             NotesPackEntry(
                 kind=NoteKind.COVERAGE, text="Recorded history is complete from its start (GW1) through GW20.",
@@ -4947,15 +4949,16 @@ class TestFormatRecapLeagueHistoryContext:
             assert "Recorded history is complete" not in line
 
         # The very next non-blank content is the season-count total (its own
-        # counted block, empty here), then the season-record total (empty
-        # too), then the coverage label -- never a third, uncounted
-        # streak-shaped bullet.
+        # counted block, empty here), then the season-record and
+        # personal-record totals (empty too), then the coverage label --
+        # never a third, uncounted streak-shaped bullet.
         remainder = [line for line in lines[count_index + 3 :] if line]
         assert remainder[0] == "Total season-count entries: 0"
         assert remainder[1] == "Total season-record entries: 0"
-        assert remainder[2] == "Coverage:"
-        assert remainder[3] == "- Recorded history is complete from its start (GW1) through GW20."
-        assert remainder[4] == (
+        assert remainder[2] == "Total personal-record entries: 0"
+        assert remainder[3] == "Coverage:"
+        assert remainder[4] == "- Recorded history is complete from its start (GW1) through GW20."
+        assert remainder[5] == (
             "- Carol: recorded history begins at GW10, later than the league's "
             "start (GW1); earlier gameweeks are not available for this manager."
         )
@@ -5008,12 +5011,61 @@ class TestFormatRecapLeagueHistoryContext:
         assert lines[total - 1] == "Total season-count entries: 0"
         assert lines[total + 1] == f"- {records[0].text}"
         assert lines[total + 2] == f"- {records[1].text}"
-        assert lines[total + 3] == "Coverage:"
+        assert lines[total + 3] == "Total personal-record entries: 0"
+        assert lines[total + 4] == "Coverage:"
 
     def test_no_season_record_is_stated_as_a_zero_total_rather_than_left_out(self):
         text = format_recap_league_history_context(_history_pack())
 
         assert "Total season-record entries: 0" in text
+
+    def test_personal_records_render_under_their_own_total_before_coverage(self):
+        """Issue #496: a manager's own best or worst week gets a counted
+        block of its own after the league's, and one withheld from the
+        prompt -- a record that stands from an earlier week, kept for
+        `--format json` -- is neither listed nor counted."""
+        shown = NotesPackEntry(
+            kind=NoteKind.PERSONAL_RECORD,
+            text=(
+                "Bob scored 65 points this gameweek, their highest gameweek score this season, "
+                "above their previous highest of 61 in GW9 (GW1-GW20)."
+            ),
+            surfaces=frozenset({NoteSurface.PROMPT}), manager_key=2, manager_name="Bob", points=65,
+        )
+        withheld = NotesPackEntry(
+            kind=NoteKind.PERSONAL_RECORD,
+            text="Alice's highest gameweek score this season is 80 points, in GW3 (GW1-GW20).",
+            surfaces=frozenset(), manager_key=1, manager_name="Alice", points=80,
+        )
+        lines = [
+            line for line in format_recap_league_history_context(
+                _history_pack(personal_record_entries=[withheld, shown]),
+            ).splitlines() if line
+        ]
+
+        total = lines.index("Total personal-record entries: 1")
+        assert lines[total - 1] == "Total season-record entries: 0"
+        assert lines[total + 1] == f"- {shown.text}"
+        assert lines[total + 2] == "Coverage:"
+        assert not any("Alice" in line for line in lines)
+
+    def test_system_prompt_holds_a_managers_own_best_to_the_personal_record_line(self):
+        """Issue #496: "their best week of the season" is quoted from the
+        manager's own line, an equalled best is never a new one, and with no
+        line the editorial says nothing either way."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert (
+            'A manager\'s own best or worst week of the season ("their best week of the season", '
+            '"a new season low") comes only from a "## League History" personal-record line about them'
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "a score that equalled their earlier best or worst matched it and is never a new one"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "Where no line says so, make no claim either way about how a manager's week ranks in their "
+            'own season ("one of their best", "not their worst")'
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_system_prompt_holds_a_season_superlative_to_the_record_line(self):
         """Issue #494: "the week of the season" was said of a 65 in a season
@@ -5026,8 +5078,8 @@ class TestFormatRecapLeagueHistoryContext:
             "line names it"
         ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert (
-            "streaks, season counts and the season's highest and lowest gameweek scores from the "
-            '"## League History" section'
+            "streaks, season counts, and the season's highest and lowest gameweek scores, the league's "
+            'and a manager\'s own, from the "## League History" section'
         ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_a_count_that_did_not_grow_this_gameweek_is_withheld_from_the_prompt(self):

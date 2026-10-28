@@ -4511,6 +4511,52 @@ class TestLeagueRecapJsonEnvelope:
         assert highest["surfaces"] == ["prompt"]
         assert highest["window"] == {"start_gameweek": 1, "end_gameweek": 5}
 
+    def test_personal_records_serialize_with_the_record_they_beat(self):
+        """Issue #496: every manager's own highest and lowest reaches the
+        payload, a record this gameweek set with the one it beat beside it,
+        and only that one carries the prompt surface."""
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in range(1, 10):
+            store.append_rows(gw, [
+                make_history_row(
+                    season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                    manager_key=key, manager_name=name, gross_points=base + gw, transfer_cost=0,
+                )
+                for key, name, base in ((1, "Alice", 40), (2, "Bob", 30))
+            ])
+
+        result = _invoke_recap(
+            _recap_data(
+                gameweek=10,
+                managers=[
+                    _manager(name="Alice", entry_id=1, gross_points=70, total_points=500),
+                    _manager(name="Bob", entry_id=2, gross_points=35, total_points=400, overall_rank=2),
+                ],
+                cohort=_cohort((1, "Alice", 1, 70, 500), (2, "Bob", 2, 35, 400)),
+            ),
+            ["--format", "json"],
+            client=_fpl_client(gw=10),
+            gw=10,
+        )
+
+        assert result.exit_code == 0, result.output
+        records = json.loads(result.stdout)["metadata"]["notes_pack"]["personal_record_entries"]
+        assert [(r["manager_name"], r["condition_key"]) for r in records] == [
+            ("Alice", "personal_highest_gameweek_score"),
+            ("Alice", "personal_lowest_gameweek_score"),
+            ("Bob", "personal_highest_gameweek_score"),
+            ("Bob", "personal_lowest_gameweek_score"),
+        ]
+        best = records[0]
+        assert best["kind"] == "personal_record"
+        assert (best["points"], best["previous_points"]) == (70, 49)
+        assert best["holders"] == [{"manager_key": 1, "manager_name": "Alice", "gameweek": 10}]
+        assert best["previous_holders"] == [{"manager_key": 1, "manager_name": "Alice", "gameweek": 9}]
+        assert best["surfaces"] == ["prompt"]
+        assert best["window"] == {"start_gameweek": 1, "end_gameweek": 10}
+        assert [r["surfaces"] for r in records[1:]] == [[], [], []]
+        assert records[3]["previous_points"] is None
+
     def test_a_streak_entry_serializes_its_inapplicable_gameweeks_apart_from_held_ones(self):
         """Issue #358: a JSON consumer reading `held_count` as missing data
         must not be handed a gameweek the record holds completely -- the

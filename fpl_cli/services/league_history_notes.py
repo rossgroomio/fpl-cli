@@ -9,7 +9,8 @@ never a second source of truth:
 - `build_notes_pack`: atomic, provenance-stamped factoids for one gameweek
   (R14) -- one per manager per streak condition with an open run, one per
   manager per condition with a season occurrence count (issue #164), the
-  league's highest and lowest gameweek score this season (issue #494), plus
+  league's highest and lowest gameweek score this season (issue #494) and
+  each manager's own (issue #496), plus
   the season-phase marker and a coverage/negative-context statement, all
   bundled into one `NotesPack`. This is the object a later unit (U12)
   renders into its own anchored prompt section; the prompt text and the
@@ -83,6 +84,19 @@ logger = logging.getLogger(__name__)
 # gameweeks of rows get read outside the finale. One named constant means a
 # future change to either cannot silently drift out of step with the other.
 TRAILING_WINDOW_GAMEWEEKS: int = 6
+
+# How many of their own recorded gameweeks a manager needs behind them before
+# a week that sets or equals their season best or worst reaches the editorial
+# (issue #496). With every week as likely as any other to be their best, the
+# chance this one is runs 1 in the number of weeks they have played: a third
+# of the league sets a best at GW3, a twentieth at GW20, and stating it every
+# week from the start would be wallpaper. Ten rather than eight after a real
+# season's ledger: at GW8 about half of each league set or equalled their own
+# best or worst. Counted per manager, so a mid-season joiner waits for their
+# own span. It sets when the line starts, not how often it fires once live:
+# about two managers in N a week at their Nth gameweek, best and worst
+# together.
+PERSONAL_RECORD_MIN_GAMEWEEKS: int = 10
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +199,7 @@ class NoteKind(str, Enum):
     STREAK = "streak"
     SEASON_COUNT = "season_count"
     SEASON_RECORD = "season_record"
+    PERSONAL_RECORD = "personal_record"
     SEASON_PHASE = "season_phase"
     COVERAGE = "coverage"
 
@@ -284,12 +299,20 @@ class NotesPackEntry:
     # applied to the count's whole window. None for every other kind.
     occurrences: int | None = None
     prompt_text: str | None = None
-    # Season-record entries only (issue #494): the record score, and every
-    # gameweek score that reached it. None and empty for every other kind.
-    # For these entries `held_count` counts the gameweeks in the window with
-    # at least one score the ledger does not hold.
+    # Season-record and personal-record entries only (issues #494, #496): the
+    # record score, and every gameweek score that reached it -- for a
+    # personal record, every gameweek the one manager scored it. None and
+    # empty for every other kind. For these entries `held_count` counts the
+    # gameweeks in the window with at least one score the ledger does not
+    # hold, which for a personal record is the manager's own.
     points: int | None = None
     holders: tuple[RecordHolder, ...] = ()
+    # Personal-record entries only (issue #496), and only where this gameweek
+    # set or equalled the record: the record before this gameweek and every
+    # gameweek that reached it -- the figure equalled (`previous_points ==
+    # points`) or the one beaten. None and empty otherwise.
+    previous_points: int | None = None
+    previous_holders: tuple[RecordHolder, ...] = ()
 
     def text_for(self, surface: NoteSurface) -> str:
         """The line this entry renders as on `surface`."""
@@ -315,7 +338,11 @@ class NotesPack:
     `_season_count_entries`). `season_record_entries` holds the league's
     highest and lowest gameweek score this season (issue #494), and is
     empty on the league's first gameweek, where both are just that
-    gameweek's. `season_phase_entry` and `coverage_entries` are always
+    gameweek's. `personal_record_entries` holds each manager's own highest
+    and lowest (issue #496), surfaced only for the managers whose week set
+    or equalled one with enough of their season behind them, and for every
+    manager at the two milestones (see `_personal_record_entries`).
+    `season_phase_entry` and `coverage_entries` are always
     populated -- never absent, never merely implied by an empty `entries`
     list -- as their own dedicated fields: a pack with no open streaks
     still has something to say about where the season is and what history
@@ -333,6 +360,7 @@ class NotesPack:
     entries: list[NotesPackEntry] = field(default_factory=list)
     season_count_entries: list[NotesPackEntry] = field(default_factory=list)
     season_record_entries: list[NotesPackEntry] = field(default_factory=list)
+    personal_record_entries: list[NotesPackEntry] = field(default_factory=list)
     coverage_entries: list[NotesPackEntry] = field(default_factory=list)
 
     @property
@@ -345,12 +373,13 @@ class NotesPack:
     @property
     def all_entries(self) -> list[NotesPackEntry]:
         """Every entry the pack holds -- streaks, then season counts, then
-        season records, then the season-phase marker, then coverage
-        statements -- flattened into one list."""
+        season records, then personal records, then the season-phase marker,
+        then coverage statements -- flattened into one list."""
         return [
             *self.entries,
             *self.season_count_entries,
             *self.season_record_entries,
+            *self.personal_record_entries,
             self.season_phase_entry,
             *self.coverage_entries,
         ]
@@ -858,12 +887,43 @@ def _recorded_score(row: LeagueHistoryRow, *, use_net_points: bool) -> int | Non
     return row.gross_points - row.transfer_cost
 
 
-def _season_record_entries(
-    *,
+def _season_sweep(
     store: LeagueHistoryStore,
     gameweek: int,
     league_start_gameweek: int,
     captured_gameweeks: list[int],
+) -> dict[int, dict[int, LeagueHistoryRow]]:
+    """Every gameweek from the league's start through `gameweek`, in order,
+    as the store resolves it: empty where nothing was captured or the file
+    could not be read.
+
+    The season records and the personal records both read the whole season
+    -- a best can sit anywhere in it -- so they share this one sweep rather
+    than the trailing window the streaks read. The store memoizes each read,
+    so the gameweeks this and the season fines tally both touch are parsed
+    once per recap.
+    """
+    captured = set(captured_gameweeks)
+    swept: dict[int, dict[int, LeagueHistoryRow]] = {}
+    for gw in range(league_start_gameweek, gameweek + 1):
+        if gw not in captured:
+            swept[gw] = {}
+            continue
+        try:
+            swept[gw] = store.resolved_gameweek(gw)
+        except LeagueHistoryError as exc:
+            store.log_unreadable(
+                gw, exc, context="left out of the season's highest and lowest gameweek scores",
+            )
+            swept[gw] = {}
+    return swept
+
+
+def _season_record_entries(
+    *,
+    swept: dict[int, dict[int, LeagueHistoryRow]],
+    gameweek: int,
+    league_start_gameweek: int,
     use_net_points: bool,
 ) -> list[NotesPackEntry]:
     """The league's highest and lowest gameweek score this season (issue #494).
@@ -884,11 +944,10 @@ def _season_record_entries(
     it names was scored, and the qualifier says one higher (or lower) may be
     missing. The tier is the weakest among the rows that scored.
 
-    Swept over every gameweek from the league's start, as the season fines
-    tally is, rather than read off the counters projection: the store
-    memoizes each read, so the gameweeks this and the fines tally both
-    touch are parsed once per recap. A manager is named as the sweep last
-    saw them, so a rename reads as the name they use now.
+    Read off `_season_sweep`, every gameweek from the league's start, as
+    the season fines tally is, rather than off the counters projection. A
+    manager is named as the sweep last saw them, so a rename reads as the
+    name they use now.
 
     Nothing on the league's first gameweek: both records would be that
     gameweek's own extremes, which the GW Standings section already states.
@@ -898,19 +957,6 @@ def _season_record_entries(
     if gameweek <= league_start_gameweek:
         return []
 
-    captured = set(captured_gameweeks)
-    swept: dict[int, dict[int, LeagueHistoryRow]] = {}
-    for gw in range(league_start_gameweek, gameweek + 1):
-        if gw not in captured:
-            swept[gw] = {}
-            continue
-        try:
-            swept[gw] = store.resolved_gameweek(gw)
-        except LeagueHistoryError as exc:
-            store.log_unreadable(
-                gw, exc, context="left out of the season's highest and lowest gameweek scores",
-            )
-            swept[gw] = {}
     # Every manager in this gameweek's league owes a score to every gameweek
     # of the span, so one with no row there is a missing score, not an
     # absent manager (a classic league scores its members from its own
@@ -963,6 +1009,154 @@ def _season_record_entries(
             points=record,
             holders=holders,
         ))
+    return entries
+
+
+# ---------------------------------------------------------------------------
+# Personal-record entries (issue #496)
+# ---------------------------------------------------------------------------
+
+
+def _personal_record_text(
+    manager_name: str,
+    *,
+    highest: bool,
+    points: int,
+    holders: tuple[RecordHolder, ...],
+    previous_points: int | None,
+    previous_holders: tuple[RecordHolder, ...],
+    window: GameweekWindow,
+    unrecorded: list[int],
+) -> str:
+    """One manager's own record as a sentence the editorial can quote.
+
+    A week that set or equalled the record leads with this gameweek's score
+    and sets it beside the record before it, so "their best week of the
+    season" comes with the figure it beat ("above their previous highest of
+    61 in GW9"), and a score level with an earlier one says it equalled it
+    rather than beating it. Any other week states the record and its
+    gameweeks, which is what the `--format json` entries and the two
+    milestone recaps carry for everyone. The span is the manager's own,
+    and any of their scores the ledger does not hold closes the bracket the
+    way the season record's qualifier does: the record can only be as high
+    (or as low) as the scores recorded.
+    """
+    which = "highest" if highest else "lowest"
+    bracket = f"GW{window.start_gameweek}-GW{window.end_gameweek}"
+    if unrecorded:
+        noun = "score was" if len(unrecorded) == 1 else "scores were"
+        bracket += f"; their {noun} not recorded in {format_gameweek_list(unrecorded)}"
+    unit = "point" if points == 1 else "points"
+    if previous_points is None:
+        weeks = join_and([f"GW{holder.gameweek}" for holder in holders])
+        scored = f"scored {_times(len(holders))}, " if len(holders) > 1 else ""
+        return (
+            f"{manager_name}'s {which} gameweek score this season is {points} {unit}, "
+            f"{scored}in {weeks} ({bracket})."
+        )
+    earlier = join_and([f"GW{holder.gameweek}" for holder in previous_holders])
+    if previous_points == points:
+        return (
+            f"{manager_name} scored {points} {unit} this gameweek, equalling their {which} gameweek "
+            f"score this season, also scored in {earlier} ({bracket})."
+        )
+    return (
+        f"{manager_name} scored {points} {unit} this gameweek, their {which} gameweek score this "
+        f"season, {'above' if highest else 'below'} their previous {which} of {previous_points} "
+        f"in {earlier} ({bracket})."
+    )
+
+
+def _personal_record_entries(
+    *,
+    swept: dict[int, dict[int, LeagueHistoryRow]],
+    gameweek: int,
+    use_net_points: bool,
+    milestone: bool,
+) -> list[NotesPackEntry]:
+    """Each manager's own highest and lowest gameweek score this season
+    (issue #496): "their best week of the season", "a new season low".
+
+    The season records name the league's best and worst week, never where a
+    week sits in one manager's season, so that claim had nothing to quote.
+    One entry per manager for each, for every manager in this gameweek's
+    league with at least two recorded scores (one score is no record), so
+    `--format json` carries the whole picture. Only some reach the prompt:
+    on an ordinary week a manager whose score this gameweek set or equalled
+    their record, with at least `PERSONAL_RECORD_MIN_GAMEWEEKS` recorded
+    scores behind it; at the two milestones every one, as the season counts
+    do, for the retrospective the phase framing invites there.
+
+    Scored as the season records are (`_recorded_score`, gross or net under
+    `use_net_points`), off the same sweep. The span is the manager's own:
+    from their first row since the league's start, as the joiner coverage
+    line counts it, so a mid-season joiner's record is over the weeks they
+    were recorded and their gate counts only those. Inside it, a gameweek
+    that holds no proven score of theirs -- an unknown row, no row, a
+    gameweek nobody captured or could read -- qualifies the record and is
+    not counted towards the gate. The tier is the weakest among the rows
+    that scored.
+    """
+    entries: list[NotesPackEntry] = []
+    for manager_key, manager_row in swept.get(gameweek, {}).items():
+        start = min(gw for gw, resolved in swept.items() if manager_key in resolved)
+        scores: dict[int, int] = {}
+        tiers: list[FidelityTier] = []
+        for gw in range(start, gameweek + 1):
+            row = swept[gw].get(manager_key)
+            if row is None:
+                continue
+            points = _recorded_score(row, use_net_points=use_net_points)
+            if points is not None:
+                scores[gw] = points
+                tiers.append(row.tier)
+        if len(scores) < 2:
+            continue
+        unrecorded = [gw for gw in range(start, gameweek + 1) if gw not in scores]
+        earlier = {gw: points for gw, points in scores.items() if gw < gameweek}
+        window = GameweekWindow(start_gameweek=start, end_gameweek=gameweek)
+        name = manager_row.manager_name
+        for highest in (True, False):
+            pick = max if highest else min
+            record = pick(scores.values())
+            holders = tuple(
+                RecordHolder(manager_key=manager_key, manager_name=name, gameweek=gw)
+                for gw in sorted(scores) if scores[gw] == record
+            )
+            previous_points: int | None = None
+            previous_holders: tuple[RecordHolder, ...] = ()
+            if scores.get(gameweek) == record:
+                previous_points = pick(earlier.values())
+                previous_holders = tuple(
+                    RecordHolder(manager_key=manager_key, manager_name=name, gameweek=gw)
+                    for gw in sorted(earlier) if earlier[gw] == previous_points
+                )
+            fired = previous_points is not None and len(scores) >= PERSONAL_RECORD_MIN_GAMEWEEKS
+            entries.append(NotesPackEntry(
+                kind=NoteKind.PERSONAL_RECORD,
+                text=_personal_record_text(
+                    name, highest=highest, points=record, holders=holders,
+                    previous_points=previous_points, previous_holders=previous_holders,
+                    window=window, unrecorded=unrecorded,
+                ),
+                surfaces=_PROMPT_ONLY if milestone or fired else frozenset(),
+                tier=weakest_tier(tiers),
+                window=window,
+                manager_key=manager_key,
+                manager_name=name,
+                condition_key="personal_highest_gameweek_score" if highest else "personal_lowest_gameweek_score",
+                held_count=len(unrecorded),
+                points=record,
+                holders=holders,
+                previous_points=previous_points,
+                previous_holders=previous_holders,
+            ))
+
+    # Each manager's two lines together, the highest first, so a milestone's
+    # full set reads manager by manager.
+    entries.sort(key=lambda entry: (
+        entry.manager_name or "", entry.manager_key or 0, entry.condition_key != "personal_highest_gameweek_score",
+    ))
     return entries
 
 
@@ -1270,13 +1464,14 @@ def build_notes_pack(
     a streak's "not recorded" count is what remains of its window once the
     run and its inapplicable gameweeks are taken out (issue #358).
 
-    The season records are the one exception to the trailing window: a
-    season's highest score can sit anywhere in it, so they sweep every
-    gameweek from the league's start (see `_season_record_entries`), which
+    The season and personal records are the one exception to the trailing
+    window: a season's highest score can sit anywhere in it, so they share a
+    sweep of every gameweek from the league's start (`_season_sweep`), which
     the season fines tally does each recap anyway. `use_net_points` scores
     them the way the recap's standings score the week.
     """
     phase = derive_season_phase(gameweek, total_gameweeks, chip_split_gw)
+    milestone = is_season_milestone(gameweek, total_gameweeks, chip_split_gw)
     captured_gameweeks = store.captured_gameweeks()
 
     if phase is SeasonPhase.FINALE:
@@ -1297,6 +1492,9 @@ def build_notes_pack(
             rows_by_gameweek[gw] = {}
 
     cohort = rows_by_gameweek.get(gameweek, {})
+    # Read after the trailing window, as the season records always were, so
+    # the store's one full warning for an unreadable gameweek keeps its reader.
+    season = _season_sweep(store, gameweek, league_start_gameweek, captured_gameweeks)
 
     return NotesPack(
         season=store.season,
@@ -1311,15 +1509,18 @@ def build_notes_pack(
         ),
         season_count_entries=_season_count_entries(
             gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
-            milestone=is_season_milestone(gameweek, total_gameweeks, chip_split_gw),
+            milestone=milestone,
             # For the count policies' first-in-second-half and
             # second-half-only rules: from GW20 of 38, so the GW19 milestone
             # that closes the first half is not in it.
             second_half=gameweek >= second_half_start(chip_split_gw),
         ),
         season_record_entries=_season_record_entries(
-            store=store, gameweek=gameweek, league_start_gameweek=league_start_gameweek,
-            captured_gameweeks=captured_gameweeks, use_net_points=use_net_points,
+            swept=season, gameweek=gameweek, league_start_gameweek=league_start_gameweek,
+            use_net_points=use_net_points,
+        ),
+        personal_record_entries=_personal_record_entries(
+            swept=season, gameweek=gameweek, use_net_points=use_net_points, milestone=milestone,
         ),
         coverage_entries=_coverage_entries(
             store=store, gameweek=gameweek, league_start_gameweek=league_start_gameweek,

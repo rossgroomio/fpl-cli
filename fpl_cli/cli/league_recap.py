@@ -1178,6 +1178,11 @@ def _serialize_notes_pack_entry(entry: NotesPackEntry) -> dict[str, Any]:
             {"manager_key": h.manager_key, "manager_name": h.manager_name, "gameweek": h.gameweek}
             for h in entry.holders
         ],
+        "previous_points": entry.previous_points,
+        "previous_holders": [
+            {"manager_key": h.manager_key, "manager_name": h.manager_name, "gameweek": h.gameweek}
+            for h in entry.previous_holders
+        ],
     }
 
 
@@ -1201,6 +1206,11 @@ def _serialize_notes_pack(pack: NotesPack) -> dict[str, Any]:
         ],
         "season_record_entries": [
             _serialize_notes_pack_entry(entry) for entry in pack.season_record_entries
+        ],
+        # Every manager's own highest and lowest, not just the ones this
+        # gameweek set and the editorial was shown (issue #496).
+        "personal_record_entries": [
+            _serialize_notes_pack_entry(entry) for entry in pack.personal_record_entries
         ],
         "coverage_entries": [_serialize_notes_pack_entry(entry) for entry in pack.coverage_entries],
         "entry_count": pack.entry_count,
