@@ -1277,8 +1277,8 @@ phase also takes GW9's two November fixtures, but for ownership the phase is clo
 never shows it: there a popular winner is owned by half the league.
 
 Winners come out about two weeks after the month ends, so the recap that closes a month usually
-cannot know one. Instead every draft recap checks each completed month of the season, and the
-first recap of the latest finished gameweek after a month's award is out announces it: in the
+cannot know one. Instead the recap of the latest finished gameweek checks each completed month of
+the season, and the first one after a month's award is out announces it: in the
 Awards ("**Player of the Month:** Groß for September (GW3-5), owned by Alice at the month's
 end"), and in the Fines section as "**Player of the Month voucher (September):** Alice may hand
 out one fine to anyone they choose (Pint on video)". Where he changed hands during the month, the
@@ -1287,29 +1287,38 @@ recap skipped while the award came out does not lose it, since the next one anno
 each month is announced once: the announcing recap writes a record of the award beside the
 ledger, and re-running that gameweek's recap announces it again while no other recap does. A
 replay of an older gameweek never announces a month, so it cannot claim one for a recap the
-league read weeks ago. There is no Player of the Month for May, when the season's awards are
-made instead.
+league read weeks ago, and never asks the feed either, since it could announce nothing it said.
+There is no Player of the Month for May, when the season's awards are made instead, so May is
+never waited on.
 
 Who held him is read from the ledger on every run, never stored, so a re-captured gameweek
 corrects the owner, the voucher and the line. If nobody held him for the month's last gameweek
 there is no voucher, and the line says so ("a free agent at the month's end, so there is no
 voucher"), even if someone held him earlier. A gameweek only says nobody held him when every
-manager in it has a recorded squad and every player in those squads is identified; otherwise a
-missing or unknown row, or a pick the draft-to-main match never placed, could be him. So when the
-month's last gameweek cannot say, the voucher is withheld with the reason ("the voucher is
-withheld, as no squad is recorded for Cy in GW5"), and a gap earlier in the month only qualifies
-the line ("(GW4 not recorded)"). Once he is found in a squad, a gap in someone else's row leaves
-the voucher standing, since nobody else can have held him that gameweek.
+manager in it has a recorded squad, every player in those squads is identified and the recap
+read the whole league; otherwise a missing or unknown row, a pick the draft-to-main match never
+placed, or a member the standings never returned could be him. So when the month's last
+gameweek cannot say, the voucher is withheld with the reason ("the voucher is withheld, as no
+squad is recorded for Cy in GW5"), and a gap earlier in the month only qualifies the line ("(GW4
+not recorded)"). A withheld month is not lost: once the gap is filled (an unknown row the next
+recap's repair refetches, or a gameweek `--backfill-detail` captures), the first recap of the
+latest gameweek that can say who held him announces the month again, settled, and only that
+once. Once he is found in a squad, a gap in someone else's row leaves the voucher standing, since
+nobody else can have held him that gameweek.
 
 The feed is undocumented and has moved before, so a failed fetch or a reshaped response shows as
-"**Player of the Month:** not checked, as ..." with a `player_of_the_month_unchecked` warning,
-never as "no award": a month nobody could check is not an empty one. So does a winner whose code
-matches no player in FPL's bootstrap or the month's squads, which is what the feed's ids drifting
-off FPL's codes would look like, and nothing is announced for that month until a recap can check
-it. An environment that restricts outbound hosts (Claude Code on the web) has to allow
-`sdp-prem-prod.premier-league-prod.pulselive.com`. When the feed stays broken, or names the wrong
-man, set the winner yourself under the voucher's `overrides`, which win over the feed. `fpl doctor
---providers` probes the feed against the same keys the recap reads.
+"**Player of the Month:** not checked, as the Premier League's awards could not be read" with a
+`player_of_the_month_unchecked` warning, never as "no award": a month nobody could check is not
+an empty one. So does a winner whose code matches no player in FPL's bootstrap or the month's
+squads, which is what the feed's ids drifting off FPL's codes would look like, and nothing is
+announced for that month until a recap can check it. The Awards line is what the league reads,
+so the status, the host to allow, the shape that changed or the code is in the warning alone. A
+goal or save of the month the feed serves in a shape the recap cannot read is skipped, since
+neither is the award the voucher reads. An environment that restricts outbound hosts (Claude
+Code on the web) has to allow `sdp-prem-prod.premier-league-prod.pulselive.com`. When the feed
+stays broken, or names the wrong man, set the winner yourself under the voucher's `overrides`,
+which win over the feed. `fpl doctor --providers` probes the feed against the same keys the recap
+reads.
 
 The voucher is a grant, not a fine: nothing about it reaches the ledger's fines, so `fpl
 league-fines` never counts it against anyone, the manager who earned it included. Who received
@@ -1564,7 +1573,9 @@ report prints; emitted every week, with `months` empty before the first month en
 when the months or the ledger could not be read), `player_of_the_month` (draft only and only
 where the voucher is configured, `null` otherwise and when the months or the ledger could not be
 read: `unchecked`, the reasons a month that may have
-an award could not be checked, then `months`, every completed month whose winner is known, each
+an award could not be checked, as the Awards line gives them (the warnings carry the detail),
+then `months`, every completed month whose winner is known (on a replay of an older gameweek,
+which never asks the feed, only those already announced or overridden), each
 with `month` (`"2026-09"`), `name`, `first_gameweek`, `last_gameweek`, `player` as `{code, name}`
 (no `id`), `source` (`feed` or `override`), `owner` as `{manager_key, manager_name}` or `null`,
 `voucher`, `withheld_reason`, `holders` (one per gameweek: `gameweek`, `manager_key`,
@@ -1651,10 +1662,12 @@ A draft league playing the [Player of the Month voucher](#league-recap) also kee
 per announced month, at
 `<data dir>/league_history/<season>/draft-<league id>/awards/player-of-the-month-<YYYY>-<MM>.json`:
 the awards feed's entry as served (or, where the voucher's `overrides` named the winner, his
-code), when fpl-cli first saw it, and the gameweek whose recap announced it. It is written once,
-by that recap, and never rewritten, which is what announces each month once; and like the
-snapshots it outlives the feed, so a past month stays readable if the feed moves again. Under
-`--format json` a run lists what it wrote in `metadata.player_of_the_month.records_saved`. Who
+code), when fpl-cli first saw it, the gameweek whose recap announced it and whether that recap
+withheld the voucher. It is written by that recap, which is what announces each month once, and
+rewritten only to settle a withheld voucher, by the first recap that can say who held him; and
+like the snapshots it outlives the feed, so a past month stays readable if the feed moves
+again. Under `--format json` a run lists what it wrote in
+`metadata.player_of_the_month.records_saved`. Who
 owned the winner is not in it: that is read from the gameweek rows on every run. A file that
 cannot be read is left as it is (`player_of_the_month_record_conflict`) rather than written over.
 
@@ -2109,7 +2122,7 @@ Each finding is classified as **broken** (wrong answers now — fix it today), *
 - **Core-Insights dataset** — same for `players.csv` and `playerstats.csv` in each season it serves (last season and the one in progress; it is the sole source for both), plus the current season's per-gameweek files at the latest finished gameweek. `players.csv` must also parse into the player lookup every other file joins on, and the per-gameweek files are run through the parsers the scoring commands use rather than a header check: the columns can all be present over values nothing survives, so the probe asserts the parse yields records, and that the match join keeps most of the rows it reads, and names the signals a shortfall costs. A file missing, parsing to nothing or keeping under half its rows only for the newest gameweek is a publishing lag or a backfill in progress (stale); the same problem two gameweeks running is a layout or format change (broken). Opponent Elo is judged separately, because a blank one keeps its player-match records, which count unadjusted in the opponent-adjusted xG signals: the probe counts matches without Elo across the same 12-gameweek window scoring reads, notes a minority on the ok row, and reports stale once most of the window lacks it, saying whether only the newest gameweek does (a backfill) or earlier ones too (an upstream gap)
 - **Understat** — an HTTP status from Understat is the provider answering, not the network failing, and while it answers that way every scoring command falls back to FPL xGI for every player without a word: a refusal (401, 403) is broken, so is a gone endpoint (404, 410: `getLeagueData` is undocumented and has moved before, and only a code change brings the enrichment back), any other status (429, 5xx) is stale, and only a network failure is unchecked. Then: league data is non-empty, and every current club resolves to rows in Understat's own data (an unresolved club silently loses xG enrichment); early in the season an unresolved name is reported as stale, since Understat only lists a club once it has ingested a match for it. The club test is the enrichment's own gate (`understat_club_rows`), called on the same league payload the scoring commands scan, so the probe and the runtime cannot reach different verdicts about the same club — a second copy of the gate written beside the probe is exactly how they diverged in #229. Resolving a club says nothing about whether its players' names line up, so a second row reports how many players FPL says have played actually join by name, naming the ones that did not — three players lost their xG enrichment to an HTML-escaped apostrophe while this probe called all 20 clubs healthy (#263). A few percent always miss and stay green; a wholesale break reads as stale early in the season and broken once the pool has settled. Players at a club that failed to resolve are excluded, since that is the row above's finding and counting them here would restate one club gap as a squad's worth of name misses
 - **football-data.org** — configured, standings has 20 rows, and every served TLA maps onto a live FPL short name (a failed join here doesn't produce a missing rating — it silently re-rates the club as promoted)
-- **Premier League awards** — the feed the draft [Player of the Month voucher](#league-recap) reads. This season's and last season's responses are run through the recap's own parser, which refuses a monthly award missing any key it reads (`AWARD_REQUIRED_KEYS`) or carrying a month or player id it cannot read, and last season must list at least one Player of the Month (this season's list is empty until mid-September). A second row, `Player of the Month codes`, checks the join the voucher stands on: at least one of this season's winners (last season's, before the first award) must match an FPL player `code`, since an id scheme that moved would read every winner as owned by nobody rather than as an error. Unreachable is unchecked; the second row is unchecked when the FPL bootstrap could not be read
+- **Premier League awards** — the feed the draft [Player of the Month voucher](#league-recap) reads. This season's and last season's responses are run through the recap's own parser, which refuses a Player of the Month missing any key it reads (`AWARD_REQUIRED_KEYS`) or carrying a month or player id it cannot read (a goal or save of the month that cannot be read is skipped), and last season must list at least one Player of the Month (this season's list is empty until mid-September). A second row, `Player of the Month codes`, checks the join the voucher stands on: at least one of this season's winners (last season's, before the first award) must match an FPL player `code`, since an id scheme that moved would read every winner as owned by nobody rather than as an error. Unreachable is unchecked; the second row is unchecked when the FPL bootstrap could not be read
 
 The same classification applies, and transient unreachability is always **unchecked**, never broken (a provider that answers with an HTTP status has been reached, which is why Understat's refusal reads as broken). A scheduled CI job runs `fpl doctor --providers --format json` weekly and fails only on broken, so provider drift with no commit behind it still surfaces within days.
 
@@ -2290,7 +2303,10 @@ counts its forfeit among the ones it has to describe. `overrides` sets a month's
 as the month (`"2026-09"`) to the player's FPL `code` (`code` in `fpl player <name> --format
 json`), for when the awards feed breaks or names the wrong man; it wins over the feed. A typo in
 it reads as "not checked" rather than as a free agent, since a code that matches no FPL player is
-refused. A block of vouchers alone is valid and configures no fine rule.
+refused, and a month set twice ("2026-9" and "2026-09") is refused rather than one quietly
+winning. Unlike a rule's, a voucher's keys are checked, so a misspelt `overrides` is an error
+rather than an override that silently never applies. A block of vouchers alone is valid and
+configures no fine rule.
 
 ```yaml
 fines:

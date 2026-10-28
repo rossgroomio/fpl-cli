@@ -142,7 +142,11 @@ def league_recap_command(
         league_first_gameweek,
         month_award_entries,
     )
-    from fpl_cli.cli._league_recap_history import capture_draft_picks, capture_recap_history
+    from fpl_cli.cli._league_recap_history import (
+        capture_draft_picks,
+        capture_recap_history,
+        partial_league_reason,
+    )
     from fpl_cli.cli._league_recap_vouchers import (
         capture_player_of_the_month,
         player_of_the_month_line,
@@ -152,7 +156,6 @@ def league_recap_command(
         voucher_penalties,
     )
     from fpl_cli.cli.review import GameweekResolutionError, _review_resolve_gw
-    from fpl_cli.services.league_history import LeagueHistoryStore
 
     settings = get_settings(ctx)
     fmt = get_format(ctx)
@@ -430,9 +433,10 @@ def league_recap_command(
             if is_draft and waiver_deadline:
                 collected_data["waiver_deadline"] = waiver_deadline  # type: ignore[typeddict-unknown-key]
 
-            # Parsed once for the ruling, the ledger's coarse tier and the
-            # Player of the Month voucher; a malformed block has already been
-            # refused by `config_failure_boundary` on the way in.
+            # Parsed here for the ledger's coarse tier and the Player of the
+            # Month voucher; the ruling and the rule types below, like each
+            # replay, parse the block themselves. A malformed block has
+            # already been refused by `config_failure_boundary` on the way in.
             fines_config = parse_fines_config(settings)
 
             # Evaluate fines per manager (graceful skip when unconfigured)
@@ -683,9 +687,10 @@ def league_recap_command(
             # The Player of the Month voucher (#492), a draft house rule the
             # league opts into under `fines.draft_vouchers`. After the
             # capture, so the ledger it reads ownership from holds this
-            # gameweek; and only the latest finished gameweek's recap
-            # announces a month, so a replay never claims one. Its prose is
-            # suppressed in JSON mode, where its warnings ride the payload.
+            # gameweek, and on the capture's own store; and only the latest
+            # finished gameweek's recap announces a month, so a replay never
+            # claims one. Its prose is suppressed in JSON mode, where its
+            # warnings ride the payload.
             potm_voucher = (
                 fines_config.draft_voucher(PLAYER_OF_THE_MONTH_VOUCHER)
                 if is_draft and fines_config is not None else None
@@ -693,17 +698,18 @@ def league_recap_command(
             potm = None
             if (
                 potm_voucher is not None and fines_config is not None and months
-                and capture_result.store_readable and league_id is not None
+                and capture_result.store is not None
             ):
                 with error_console.capture() if output_format == "json" else nullcontext():
                     potm = await capture_player_of_the_month(
-                        LeagueHistoryStore(season, "draft", league_id),
+                        capture_result.store,
                         months, gw,
                         voucher=potm_voucher,
                         fetch_awards=_monthly_awards_source(season),
                         may_announce=is_max_finished,
                         league_start_gameweek=league_first_gameweek(collected_data.get("league_start_event")),
                         bootstrap_names={p.code: p.web_name for p in players if p.code},
+                        partial_league=partial_league_reason(collected_data),
                     )
                 if announced := potm.fold.announced_at(gw):
                     collected_data["player_of_the_month_lines"] = [

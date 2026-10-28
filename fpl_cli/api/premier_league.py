@@ -26,9 +26,11 @@ The endpoint is undocumented and has moved before (public libraries still
 call `footballapi.pulselive.com`, which the site no longer uses). So the keys
 the parser reads are declared here, as the dataset clients declare their
 columns (`contract.py`), and the `fpl doctor --providers` probe asserts
-against the same constant. A monthly entry it cannot read is drift, raised
-rather than skipped: a skipped award would read as a month with none, and a
-month nobody could check is not an empty one.
+against the same constant. A Player of the Month entry it cannot read is
+drift, raised rather than skipped: a skipped award would read as a month with
+none, and a month nobody could check is not an empty one. The goal and save
+of the month, which nothing reads, are skipped instead, so their drift never
+costs the Player of the Month.
 """
 
 from __future__ import annotations
@@ -58,6 +60,10 @@ PLAYER_OF_THE_MONTH = "POTM"
 # The monthly player awards, as the site's filters name them: the player, the
 # goal and the save of the month. Every other type is an end-of-season award.
 MONTHLY_PLAYER_AWARDS: frozenset[str] = frozenset({PLAYER_OF_THE_MONTH, "GOTM", "SOTM"})
+
+# The calendar month with no Player of the Month: the season's awards are
+# made in May instead, and carry its date.
+MONTH_WITHOUT_PLAYER_OF_THE_MONTH = 5
 
 _AWARD_MONTH_RE = re.compile(r"(\d{4})-(\d{1,2})")
 
@@ -96,8 +102,9 @@ def award_month_key(year: int, month: int) -> str:
     return f"{year:04d}-{month:02d}"
 
 
-def _award_month(value: object) -> tuple[int, int] | None:
-    """The (year, month) an entry's `date` names, or None if it names none."""
+def award_month(value: object) -> tuple[int, int] | None:
+    """The (year, month) a month written as the feed dates an award names
+    ("2026-9", or "2026-09"), or None if it names none."""
     match = _AWARD_MONTH_RE.fullmatch(value) if isinstance(value, str) else None
     if match is None:
         return None
@@ -114,7 +121,7 @@ def _award_code(value: object) -> int | None:
     return value if isinstance(value, int) and value > 0 else None
 
 
-def _award_name(value: object) -> str | None:
+def award_name(value: object) -> str | None:
     """`name.display`, else the first and last names, else None."""
     if not isinstance(value, Mapping):
         return None
@@ -126,42 +133,56 @@ def _award_name(value: object) -> str | None:
     return joined or None
 
 
+def _monthly_award(entry: Mapping[str, Any], award_type: str) -> MonthlyAward | str:
+    """One monthly entry as an award, or what stops it being read."""
+    missing = missing_columns(list(entry), AWARD_REQUIRED_KEYS)
+    if missing:
+        return f"is missing {', '.join(sorted(missing))}"
+    month = award_month(entry["date"])
+    if month is None:
+        return f"has a `date` naming no month: {entry['date']!r}"
+    code = _award_code(entry["id"])
+    if code is None:
+        return f"has an `id` that is no player id: {entry['id']!r}"
+    return MonthlyAward(
+        type=award_type, year=month[0], month=month[1], code=code,
+        name=award_name(entry.get("name")), entry=dict(entry),
+    )
+
+
 def parse_monthly_awards(payload: Any) -> list[MonthlyAward]:
     """Every monthly player award in one season's response, in the order served.
 
-    The end-of-season awards are left out. Every entry must say what it is,
-    and every monthly one which month and which player, or the whole response
-    is refused: there is no telling which month a skipped entry would have
-    filled.
+    The end-of-season awards are left out. A Player of the Month entry must
+    say which month and which player, or the whole response is refused:
+    there is no telling which month a skipped one would have filled. The goal
+    and save of the month are skipped where they cannot be read, and so is an
+    entry that does not say what it is, since neither can be a Player of the
+    Month; a list in which no entry says what it is has changed shape, and is
+    refused.
 
     Raises:
         AwardsFeedError: the response is not the shape described above.
     """
     if not isinstance(payload, Mapping) or not isinstance(payload.get(PLAYER_AWARDS_KEY), list):
         raise AwardsFeedError(f"the response carries no `{PLAYER_AWARDS_KEY}` list")
+    entries = payload[PLAYER_AWARDS_KEY]
+    typed = [
+        (index, entry) for index, entry in enumerate(entries)
+        if isinstance(entry, Mapping) and isinstance(entry.get("type"), str)
+    ]
+    if entries and not typed:
+        raise AwardsFeedError(f"no `{PLAYER_AWARDS_KEY}` entry carries an award `type`")
     awards: list[MonthlyAward] = []
-    for index, entry in enumerate(payload[PLAYER_AWARDS_KEY]):
-        where = f"`{PLAYER_AWARDS_KEY}` entry {index + 1}"
-        if not isinstance(entry, Mapping):
-            raise AwardsFeedError(f"{where} is not an object")
-        award_type = entry.get("type")
-        if not isinstance(award_type, str):
-            raise AwardsFeedError(f"{where} carries no award `type`")
+    for index, entry in typed:
+        award_type = entry["type"]
         if award_type not in MONTHLY_PLAYER_AWARDS:
             continue
-        missing = missing_columns(list(entry), AWARD_REQUIRED_KEYS)
-        if missing:
-            raise AwardsFeedError(f"{where} ({award_type}) is missing {', '.join(sorted(missing))}")
-        month = _award_month(entry["date"])
-        if month is None:
-            raise AwardsFeedError(f"{where} ({award_type}) has a `date` naming no month: {entry['date']!r}")
-        code = _award_code(entry["id"])
-        if code is None:
-            raise AwardsFeedError(f"{where} ({award_type}) has an `id` that is no player id: {entry['id']!r}")
-        awards.append(MonthlyAward(
-            type=award_type, year=month[0], month=month[1], code=code,
-            name=_award_name(entry.get("name")), entry=dict(entry),
-        ))
+        award = _monthly_award(entry, award_type)
+        if isinstance(award, MonthlyAward):
+            awards.append(award)
+        elif award_type == PLAYER_OF_THE_MONTH:
+            raise AwardsFeedError(f"`{PLAYER_AWARDS_KEY}` entry {index + 1} ({award_type}) {award}")
     return awards
 
 

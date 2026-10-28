@@ -100,13 +100,24 @@ async def _capture(
     gameweek: int = 6, *, feed: AsyncMock | None = None, may_announce: bool = True,
     voucher: VoucherRule = VOUCHER, months: list[SeasonMonth] | None = None,
     league_start_gameweek: int = 1, names: dict[int, str] | None = None,
+    partial_league: str | None = None, now: datetime = NOW,
 ) -> PlayerOfTheMonthCapture:
     return await capture_player_of_the_month(
         _store(), MONTHS if months is None else months, gameweek,
         voucher=voucher, fetch_awards=feed if feed is not None else _feed(_award()),
         may_announce=may_announce, league_start_gameweek=league_start_gameweek,
-        bootstrap_names=NAMES if names is None else names, now=NOW,
+        bootstrap_names=NAMES if names is None else names, partial_league=partial_league, now=now,
     )
+
+
+def _repair_cy(store: LeagueHistoryStore, gameweek: int) -> None:
+    """Cy's row for `gameweek` refetched, as the repair sweep does for an
+    unknown one, with Groß on his bench: any real capture supersedes an
+    unknown row."""
+    store.append_rows(gameweek, [make_history_row(
+        season=SEASON, fpl_format="draft", league_id=LEAGUE, gameweek=gameweek,
+        manager_key=CY[0], manager_name="Cy", gross_points=50, squad=_squad(111, GROSS),
+    )])
 
 
 def _september(capture: PlayerOfTheMonthCapture):
@@ -253,6 +264,27 @@ class TestOwner:
 
         assert potm.withheld_reason == "GW5 was never captured"
 
+    async def test_a_league_read_in_part_withholds_a_winner_found_in_no_squad_it_read(self):
+        """The members the standings never returned could hold him: the store
+        records no gameweek's read as partial, so no gameweek can say nobody."""
+        store = _store()
+        for gameweek in (3, 4, 5):
+            _record(store, gameweek, None)
+
+        potm = _september(await _capture(partial_league="the recap reads only 3 of the league's 4 members"))
+
+        assert potm.owner is None and not potm.unowned
+        assert potm.withheld_reason == "the recap reads only 3 of the league's 4 members"
+
+    async def test_a_league_read_in_part_still_finds_a_winner_in_a_squad_it_read(self):
+        store = _store()
+        for gameweek in (3, 4, 5):
+            _record(store, gameweek, ALICE)
+
+        potm = _september(await _capture(partial_league="the recap reads only 3 of the league's 4 members"))
+
+        assert potm.owner is not None and potm.owner.manager_name == "Alice"
+
     async def test_a_gap_earlier_in_the_month_only_qualifies_the_split_line(self):
         store = _store()
         _record(store, 3, BOB)
@@ -353,16 +385,29 @@ class TestAnnouncement:
 
         assert [potm.month_key for potm in capture.fold.announced_at(9)] == ["2026-09"]
 
-    async def test_a_replay_of_an_older_gameweek_never_claims_an_announcement(self):
+    async def test_a_replay_of_an_older_gameweek_never_claims_an_announcement_or_asks_the_feed(self):
+        """It could announce nothing the feed told it, so a feed that is down
+        costs it no warning and no "not checked" line either."""
         store = _store()
         for gameweek in (3, 4, 5):
             _record(store, gameweek, ALICE)
+        feed = AsyncMock(side_effect=httpx.ConnectError("blocked"))
 
-        replay = await _capture(6, may_announce=False)
+        replay = await _capture(6, may_announce=False, feed=feed)
 
-        assert replay.fold.announced_at(6) == []
-        assert _september(replay).announced_gameweek is None
+        feed.assert_not_awaited()
+        assert replay.fold.months == [] and replay.fold.unchecked == [] and replay.warnings == []
         assert read_award_record(SEASON, LEAGUE, "2026-09") == (None, None)
+
+    async def test_may_has_no_award_to_wait_for_so_it_never_sends_a_recap_to_the_feed(self):
+        """Every other month is recorded by GW38; May's award never comes."""
+        may = next(month for month in MONTHS if month.name == "May")
+        feed = AsyncMock(side_effect=httpx.ConnectError("blocked"))
+
+        capture = await _capture(may.last_gameweek, months=[may], feed=feed)
+
+        feed.assert_not_awaited()
+        assert capture.fold.months == [] and capture.fold.unchecked == [] and capture.warnings == []
 
     async def test_two_months_waiting_are_both_announced_once(self):
         store = _store()
@@ -388,6 +433,81 @@ class TestAnnouncement:
         assert august.month_key == "2026-08"
         assert august.withheld_reason == "GW2 was never captured"
         assert capture.fold.unchecked == [] and capture.warnings == []
+
+    async def test_a_withheld_voucher_is_announced_again_once_the_ledger_can_say(self):
+        """GW6 cannot say (Cy's GW5 row is unknown, nobody else holds Groß);
+        the repair sweep refetches the row before GW7, which announces the
+        voucher, and GW8 says nothing more."""
+        store = _store()
+        _record(store, 3, ALICE)
+        _record(store, 4, ALICE)
+        _record(store, 5, None, cy=True)
+        first = await _capture(6)
+        assert _september(first).withheld_reason == "no squad is recorded for Cy in GW5"
+        record, _ = read_award_record(SEASON, LEAGUE, "2026-09")
+        assert record is not None and (record.announced_gameweek, record.withheld) == (6, True)
+
+        _repair_cy(store, 5)
+        settled = await _capture(7, now=datetime(2026, 10, 21, 19, 0, tzinfo=timezone.utc))
+
+        assert [potm.month_key for potm in settled.fold.announced_at(7)] == ["2026-09"]
+        (voucher,) = recap_vouchers(settled, 7, VOUCHER)
+        assert voucher["manager_name"] == "Cy"
+        record, _ = read_award_record(SEASON, LEAGUE, "2026-09")
+        assert record is not None
+        # First seen when the GW6 recap saw him, not when GW7 settled him.
+        assert (record.announced_gameweek, record.withheld, record.first_seen_at) == (7, False, NOW)
+        assert settled.saved == [award_record_path(SEASON, LEAGUE, "2026-09")]
+
+        later = await _capture(8)
+        assert later.fold.announced_at(8) == [] and later.saved == []
+
+    async def test_a_withheld_voucher_the_ledger_still_cannot_settle_is_not_announced_again(self):
+        store = _store()
+        _record(store, 3, ALICE)
+        _record(store, 4, ALICE)
+        _record(store, 5, None, cy=True)
+        await _capture(6)
+        path = award_record_path(SEASON, LEAGUE, "2026-09")
+        written = path.read_text(encoding="utf-8")
+
+        later = await _capture(7)
+
+        assert later.fold.announced_at(7) == [] and later.saved == []
+        assert _september(later).announced_gameweek == 6
+        assert path.read_text(encoding="utf-8") == written
+
+    async def test_an_override_typo_never_settles_a_withheld_voucher(self):
+        store = _store()
+        _record(store, 3, ALICE)
+        _record(store, 4, ALICE)
+        _record(store, 5, None, cy=True)
+        await _capture(6)
+        _repair_cy(store, 5)
+        typo = VoucherRule(type="player-of-the-month", overrides={"2026-09": 6037})
+
+        capture = await _capture(7, voucher=typo)
+
+        assert capture.fold.announced_at(7) == [] and capture.saved == []
+        assert capture.fold.unchecked == ["the winner for September (GW3-5) matches no FPL player"]
+        record, _ = read_award_record(SEASON, LEAGUE, "2026-09")
+        assert record is not None and (record.code, record.withheld) == (GROSS, True)
+
+    async def test_a_replay_never_settles_a_withheld_voucher(self):
+        store = _store()
+        _record(store, 3, ALICE)
+        _record(store, 4, ALICE)
+        _record(store, 5, None, cy=True)
+        await _capture(6)
+        _repair_cy(store, 5)
+
+        replay = await _capture(6, may_announce=False)
+
+        # The GW6 recap re-run shows the month as the ledger now says it,
+        # and the record still waits for the latest gameweek's recap.
+        assert _september(replay).owner is not None and replay.saved == []
+        record, _ = read_award_record(SEASON, LEAGUE, "2026-09")
+        assert record is not None and record.withheld
 
     async def test_a_record_that_cannot_be_written_still_shows_this_run_and_says_so(self, monkeypatch):
         store = _store()
@@ -467,10 +587,11 @@ class TestWinner:
         assert [w["code"] for w in capture.warnings] == [RECAP_WARNING_POTM_RECORD_CONFLICT]
         assert "is not valid JSON" in capture.warnings[0]["message"]
 
-    def test_a_record_reads_back_what_was_written(self, tmp_path):
+    @pytest.mark.parametrize("withheld", [False, True])
+    def test_a_record_reads_back_what_was_written(self, withheld):
         record = AwardRecord(
             month_key="2026-09", code=GROSS, source="feed", announced_gameweek=8,
-            first_seen_at=NOW, entry={"id": "60307"},
+            first_seen_at=NOW, entry={"id": "60307"}, withheld=withheld,
         )
         path = award_record_path(SEASON, LEAGUE, "2026-09")
         path.parent.mkdir(parents=True)
@@ -482,9 +603,20 @@ class TestWinner:
         [], {"month": "2026-10", "code": GROSS, "source": "feed", "announced_gameweek": 8, "first_seen_at": NOW.isoformat()},
         {"month": "2026-09", "code": "60307", "source": "feed", "announced_gameweek": 8, "first_seen_at": NOW.isoformat()},
         {"month": "2026-09", "code": GROSS, "source": "guess", "announced_gameweek": 8, "first_seen_at": NOW.isoformat()},
+        {"month": "2026-09", "code": GROSS, "source": ["feed"], "announced_gameweek": 8, "first_seen_at": NOW.isoformat()},
+        {"month": "2026-09", "code": GROSS, "source": {"feed": 1}, "announced_gameweek": 8, "first_seen_at": NOW.isoformat()},
         {"month": "2026-09", "code": GROSS, "source": "feed", "announced_gameweek": 8, "first_seen_at": "soon"},
-    ], ids=["not-an-object", "another-month", "quoted-code", "unknown-source", "no-time"])
+        {
+            "month": "2026-09", "code": GROSS, "source": "feed", "announced_gameweek": 8,
+            "first_seen_at": NOW.isoformat(), "withheld": "yes",
+        },
+    ], ids=[
+        "not-an-object", "another-month", "quoted-code", "unknown-source", "listed-source", "mapped-source",
+        "no-time", "withheld-not-a-flag",
+    ])
     def test_a_record_this_cannot_read_says_so(self, stored):
+        """Damage of any shape is a problem with the file, never an exception:
+        an unhashable `source` once raised `TypeError` past the recap."""
         path = award_record_path(SEASON, LEAGUE, "2026-09")
         path.parent.mkdir(parents=True)
         path.write_text(json.dumps(stored), encoding="utf-8")
@@ -509,6 +641,8 @@ class TestNotChecked:
         (json.JSONDecodeError("Expecting value", "<html>", 0), "the response is not JSON"),
     ], ids=["blocked", "refused", "reshaped", "not-json"])
     async def test_an_unreadable_feed_is_not_checked_never_no_award(self, error, said):
+        """The league reads the Awards line, so the status, host or shape
+        behind it is the warning's alone."""
         store = _store()
         for gameweek in (3, 4, 5):
             _record(store, gameweek, ALICE)
@@ -516,10 +650,11 @@ class TestNotChecked:
         capture = await _capture(8, feed=AsyncMock(side_effect=error))
 
         assert capture.fold.months == [] and capture.fold.announced_at(8) == []
-        assert said in capture.fold.unchecked[0]
-        line = player_of_the_month_unchecked_line(capture)
-        assert line is not None and line.startswith("not checked, as the Premier League's awards could not be read (")
+        assert player_of_the_month_unchecked_line(capture) == (
+            "not checked, as the Premier League's awards could not be read"
+        )
         assert [w["code"] for w in capture.warnings] == [RECAP_WARNING_POTM_UNCHECKED]
+        assert said in capture.warnings[0]["message"]
         assert read_award_record(SEASON, LEAGUE, "2026-09") == (None, None)
 
     async def test_a_feed_down_with_every_month_recorded_is_never_asked(self):
@@ -554,9 +689,8 @@ class TestNotChecked:
         capture = await _capture(8, feed=_feed(_award(999_999)))
 
         assert capture.fold.months == []
-        assert capture.fold.unchecked == [
-            "the Premier League's player id 999999 for September (GW3-5) matches no FPL player",
-        ]
+        assert capture.fold.unchecked == ["the winner for September (GW3-5) matches no FPL player"]
+        assert "(the Premier League's player id 999999)" in capture.warnings[0]["message"]
         assert read_award_record(SEASON, LEAGUE, "2026-09") == (None, None)
 
     async def test_a_winner_who_has_left_fpl_but_was_held_is_known(self):
@@ -578,7 +712,8 @@ class TestNotChecked:
 
         capture = await _capture(8, voucher=typo)
 
-        assert capture.fold.unchecked == ["the override's player 6037 for September (GW3-5) matches no FPL player"]
+        assert capture.fold.unchecked == ["the winner for September (GW3-5) matches no FPL player"]
+        assert "(the override's player 6037)" in capture.warnings[0]["message"]
 
 
 # ---------------------------------------------------------------------------

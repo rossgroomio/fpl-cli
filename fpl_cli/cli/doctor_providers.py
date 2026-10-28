@@ -1435,7 +1435,8 @@ async def _premier_league_awards_checks(
     this_season, last_season = season_label(season_year), season_label(season_year - 1)
     async with PremierLeagueClient() as client:
         try:
-            payloads = [await client.get_awards(this_season), await client.get_awards(last_season)]
+            # Side by side, so an unreachable host costs one timeout, not two.
+            payloads = await asyncio.gather(client.get_awards(this_season), client.get_awards(last_season))
         except httpx.HTTPError as exc:
             return [CheckResult(name, CheckStatus.UNCHECKED, _unreachable(exc))]
         except json.JSONDecodeError:

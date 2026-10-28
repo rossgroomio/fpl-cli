@@ -1598,31 +1598,38 @@ def evaluate_league_fines(
     )
 
 
+def forfeit_penalty(fines_config: FinesConfig, forfeit: str) -> RecapFinePenalty:
+    """One forfeit as the editorial is told it, with the league's phrasings
+    for it (#503), for a fired rule and a Player of the Month voucher alike.
+
+    A phrasing that writes the forfeit out word for word is dropped: it is
+    no other way of saying it, and listing it would tell the editorial to
+    write the very words the repeat check counts.
+    """
+    from fpl_cli.prompts.league_recap_checks import restates_forfeit
+
+    return RecapFinePenalty(
+        penalty=forfeit,
+        phrasings=[
+            phrasing for phrasing in fines_config.phrasings_for(forfeit)
+            if not restates_forfeit(phrasing, forfeit)
+        ],
+    )
+
+
 def _fired_forfeits(
     fines_config: FinesConfig, format_name: str, fired: Sequence[FineRule],
 ) -> list[RecapFinePenalty]:
     """Each forfeit the fired rules carry, in config order, with the
-    league's phrasings for it (#503).
-
-    A rule that named no forfeit (left unset, or blank) carries none to
-    vary. A phrasing that writes the forfeit out word for word is dropped:
-    it is no other way of saying it, and listing it would tell the editorial
-    to write the very words the repeat check counts.
+    league's phrasings for it (`forfeit_penalty`). A rule that named no
+    forfeit (left unset, or blank) carries none to vary.
     """
-    from fpl_cli.prompts.league_recap_checks import restates_forfeit
-
     penalties: dict[str, RecapFinePenalty] = {}
     for rule in rules_for_format(fines_config, format_name):
         forfeit = rule.forfeit
         if rule not in fired or forfeit is None or forfeit in penalties:
             continue
-        penalties[forfeit] = RecapFinePenalty(
-            penalty=forfeit,
-            phrasings=[
-                phrasing for phrasing in fines_config.phrasings_for(forfeit)
-                if not restates_forfeit(phrasing, forfeit)
-            ],
-        )
+        penalties[forfeit] = forfeit_penalty(fines_config, forfeit)
     return list(penalties.values())
 
 

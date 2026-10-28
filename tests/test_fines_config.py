@@ -382,6 +382,24 @@ class TestDraftVouchers:
         pytest.param(["player-of-the-month"], "must be a mapping with a 'type' field", id="bare-string"),
         pytest.param([{"penalty": "Pint"}], "missing required 'type' field", id="no-type"),
         pytest.param([{"type": "last-place"}], "Unknown voucher type 'last-place'", id="a-rule-type"),
+        # Hashed by the type check, so a list there once raised `TypeError`
+        # past the config boundary (#170).
+        pytest.param(
+            [{"type": ["player-of-the-month"]}], "Unknown voucher type \\['player-of-the-month'\\]",
+            id="listed-type",
+        ),
+        # The override the "not checked" warnings point to, dropped by a typo.
+        pytest.param(
+            [{"type": "player-of-the-month", "override": {"2026-09": 60307}}],
+            "Unknown key\\(s\\) in voucher 'player-of-the-month': 'override'", id="override-typo",
+        ),
+        pytest.param(
+            [{"type": "player-of-the-month", "penalti": "Pint"}], "'penalti'. Valid keys: ", id="penalty-typo",
+        ),
+        pytest.param(
+            [{"type": "player-of-the-month", "overrides": {"2026-9": 60307, "2026-09": 475168}}],
+            "'2026-9' and '2026-09' are the same month", id="month-twice",
+        ),
         pytest.param([{"type": "player-of-the-month", "penalty": 5}], "penalty must be a string", id="penalty"),
         pytest.param(
             [{"type": "player-of-the-month"}, {"type": "player-of-the-month"}],

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from fpl_cli.api.premier_league import award_month, award_month_key
 from fpl_cli.cli._context import ConfigError
 
 VALID_RULE_TYPES = frozenset({"last-place", "red-card", "below-threshold"})
@@ -15,6 +15,10 @@ VALID_RULE_TYPES = frozenset({"last-place", "red-card", "below-threshold"})
 # Player of the Month at the month's end one fine to hand out (#492).
 PLAYER_OF_THE_MONTH_VOUCHER = "player-of-the-month"
 VALID_VOUCHER_TYPES = frozenset({PLAYER_OF_THE_MONTH_VOUCHER})
+# Everything a voucher carries. Checked, unlike a rule's keys, because the
+# key a typo drops is the override the "not checked" warnings send the user
+# to set, and the feed would go on reading "not checked" with no hint why.
+VALID_VOUCHER_KEYS = frozenset({"type", "penalty", "penalty_phrasings", "overrides"})
 
 # The whole of the block `fpl init` writes and the example in defaults.yaml
 # documents. Checked, unlike the keys inside a rule, because the two typos
@@ -30,10 +34,6 @@ VALID_FINES_KEYS = frozenset({
 # What a rule carries when its `penalty:` is left out. Nobody chose it, so it
 # is no league's forfeit and the editorial is never told to vary it (#503).
 DEFAULT_PENALTY = "Fine triggered"
-
-# A voucher override's month, as the awards feed keys one: "2026-09", or
-# "2026-9" as the feed itself writes it.
-_OVERRIDE_MONTH_RE = re.compile(r"(\d{4})-(\d{1,2})")
 
 
 def _named_forfeit(penalty: str) -> str | None:
@@ -259,8 +259,17 @@ def _parse_voucher(raw: Any) -> VoucherRule:
     if not voucher_type:
         msg = "Voucher in 'draft_vouchers' is missing required 'type' field"
         raise ConfigError(msg)
-    if voucher_type not in VALID_VOUCHER_TYPES:
-        msg = f"Unknown voucher type '{voucher_type}'. Valid types: {', '.join(sorted(VALID_VOUCHER_TYPES))}"
+    # The type is checked as a string first: `in` hashes it, and a list there
+    # (a YAML slip) would raise `TypeError` past the config boundary (#170).
+    if not isinstance(voucher_type, str) or voucher_type not in VALID_VOUCHER_TYPES:
+        msg = f"Unknown voucher type {voucher_type!r}. Valid types: {', '.join(sorted(VALID_VOUCHER_TYPES))}"
+        raise ConfigError(msg)
+    unknown = sorted((key for key in raw if key not in VALID_VOUCHER_KEYS), key=str)
+    if unknown:
+        msg = (
+            f"Unknown key(s) in voucher '{voucher_type}': {', '.join(repr(k) for k in unknown)}. "
+            f"Valid keys: {', '.join(sorted(VALID_VOUCHER_KEYS))}"
+        )
         raise ConfigError(msg)
 
     penalty = raw.get("penalty", DEFAULT_PENALTY)
@@ -293,9 +302,12 @@ def _voucher_overrides(raw: Any, voucher_type: str) -> dict[str, int]:
         msg = f'{where} must map a month ("2026-09") to a player code, got {type(raw).__name__}'
         raise ConfigError(msg)
     overrides: dict[str, int] = {}
+    # How each month was written, so two spellings of one month ("2026-9"
+    # and "2026-09") are refused rather than the later quietly winning.
+    written: dict[str, str] = {}
     for month, code in raw.items():
-        match = _OVERRIDE_MONTH_RE.fullmatch(month) if isinstance(month, str) else None
-        if match is None or not 1 <= int(match.group(2)) <= 12:
+        named = award_month(month)
+        if named is None:
             msg = f'{where}: {month!r} is not a month. Write it as "2026-09"'
             raise ConfigError(msg)
         if isinstance(code, bool) or not isinstance(code, int) or code <= 0:
@@ -304,7 +316,12 @@ def _voucher_overrides(raw: Any, voucher_type: str) -> dict[str, int]:
                 f"(`code` in `fpl player <name> --format json`), got {code!r}"
             )
             raise ConfigError(msg)
-        overrides[f"{match.group(1)}-{int(match.group(2)):02d}"] = code
+        key = award_month_key(*named)
+        if key in written:
+            msg = f"{where}: {written[key]!r} and {month!r} are the same month. Set it once"
+            raise ConfigError(msg)
+        written[key] = month
+        overrides[key] = code
     return overrides
 
 

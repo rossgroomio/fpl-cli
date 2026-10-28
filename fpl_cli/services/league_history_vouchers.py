@@ -13,14 +13,19 @@ The two facts behave differently, so one is stored and the other derived:
 
 - **The winner, and the recap that announced him, are stored.** The winner
   is external and the awards feed is the fragile part. The recap that
-  announces a month writes one file for it, once, holding the feed's entry
-  as served (or the override's code), when fpl-cli first saw it, and the
-  gameweek recapped. Re-running that gameweek's recap announces it again and
-  no other recap does, so a late award or a skipped recap still produces the
-  voucher, once, and a past month stays readable if the feed moves again. It
-  lives beside the ledger, not in the counters' disposable cache, because it
-  cannot be rebuilt: the feed may stop serving it, and which recap announced
-  it is a fact about a run, not about the gameweeks.
+  announces a month writes one file for it, holding the feed's entry as
+  served (or the override's code), when fpl-cli first saw it, the gameweek
+  recapped, and whether that recap withheld the voucher. Re-running that
+  gameweek's recap announces it again and no other recap does, so a late
+  award or a skipped recap still produces the voucher, once, and a past
+  month stays readable if the feed moves again. The one rewrite is a
+  withheld month's: the first recap of the latest gameweek that can say who
+  held him announces it again, settled, and records that, so a gap a later
+  run fills (an unknown row the repair sweep refetches, a gameweek
+  backfilled) never costs the voucher. It lives beside the ledger, not in
+  the counters' disposable cache, because it cannot be rebuilt: the feed may
+  stop serving it, and which recap announced it is a fact about a run, not
+  about the gameweeks.
 - **Who owned him is derived.** Every run reads it out of the ledger's squads
   for the month's gameweeks, joined on `code`, as the monthly honours are
   summed (`league_history_months.py`): a re-captured gameweek corrects the
@@ -40,9 +45,10 @@ Three rules this module exists to enforce:
   for ownership the phase is close enough and keeps one definition of a
   month across the recap.
 - **Unknown is not nobody.** A gameweek says nobody held him only when every
-  manager in it has a recorded squad and every player in those squads is
-  known by code: a missing or unknown row, or a player the draft-to-main
-  match never placed, could be him. So the voucher is withheld, with the
+  manager in it has a recorded squad, every player in those squads is known
+  by code and the recap read the whole league: a missing or unknown row, a
+  player the draft-to-main match never placed, or a member the standings
+  never returned could be him. So the voucher is withheld, with the
   reason, when the month's last gameweek cannot say, and a gap earlier in the
   month only qualifies the line saying who held him when ("GW7 not
   recorded"). Finding him settles it, though: nobody else can have held him
@@ -61,12 +67,12 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fpl_cli.api.premier_league import award_month_key
-from fpl_cli.constants import DETAIL_CAP
 from fpl_cli.models.league_history import CaptureStatus
 from fpl_cli.services.league_history import LeagueHistoryError, LeagueHistoryStore, partition_dir
+from fpl_cli.services.league_history_months import capped_managers
 from fpl_cli.utils.files import atomic_write_text
 from fpl_cli.utils.text import join_and
 
@@ -136,6 +142,10 @@ class AwardRecord:
     first_seen_at: datetime
     # The feed's entry as served; None when the override named him.
     entry: Mapping[str, Any] | None = None
+    # Whether that recap withheld the voucher, the month's last gameweek
+    # unable to say who held him. Settled, and the record rewritten, by the
+    # first recap of the latest gameweek that can.
+    withheld: bool = False
 
     def to_json(self) -> str:
         return json.dumps({
@@ -145,6 +155,7 @@ class AwardRecord:
             "announced_gameweek": self.announced_gameweek,
             "first_seen_at": self.first_seen_at.isoformat(),
             "entry": dict(self.entry) if self.entry is not None else None,
+            "withheld": self.withheld,
         }, ensure_ascii=False)
 
 
@@ -177,27 +188,31 @@ def read_award_record(season: str, league_id: int, month_key: str) -> tuple[Awar
     gameweek = _positive_int(stored.get("announced_gameweek"))
     source = stored.get("source")
     entry = stored.get("entry")
+    withheld = stored.get("withheld", False)
     try:
         first_seen = datetime.fromisoformat(str(stored.get("first_seen_at")))
     except ValueError:
         first_seen = None
+    # `source` is checked as a string before `in` hashes it: a list or a
+    # mapping there would raise `TypeError` rather than read as damage.
     if (
         stored.get("month") != month_key or code is None or gameweek is None
-        or source not in AWARD_SOURCES or first_seen is None
-        or not (entry is None or isinstance(entry, dict))
+        or not isinstance(source, str) or source not in AWARD_SOURCES or first_seen is None
+        or not (entry is None or isinstance(entry, dict)) or not isinstance(withheld, bool)
     ):
         return None, "is not a record this can read"
     return AwardRecord(
-        month_key=month_key, code=code, source=source, announced_gameweek=gameweek,
-        first_seen_at=first_seen, entry=entry,
+        month_key=month_key, code=code, source=cast(AwardSource, source), announced_gameweek=gameweek,
+        first_seen_at=first_seen, entry=entry, withheld=withheld,
     ), None
 
 
 def write_award_record(season: str, league_id: int, record: AwardRecord) -> str | None:
     """Write one month's record; the error when it could not be written.
 
-    Called only where `read_award_record` found no file, and never to change
-    one: a month is announced once.
+    Called only where `read_award_record` found no file, or found a withheld
+    one to settle, and never to change any other: a month is announced once,
+    and a withheld voucher once more.
     """
     try:
         atomic_write_text(award_record_path(season, league_id, record.month_key), record.to_json())
@@ -232,32 +247,32 @@ class GameweekHolder:
         return self.manager_key is not None or self.gap is None
 
 
-def _names(names: Sequence[str]) -> str:
-    """Up to `DETAIL_CAP` names, the rest counted."""
-    shown = list(names[:DETAIL_CAP])
-    if omitted := len(names) - len(shown):
-        shown.append(f"{omitted} other manager{'s' if omitted != 1 else ''}")
-    return join_and(shown)
-
-
 def _squad_gap(gameweek: int, unrecorded: Sequence[str], unidentified: Sequence[str]) -> str:
     """"no squad is recorded for Alice in GW5", "a player in Bob's GW5 squad
     could not be identified", or both."""
     parts: list[str] = []
     if unrecorded:
-        parts.append(f"no squad is recorded for {_names(unrecorded)} in GW{gameweek}")
+        parts.append(f"no squad is recorded for {capped_managers(unrecorded)} in GW{gameweek}")
     if unidentified:
         if len(unidentified) == 1:
             parts.append(f"a player in {unidentified[0]}'s GW{gameweek} squad could not be identified")
         else:
-            parts.append(f"players in the GW{gameweek} squads of {_names(unidentified)} could not be identified")
+            parts.append(
+                f"players in the GW{gameweek} squads of {capped_managers(unidentified)} could not be identified",
+            )
     return join_and(parts)
 
 
 def gameweek_holder(
-    store: LeagueHistoryStore, gameweek: int, code: int, *, captured: Collection[int],
+    store: LeagueHistoryStore, gameweek: int, code: int, *,
+    captured: Collection[int], partial_league: str | None = None,
 ) -> GameweekHolder:
     """Who held the player with `code` for one gameweek, as the ledger says.
+
+    `partial_league` is why the recap read only part of the league, as the
+    clause the monthly honours withhold with: the store records no gameweek's
+    read as partial, so where it is set no gameweek can say nobody held him,
+    though finding him still settles it.
 
     Never raises for a store problem: an unreadable gameweek cannot say, and
     says why (R4).
@@ -282,9 +297,10 @@ def gameweek_holder(
             return GameweekHolder(gameweek, manager_key=key, manager_name=row.manager_name, player_name=held.name)
         if any(player.code is None for player in row.squad):
             unidentified.append(row.manager_name)
+    gaps = [partial_league] if partial_league is not None else []
     if unrecorded or unidentified:
-        return GameweekHolder(gameweek, gap=_squad_gap(gameweek, unrecorded, unidentified))
-    return GameweekHolder(gameweek)
+        gaps.append(_squad_gap(gameweek, unrecorded, unidentified))
+    return GameweekHolder(gameweek, gap=join_and(gaps) if gaps else None)
 
 
 @dataclass(frozen=True)
@@ -355,10 +371,14 @@ class PlayerOfTheMonth:
 
 
 def month_holders(
-    store: LeagueHistoryStore, month: SeasonMonth, code: int, *, captured: Collection[int],
+    store: LeagueHistoryStore, month: SeasonMonth, code: int, *,
+    captured: Collection[int], partial_league: str | None = None,
 ) -> tuple[GameweekHolder, ...]:
     """Who held the player with `code` for each of the month's gameweeks."""
-    return tuple(gameweek_holder(store, gameweek, code, captured=captured) for gameweek in month.gameweeks)
+    return tuple(
+        gameweek_holder(store, gameweek, code, captured=captured, partial_league=partial_league)
+        for gameweek in month.gameweeks
+    )
 
 
 def known_to_fpl(code: int, holders: Sequence[GameweekHolder], known_codes: Collection[int]) -> bool:
@@ -390,7 +410,8 @@ class PlayerOfTheMonthFold:
     # In gameweek order.
     months: list[PlayerOfTheMonth] = field(default_factory=list)
     # Why a month that may have an award could not be checked, one clause
-    # each ("the Premier League's awards could not be read (...)").
+    # each, as the league reads it ("the Premier League's awards could not
+    # be read"): the host, status or shape behind it is the warnings'.
     unchecked: list[str] = field(default_factory=list)
 
     def announced_at(self, gameweek: int) -> list[PlayerOfTheMonth]:

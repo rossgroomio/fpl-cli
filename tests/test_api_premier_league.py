@@ -74,26 +74,48 @@ class TestDrift:
         with pytest.raises(AwardsFeedError, match="no `player_awards` list"):
             parse_monthly_awards(payload)
 
-    def test_an_entry_saying_nothing_of_what_it_is_is_refused(self):
-        with pytest.raises(AwardsFeedError, match="entry 2 carries no award `type`"):
-            parse_monthly_awards({"player_awards": [
-                {"type": "POTS", "date": "2026-5"}, {"date": "2026-9", "id": "60307"},
-            ]})
+    def test_an_entry_saying_nothing_of_what_it_is_is_skipped(self):
+        """It cannot be a Player of the Month, so it cannot hide one."""
+        (award,) = parse_monthly_awards({"player_awards": [
+            {"type": "POTS", "date": "2026-5"}, {"date": "2026-9", "id": "60307"}, "POTM",
+            {"type": "POTM", "date": "2026-10", "id": "60307"},
+        ]})
+
+        assert award.month_key == "2026-10"
+
+    def test_a_list_in_which_no_entry_says_what_it_is_is_refused(self):
+        """Not a season without awards: the shape has changed, and every
+        month would otherwise read as not yet awarded."""
+        assert parse_monthly_awards({"player_awards": []}) == []
+        with pytest.raises(AwardsFeedError, match="no `player_awards` entry carries an award `type`"):
+            parse_monthly_awards({"player_awards": [{"date": "2026-9", "id": "60307"}, "POTM"]})
 
     @pytest.mark.parametrize(("entry", "match"), [
         ({"type": "POTM", "date": "2026-9"}, "is missing id"),
         ({"type": "POTM", "id": "60307"}, "is missing date"),
         ({"type": "POTM", "date": "2026-09-01", "id": "60307"}, "naming no month"),
         ({"type": "POTM", "date": "2026-13", "id": "60307"}, "naming no month"),
-        ({"type": "SOTM", "date": "2026-9", "id": "p154561"}, "no player id"),
+        ({"type": "POTM", "date": "2026-9", "id": "p60307"}, "no player id"),
         ({"type": "POTM", "date": "2026-9", "id": True}, "no player id"),
-        ({"type": "GOTM", "date": "2026-9", "id": "0"}, "no player id"),
-        ("POTM", "is not an object"),
-    ], ids=["no-id", "no-date", "a-day", "month-13", "opta-prefix", "bool-id", "zero-id", "not-an-object"])
-    def test_a_monthly_entry_the_parser_cannot_read_is_refused_not_skipped(self, entry, match):
+        ({"type": "POTM", "date": "2026-9", "id": "0"}, "no player id"),
+    ], ids=["no-id", "no-date", "a-day", "month-13", "opta-prefix", "bool-id", "zero-id"])
+    def test_a_player_of_the_month_the_parser_cannot_read_is_refused_not_skipped(self, entry, match):
         """A skipped award would read as a month with none."""
-        with pytest.raises(AwardsFeedError, match=match):
+        with pytest.raises(AwardsFeedError, match=f"entry 1 \\(POTM\\) .*{match}"):
             parse_monthly_awards({"player_awards": [entry]})
+
+    def test_a_goal_or_save_of_the_month_the_parser_cannot_read_is_skipped(self):
+        """Neither can hide a Player of the Month, so their drift never costs him."""
+        awards = parse_monthly_awards({"player_awards": [
+            {"type": "SOTM", "date": "2026-9", "id": "p154561"},
+            {"type": "GOTM", "id": "1"},
+            {"type": "POTM", "date": "2026-9", "id": "60307"},
+            {"type": "GOTM", "date": "2026-9", "id": "60307"},
+        ]})
+
+        assert [(a.type, a.month_key, a.code) for a in awards] == [
+            (PLAYER_OF_THE_MONTH, "2026-09", 60307), ("GOTM", "2026-09", 60307),
+        ]
 
     def test_a_season_award_is_never_read_so_its_shape_is_its_own(self):
         assert parse_monthly_awards({"player_awards": [{"type": "GB", "date": "2026-5"}]}) == []

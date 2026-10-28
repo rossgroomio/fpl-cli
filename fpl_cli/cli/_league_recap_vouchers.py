@@ -7,9 +7,12 @@ the lines every surface prints, and the warnings beside them.
 
 A month is announced by the recap of the latest finished gameweek, never by a
 replay of an older one: a replay run after the award was published would
-otherwise claim it for a recap the league read weeks ago. Each recap checks
+otherwise claim it for a recap the league read weeks ago. That recap checks
 every completed month of the season that has an award and no announcement, so
-a late award or a skipped recap still produces the voucher, once.
+a late award or a skipped recap still produces the voucher, once, and it is
+the only one that asks the feed, since a replay could announce nothing from
+it. A month announced with its voucher withheld is announced again, settled,
+by the first such recap whose ledger can say who held him.
 """
 
 from __future__ import annotations
@@ -22,9 +25,17 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from fpl_cli.api.premier_league import BASE_URL, PLAYER_OF_THE_MONTH, AwardsFeedError, MonthlyAward
+from fpl_cli.api.premier_league import (
+    BASE_URL,
+    MONTH_WITHOUT_PLAYER_OF_THE_MONTH,
+    PLAYER_OF_THE_MONTH,
+    AwardsFeedError,
+    MonthlyAward,
+    award_month_key,
+    award_name,
+)
 from fpl_cli.cli._context import error_console
-from fpl_cli.cli._league_recap_data import RecapFineLine
+from fpl_cli.cli._league_recap_data import RecapFineLine, forfeit_penalty
 from fpl_cli.cli._league_recap_types import RecapFinePenalty, RecapVoucher
 from fpl_cli.season import season_start_year
 from fpl_cli.services.league_history_months import month_played_by_league
@@ -102,10 +113,14 @@ def _feed_problem(exc: Exception) -> str:
     return type(exc).__name__
 
 
-def _unchecked(capture: PlayerOfTheMonthCapture, reason: str, *, overridable: bool = True) -> None:
+def _unchecked(
+    capture: PlayerOfTheMonthCapture, reason: str, *, detail: str | None = None, overridable: bool = True,
+) -> None:
     """Say a month that may have an award could not be checked, on every
-    surface: the Awards' "not checked" line and a warning. `overridable` is
-    whether an override in settings.yaml would settle it."""
+    surface. The Awards' "not checked" line, which goes to the league, gets
+    `reason` alone; the warning, which is the user's, adds `detail`, the
+    host, status or shape behind it. `overridable` is whether an override in
+    settings.yaml would settle it."""
     capture.fold.unchecked.append(reason)
     advice = (
         "; if the feed stays wrong, set or correct the month's winner under the "
@@ -113,19 +128,41 @@ def _unchecked(capture: PlayerOfTheMonthCapture, reason: str, *, overridable: bo
     )
     _warn(
         capture.warnings, RECAP_WARNING_POTM_UNCHECKED,
-        f"Player of the Month not checked: {reason}. Nothing is announced for it until a recap "
-        f"can check it{advice}.",
+        f"Player of the Month not checked: {reason}{f' ({detail})' if detail else ''}. Nothing is "
+        f"announced for it until a recap can check it{advice}.",
     )
 
 
-def _feed_name(entry: Mapping[str, Any] | None) -> str | None:
-    """The feed's own name for a stored entry's player."""
-    name = entry.get("name") if entry is not None else None
-    if isinstance(name, Mapping):
-        display = name.get("display")
-        if isinstance(display, str) and display.strip():
-            return display.strip()
-    return None
+def _record_announcement(
+    capture: PlayerOfTheMonthCapture, store: LeagueHistoryStore, month: SeasonMonth, record: AwardRecord,
+    *, settles: int | None = None,
+) -> None:
+    """Write the record of this recap's announcement, and say so. `settles`
+    is the gameweek whose recap withheld the voucher this one settles."""
+    path = award_record_path(store.season, store.league_id, record.month_key)
+    error = write_award_record(store.season, store.league_id, record)
+    if error is not None:
+        _warn(
+            capture.warnings, RECAP_WARNING_POTM_UNRECORDED,
+            f"Could not record that this recap announced {month.label}'s Player of the Month at "
+            f"{path}: {error}. The next recap may announce it again.",
+        )
+        return
+    capture.saved.append(path)
+    if settles is not None:
+        said = (
+            f"Recorded at {path} that this recap settles {month.label}'s Player of the Month "
+            f"voucher, withheld by the GW{settles} recap."
+        )
+    elif record.withheld:
+        said = (
+            f"Recorded the announcement of {month.label}'s Player of the Month at {path}. Its "
+            "voucher is withheld, so the first recap of the latest gameweek that can say who held "
+            "him announces it again."
+        )
+    else:
+        said = f"Recorded the announcement of {month.label}'s Player of the Month at {path}."
+    error_console.print(f"[dim]{said}[/dim]")
 
 
 async def capture_player_of_the_month(
@@ -138,23 +175,33 @@ async def capture_player_of_the_month(
     may_announce: bool,
     league_start_gameweek: int = 1,
     bootstrap_names: Mapping[int, str] | None = None,
+    partial_league: str | None = None,
     now: datetime | None = None,
 ) -> PlayerOfTheMonthCapture:
     """Every completed month's Player of the Month, announcing the new ones.
 
-    `store` is the draft league's ledger, already holding this gameweek.
-    `may_announce` is whether this recap is the latest finished gameweek's,
-    the one recap that announces a month nobody has. `bootstrap_names` maps
-    every FPL `code` in the main game's bootstrap to its `web_name`, which is
-    both what the winner is called and the check that his code is real.
+    `store` is the draft league's ledger, already holding this gameweek: the
+    capture's own, so a damaged gameweek is reported once and each is read
+    once. `may_announce` is whether this recap is the latest finished
+    gameweek's, the one recap that announces a month nobody has, settles a
+    withheld voucher, or asks the feed. `bootstrap_names` maps every FPL
+    `code` in the main game's bootstrap to its `web_name`, which is both what
+    the winner is called and the check that his code is real.
+    `partial_league` is why the recap read only part of the league, as the
+    monthly honours are handed it: a winner in no squad it read could be in
+    one it did not.
 
-    The feed is asked only when a completed month has neither a record nor an
-    override. Never raises for an unreachable or reshaped feed or a file
-    problem: each is a warning and the recap carries on (R4).
+    The feed is asked only when a completed month that has a Player of the
+    Month (May has none) has neither a record nor an override. Never raises
+    for an unreachable or reshaped feed or a file problem: each is a warning
+    and the recap carries on (R4).
     """
     capture = PlayerOfTheMonthCapture()
     names = bootstrap_names or {}
     start_year = season_start_year(store.season)
+    # May's award never comes, so waiting on it would send every recap from
+    # the season's last gameweek on to the feed.
+    awardless = award_month_key(start_year + 1, MONTH_WITHOUT_PLAYER_OF_THE_MONTH)
     completed: list[tuple[SeasonMonth, str]] = []
     for month in sorted(months, key=lambda month: month.first_gameweek):
         if not league_start_gameweek <= month.last_gameweek <= gameweek:
@@ -186,11 +233,14 @@ async def capture_player_of_the_month(
             records[key] = record
 
     feed: dict[str, list[MonthlyAward]] | None = None
-    if any(key not in records and key not in unreadable and key not in voucher.overrides for _, key in completed):
+    if may_announce and any(
+        key not in records and key not in unreadable and key not in voucher.overrides and key != awardless
+        for _, key in completed
+    ):
         try:
             awards = await fetch_awards()
         except (httpx.HTTPError, httpx.InvalidURL, OSError, ValueError) as exc:
-            _unchecked(capture, f"the Premier League's awards could not be read ({_feed_problem(exc)})")
+            _unchecked(capture, "the Premier League's awards could not be read", detail=_feed_problem(exc))
         else:
             feed = {}
             for award in awards:
@@ -227,38 +277,42 @@ async def capture_player_of_the_month(
         elif served:
             code, source, entry = served[0].code, "feed", served[0].entry
         else:
-            # Not yet awarded, or the feed could not say, which `_unchecked`
-            # has already reported.
+            # Not yet awarded, never asked (a replay, or May), or the feed
+            # could not say, which `_unchecked` has already reported.
             continue
 
-        holders = month_holders(store, month, code, captured=captured)
+        holders = month_holders(store, month, code, captured=captured, partial_league=partial_league)
+        # A code no record vouches for, a new winner or an override naming
+        # another, must be one FPL or the month's squads know, so a typo can
+        # neither announce a month nor settle a withheld one.
+        if (record is None or record.code != code) and not known_to_fpl(code, holders, names):
+            what = "override's player" if source == "override" else "Premier League's player id"
+            _unchecked(capture, f"the winner for {month.label} matches no FPL player", detail=f"the {what} {code}")
+            continue
+        # Whether the month's last gameweek can say who held him. A month it
+        # cannot is announced withheld, then announced again, settled, by the
+        # first recap of the latest gameweek that can: an unknown row the
+        # repair sweep refetches, or a gameweek backfilled, never costs the
+        # voucher.
+        settled = holders[-1].known
         announced = record.announced_gameweek if record is not None else None
-        if record is None:
-            if not known_to_fpl(code, holders, names):
-                what = "override's player" if source == "override" else "Premier League's player id"
-                _unchecked(capture, f"the {what} {code} for {month.label} matches no FPL player")
-                continue
-            if may_announce:
-                announced = gameweek
-                path = award_record_path(store.season, store.league_id, key)
-                error = write_award_record(store.season, store.league_id, AwardRecord(
+        if may_announce and (record is None or (record.withheld and settled)):
+            announced = gameweek
+            _record_announcement(
+                capture, store, month,
+                AwardRecord(
                     month_key=key, code=code, source=source, announced_gameweek=gameweek,
-                    first_seen_at=seen_at, entry=entry,
-                ))
-                if error is None:
-                    capture.saved.append(path)
-                    error_console.print(
-                        f"[dim]Recorded the announcement of {month.label}'s Player of the Month at {path}.[/dim]",
-                    )
-                else:
-                    _warn(
-                        capture.warnings, RECAP_WARNING_POTM_UNRECORDED,
-                        f"Could not record that this recap announced {month.label}'s Player of the "
-                        f"Month at {path}: {error}. The next recap may announce it again.",
-                    )
+                    first_seen_at=record.first_seen_at if record is not None else seen_at,
+                    entry=entry, withheld=not settled,
+                ),
+                settles=record.announced_gameweek if record is not None else None,
+            )
         capture.fold.months.append(PlayerOfTheMonth(
             month=month, month_key=key, code=code,
-            name=player_name(code, holders, bootstrap_names=names, feed_name=_feed_name(entry)),
+            name=player_name(
+                code, holders, bootstrap_names=names,
+                feed_name=award_name(entry.get("name")) if entry is not None else None,
+            ),
             source=source, holders=holders, announced_gameweek=announced,
         ))
     return capture
@@ -302,9 +356,9 @@ def player_of_the_month_line(potm: PlayerOfTheMonth) -> str:
 
 def player_of_the_month_unchecked_line(capture: PlayerOfTheMonthCapture) -> str | None:
     """What the Awards print when a month that may have an award could not be
-    checked: "not checked, as the Premier League's awards could not be read
-    (HTTP 503)". Never "no award": a month nobody could check is not an empty
-    one."""
+    checked: "not checked, as the Premier League's awards could not be read".
+    Never "no award": a month nobody could check is not an empty one. Read
+    by the league, so the status or host behind it stays in the warning."""
     if not capture.fold.unchecked:
         return None
     return f"not checked, as {join_and(capture.fold.unchecked)}"
@@ -345,8 +399,6 @@ def voucher_penalties(
     """`penalties` with each voucher's forfeit added where it is not already
     there, with the league's phrasings for it, so the editorial names it by
     the same once-only rule as a fine's (#503)."""
-    from fpl_cli.prompts.league_recap_checks import restates_forfeit
-
     merged = list(penalties)
     named = {entry["penalty"] for entry in merged}
     for voucher in vouchers:
@@ -354,13 +406,7 @@ def voucher_penalties(
         if forfeit is None or forfeit in named:
             continue
         named.add(forfeit)
-        merged.append(RecapFinePenalty(
-            penalty=forfeit,
-            phrasings=[
-                phrasing for phrasing in fines_config.phrasings_for(forfeit)
-                if not restates_forfeit(phrasing, forfeit)
-            ],
-        ))
+        merged.append(forfeit_penalty(fines_config, forfeit))
     return merged
 
 
