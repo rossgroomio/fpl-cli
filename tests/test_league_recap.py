@@ -8471,6 +8471,8 @@ class TestKindNetScopeCheck:
         # contrast with the waivers.
         "Dan Ford's waivers netted +3 overall, while Manzambi arrived as a free agent.",
         "Dan Ford's waiver work netted +3 overall with a free agent doing the heavy lifting.",
+        # A signed figure before a free agent is no count of them.
+        "Dan Ford's waivers netted +3 overall, a +4 free-agent swing doing the work.",
         # A contrast in another sentence leaves this one's waivers loose.
         "Dan Ford's free agents netted +4. His waiver work netted +3 overall.",
     ])
@@ -8715,6 +8717,19 @@ class TestGenericWaiverWordIsEveryMove:
         assert len(problems) == 1
         assert self._OVERALL in problems[0]
         assert "not the waivers' own net of +0" in problems[0]
+
+    def test_a_waiver_describing_another_noun_is_loose(self):
+        """PR #542 replay: "waiver" before another noun names no one waiver,
+        so the overall -9 it carries passes, while one waiver given it does
+        not."""
+        assert self._kind(
+            "He was second on the week with 54, which is a polite way to describe a week with a "
+            "-9 waiver ledger."
+        ) == []
+        assert self._kind("His waiver haul came to -9 net.") == []
+        problems = self._kind("His only waiver lost 9 net.")
+        assert len(problems) == 1
+        assert self._OVERALL in problems[0]
 
     @pytest.mark.parametrize("sentence", [
         "His waiver claims came to 0 net.",

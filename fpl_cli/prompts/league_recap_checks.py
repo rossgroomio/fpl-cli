@@ -1146,11 +1146,18 @@ _KIND_GROUP_LABELS = {"waiver": "waiver", "free_agent": "free agent"}
 # one ("his waiver", "his only waiver"), is counted ("his two waivers", "a
 # couple of waivers"), or stands against free agents of the manager's own in
 # the same sentence (`_FREE_AGENTS_OWNED_BEFORE_RE`). "Free agent" is never
-# used for every move.
+# used for every move. A singular "waiver" names one only as a noun of its
+# own: before another noun ("a -9 waiver ledger", "his waiver haul") it
+# describes that noun, and is as loose as "waiver work". What may follow the
+# noun is a verb or link word (`_KIND_LINK_BEFORE`), a conjunction or
+# nothing at all.
 _WAIVER_CLAIMS_RE = re.compile(r"claims?$", re.IGNORECASE)
 _WAIVER_ONE_RE = re.compile(r"waiver", re.IGNORECASE)
+_NEXT_WORD_RE = re.compile(r"[-\s]+([a-z]+)", re.IGNORECASE)
+_WAIVER_NOUN_FOLLOWERS = frozenset({"and", "or", "but", "which", "that", "who"})
+# A number is a count only unsigned: "-9 waiver ledger" is a figure.
 _WAIVER_COUNT_BEFORE_RE = re.compile(
-    r"(?<!\w)(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|both|each|either|several|few"
+    r"(?<!\w)(?:(?<![+\-−–])\d+|one|two|three|four|five|six|seven|eight|nine|ten|both|each|either|several|few"
     r"|(?:couple|pair|handful)\s+of)\s+$",
     re.IGNORECASE,
 )
@@ -1159,7 +1166,7 @@ _WAIVER_COUNT_BEFORE_RE = re.compile(
 # "both free agents". "Manzambi arrived as a free agent" and "with a free
 # agent doing the heavy lifting" name a player's status, not a contrast.
 _FREE_AGENTS_OWNED_BEFORE_RE = re.compile(
-    r"(?:(?<!\w)(?:his|her|their|its|the|\d+|one|two|three|four|five|six|seven|eight|nine|ten|both|each"
+    r"(?:(?<!\w)(?:his|her|their|its|the|(?<![+\-−–])\d+|one|two|three|four|five|six|seven|eight|nine|ten|both|each"
     r"|either)|['’]s)\s+$",
     re.IGNORECASE,
 )
@@ -1233,13 +1240,21 @@ class _KindScope:
         return next(iter(self.kinds)) if len(self.kinds) == 1 and _ANY_KIND not in self.kinds else None
 
 
+def _one_waiver(clause: str, match: re.Match[str]) -> bool:
+    """Whether `match` is a singular "waiver" standing as a noun of its own,
+    one waiver, rather than describing the noun after it (#539)."""
+    if not _WAIVER_ONE_RE.fullmatch(match.group(0)):
+        return False
+    after = _NEXT_WORD_RE.match(clause, match.end())
+    return after is None or after.group(1).lower() in _KIND_LINK_BEFORE | _WAIVER_NOUN_FOLLOWERS
+
+
 def _scope_word(clause: str, match: re.Match[str]) -> _KindScope:
     """The kind word `match` as a scope of its own, `loose` when it is a
     waiver word that names no claims, no one waiver and no count (#539)."""
     kind = _KIND_GROUP_LABELS[next(g for g in _KIND_GROUP_LABELS if match.group(g))]
-    word = match.group(0)
     pinned = bool(
-        _WAIVER_CLAIMS_RE.search(word) or _WAIVER_ONE_RE.fullmatch(word)
+        _WAIVER_CLAIMS_RE.search(match.group(0)) or _one_waiver(clause, match)
         or _WAIVER_COUNT_BEFORE_RE.search(clause, 0, match.start())
     )
     return _KindScope(match.start(), match.end(), frozenset({kind}), loose=kind == "waiver" and not pinned)
