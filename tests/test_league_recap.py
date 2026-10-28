@@ -2773,7 +2773,7 @@ class TestMoveAwardTies:
             manager_name="Alice and Bob",
             value=3,
             detail=(
-                "Shared by 2 managers on +3 net pts overall. "
+                "Shared by 2 managers, who each gained 3 net pts overall. "
                 "Alice gained 3 net pts overall (1 waiver). Best: Neto in for Sávio (+3). "
                 "Bob gained 3 net pts overall (1 free agent). Best: Rogers in for Gakpo (+3)."
             ),
@@ -2782,10 +2782,10 @@ class TestMoveAwardTies:
     @pytest.mark.parametrize(
         ("award", "lead"),
         [
-            ("waiver_genius", "Shared by 2 managers on +3 net pts overall. "),
-            ("waiver_disaster", "Shared by 2 managers on -3 net pts overall. "),
-            ("transfer_genius", "Shared by 2 managers on +3 net pts overall. "),
-            ("transfer_disaster", "Shared by 2 managers on -3 net pts overall. "),
+            ("waiver_genius", "Shared by 2 managers, who each gained 3 net pts overall. "),
+            ("waiver_disaster", "Shared by 2 managers, who each lost 3 net pts overall. "),
+            ("transfer_genius", "Shared by 2 managers, who each gained 3 net pts overall. "),
+            ("transfer_disaster", "Shared by 2 managers, who each lost 3 net pts overall. "),
         ],
     )
     def test_each_move_award_names_every_manager_on_its_figure(self, award, lead):
@@ -2825,24 +2825,36 @@ class TestMoveAwardTies:
         award = _move_award("waiver_genius", managers)
         assert award is not None
         detail = award["detail"]
-        assert detail.startswith("Shared by 5 managers on +3 net pts overall. ")
-        assert detail.count("gained 3 net pts overall") == DETAIL_CAP == 3
+        assert detail.startswith(
+            "Shared by 5 managers, who each gained 3 net pts overall; 2 more managers omitted. M0 gained"
+        )
+        assert detail.count("gained 3 net pts overall") == DETAIL_CAP + 1 == 4
         assert [n for n in ("M0", "M1", "M2", "M3", "M4") if n in detail] == ["M0", "M1", "M2"]
-        assert detail.endswith("Best: In2 in for Out2 (+3); 2 more managers omitted.")
+        assert detail.endswith("Best: In2 in for Out2 (+3).")
         # The award still records every tied manager; only the prose is capped.
         assert award["manager_name"] == "M0 and M1 and M2 and M3 and M4"
 
-    def test_transfer_disaster_wider_tie_is_capped_the_same_way(self):
+    def test_omitted_managers_are_counted_apart_from_a_managers_omitted_moves(self):
+        """#549 review: the last manager shown had more moves than the cap, so
+        his own "; 2 more omitted" tail used to run straight into the tie's
+        "; 1 more manager omitted", and the count of either could be misread.
+        The tie's count now sits in the lead."""
         managers = [
-            _make_manager(name=f"M{i}", entry_id=i, transfers=[_transfer(f"In{i}", 0, f"Out{i}", 5)])
-            for i in range(4)
+            _make_manager(name=f"M{i}", entry_id=i, transfers=[_transfer(f"In{i}", 5, f"Out{i}", 0)])
+            for i in (0, 1, 3)
         ]
-        award = _move_award("transfer_disaster", managers)
+        managers.append(_make_manager(
+            name="M2", entry_id=2, transfers=[_transfer(f"In2{j}", 1, f"Out2{j}", 0) for j in range(5)],
+        ))
+        award = _move_award("transfer_genius", managers)
         assert award is not None
-        assert award["detail"].startswith("Shared by 4 managers on -5 net pts overall. ")
-        assert award["detail"].count("lost 5 net pts overall") == 3
-        assert "M3" not in award["detail"]
-        assert award["detail"].endswith("; 1 more manager omitted.")
+        assert award["detail"] == (
+            "Shared by 4 managers, who each gained 5 net pts overall; 1 more manager omitted. "
+            "M0 gained 5 net pts overall. Best: In0 in for Out0 (+5). "
+            "M1 gained 5 net pts overall. Best: In1 in for Out1 (+5). "
+            "M2 gained 5 net pts overall (+5 raw across 5 transfers). "
+            "Best: In20 in for Out20 (+1); also In21 in for Out21 (+1), In22 in for Out22 (+1); 2 more omitted."
+        )
 
     @pytest.mark.parametrize(
         ("award", "expected"),
@@ -2898,7 +2910,7 @@ class TestMoveAwardTies:
             manager_name="Alice and Bob",
             value=3,
             detail=(
-                "Shared by 2 managers on +3 net pts overall. "
+                "Shared by 2 managers, who each gained 3 net pts overall. "
                 "Alice gained 3 net pts overall (+3 raw across 3 moves: 2 waivers, 1 free agent). "
                 "Best: C in for D (+3). "
                 "Bob gained 3 net pts overall (1 waiver). Best: E in for F (+3)."
@@ -2959,7 +2971,7 @@ class TestMoveAwardTies:
         assert award["manager_name"] == "Ann Ash and Ben Birch"
         assert award["value"] == 3
         assert award["detail"] == (
-            "Shared by 2 managers on +3 net pts overall. "
+            "Shared by 2 managers, who each gained 3 net pts overall. "
             "Ann Ash gained 3 net pts overall (1 waiver). Best: In1 in for Out1 (+3). "
             "Ben Birch gained 3 net pts overall (1 waiver). Best: In2 in for Out2 (+3)."
         )
