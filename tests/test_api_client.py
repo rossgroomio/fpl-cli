@@ -8,6 +8,7 @@ from fpl_cli.api.fpl import FPLClient
 from fpl_cli.models.fixture import Fixture
 from fpl_cli.models.player import Player
 from fpl_cli.models.team import Team
+from tests.conftest import PHASES_2026_27
 
 
 class TestFPLClient:
@@ -483,6 +484,39 @@ class TestFPLClient:
             await client.get_classic_league_standings(1000, page=3)
 
             mock_get.assert_called_once_with("leagues-classic/1000/standings/?page_standings=3")
+
+    @pytest.mark.asyncio
+    async def test_get_classic_league_standings_for_one_month(self, client):
+        """A month's table is the same endpoint with FPL's `phase` id for the
+        month, as the league page's month selector asks for it (#425)."""
+        mock_response = {"league": {}, "standings": {"results": []}}
+        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = mock_response
+
+            await client.get_classic_league_standings(1000, month_id=4)
+
+            mock_get.assert_called_once_with("leagues-classic/1000/standings/?page_standings=1&phase=4")
+
+    @pytest.mark.asyncio
+    async def test_get_months_reads_the_bootstrap_phases(self, client):
+        data = {"elements": [], "teams": [], "events": [], "phases": PHASES_2026_27}
+        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = data
+
+            months = await client.get_months()
+
+            assert len(months) == 10
+            assert (months[1].id, months[1].name, months[1].first_gameweek, months[1].last_gameweek) == (
+                3, "September", 3, 5,
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_months_is_empty_when_the_bootstrap_lists_none(self, client):
+        """The draft game's bootstrap is one such payload."""
+        with patch.object(client, "_get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = {"elements": [], "teams": [], "events": []}
+
+            assert await client.get_months() == []
 
     @pytest.mark.asyncio
     async def test_get_dream_team(self, client):

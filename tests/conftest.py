@@ -29,6 +29,7 @@ from fpl_cli.agents.base import Agent, AgentResult, AgentStatus
 from fpl_cli.models.fixture import Fixture
 from fpl_cli.models.gameweek_status import GameweekStatus
 from fpl_cli.models.player import Player, PlayerPosition, PlayerStatus
+from fpl_cli.models.season_month import SeasonMonth, season_months
 from fpl_cli.models.team import Team
 from fpl_cli.paths import user_cache_dir, user_config_dir, user_data_dir
 
@@ -509,6 +510,29 @@ def make_gameweek_status(
         "status": [{**day, "date": f"2026-10-{10 + i:02d}"} for i in range(match_days)],
         "leagues": leagues,
     })
+
+
+# FPL's months for 2026-27 as bootstrap-static's `phases` served them on
+# 2026-10-28, the season-long "Overall" phase first (issue #425).
+PHASES_2026_27: list[dict[str, Any]] = [
+    {"id": 1, "name": "Overall", "start_event": 1, "stop_event": 38, "highest_score": 685},
+    {"id": 2, "name": "August", "start_event": 1, "stop_event": 2, "highest_score": 249},
+    {"id": 3, "name": "September", "start_event": 3, "stop_event": 5, "highest_score": 281},
+    {"id": 4, "name": "October", "start_event": 6, "stop_event": 9, "highest_score": 283},
+    {"id": 5, "name": "November", "start_event": 10, "stop_event": 12, "highest_score": None},
+    {"id": 6, "name": "December", "start_event": 13, "stop_event": 18, "highest_score": None},
+    {"id": 7, "name": "January", "start_event": 19, "stop_event": 23, "highest_score": None},
+    {"id": 8, "name": "February", "start_event": 24, "stop_event": 27, "highest_score": None},
+    {"id": 9, "name": "March", "start_event": 28, "stop_event": 30, "highest_score": None},
+    {"id": 10, "name": "April", "start_event": 31, "stop_event": 33, "highest_score": None},
+    {"id": 11, "name": "May", "start_event": 34, "stop_event": 38, "highest_score": None},
+]
+
+
+def make_season_months(phases: list[dict[str, Any]] | None = None) -> list[SeasonMonth]:
+    """The months `FPLClient.get_months()` reads off `phases`: 2026-27's by
+    default, so GW5 closes September and GW38 the tenth month, May."""
+    return season_months(PHASES_2026_27 if phases is None else phases)
 
 
 def make_fixture(

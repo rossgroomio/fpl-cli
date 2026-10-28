@@ -4,18 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict
 
 from fpl_cli.api.fpl_draft import draft_claim_priority_rank
+from fpl_cli.constants import DETAIL_CAP
 from fpl_cli.season import TOTAL_GAMEWEEKS
+from fpl_cli.utils.ranking import competition_rank
 from fpl_cli.utils.text import join_and, ordinal_suffix, ordinal_word
 
-# Most managers, moves or picks one line of the recap names before it counts
-# the rest instead: the awards' tie details and the Standout Players lines
-# alike, so the two never name a different number side by side. A wide tie
-# in a fifty-manager classic league, or a template player there, would
-# otherwise read as a roll call of the league.
-DETAIL_CAP = 3
+if TYPE_CHECKING:
+    from fpl_cli.services.league_history_months import MonthAwards, MonthlyHonours, MonthTotal
 
 
 class RecapManagerPlayer(TypedDict):
@@ -524,6 +522,14 @@ class RecapAwards(TypedDict, total=False):
     # -- and `value` is how many claimed him. The detail names every manager
     # beaten to him and the priority each gave the claim.
     most_contested: RecapAwardEntry
+    # Both formats, and only on the gameweek that closes a month (issue #425):
+    # the month's top and lowest scorer, from the ledger's rows over the
+    # month's gameweeks. `value` is the month's total, and a tie joins the
+    # names with " and ". Absent when the month is withheld for a gap, which
+    # `LeagueRecapData.month_awards_withheld` then says, and the Dud is also
+    # absent when every manager finished level.
+    manager_of_the_month: RecapAwardEntry
+    dud_of_the_month: RecapAwardEntry
 
 
 # How the blanks are ordered, best story first. Classic: the blank that
@@ -934,6 +940,21 @@ class RecapSeasonRecord(TypedDict):
     scores: list[tuple[str, int]]
 
 
+class RecapMonthTable(TypedDict):
+    """One completed month's places as the editorial is shown that month
+    (issue #425), kept for the tie check, which reads a month tie the
+    editorial states against it."""
+
+    # FPL's own name for it ("October"), the word the editorial names it by.
+    name: str
+    # Whether the recapped gameweek closed it: the month a bare "the month"
+    # means.
+    closing: bool
+    # (manager name, competition rank on the month's points) for everyone in
+    # the month's table.
+    ranks: list[tuple[str, int]]
+
+
 class RecapStandingsEntry(TypedDict):
     """One row of the league table, whether or not that manager was fetched.
 
@@ -1087,6 +1108,20 @@ class LeagueRecapData(TypedDict):
     # absent outside the league's opening gameweek, when nothing was fetched.
     prior_seasons_lines: NotRequired[list[str]]
     prior_seasons_coverage_lines: NotRequired[list[str]]
+    # Why the month this gameweek closed has no Manager or Dud of the Month
+    # (issue #425), as the sentence the awards print in their place. Absent
+    # on every other gameweek, and when the month's awards stand.
+    month_awards_withheld: NotRequired[str]
+    # Every completed month's awards so far, one `format_month_honours_line`
+    # each, for the console's and the report's Monthly Honours (issue #425).
+    # Set only at the two season milestones (`is_season_milestone`), the
+    # printed season fines table's rhythm, and absent every other week.
+    monthly_honours_lines: NotRequired[list[str]]
+    # Each awarded month the editorial is shown, with every manager's place
+    # in it, for the tie check (issue #425). Set on a month's last gameweek
+    # and at the two season milestones, the recaps that hand the editorial
+    # the months, and absent every other week.
+    month_tables: NotRequired[list[RecapMonthTable]]
 
 
 def recap_manager_key(m: RecapManagerEntry) -> int:
@@ -1537,23 +1572,6 @@ def points_label(points: int) -> str:
     return f"{points} pt" if points == 1 else f"{points} pts"
 
 
-def competition_rank(value: int, values: Iterable[int]) -> int:
-    """`value`'s rank among `values` when higher is better: one more than the
-    number above it, so level values share a rank and the next one down skips
-    it (1, 2, 2, 4).
-
-    The one definition the recap's own ranks are counted with (#486): the GW
-    Rank column and the report's GW Standings block through
-    `gameweek_rank()`, and the editorial checks' readings of a gameweek
-    placing and a season total, so a change to how a tie or a missing value
-    ranks reaches all of them at once. League positions -- Pos, Prev and the
-    ledger's `gw_rank` -- come from `derive_point_in_time_positions()`
-    (`_league_recap_data.py`), the same competition ranking over a sorted
-    walk, and a change here does not reach them.
-    """
-    return 1 + sum(other > value for other in values)
-
-
 def gameweek_rank(manager: RecapManagerEntry, managers: Sequence[RecapManagerEntry]) -> int:
     """A manager's placing on this gameweek's points: one more than the
     number who scored more, so level scores share a rank (#483).
@@ -1588,6 +1606,63 @@ def last_place_escape(managers: Sequence[RecapManagerEntry]) -> str | None:
 def place_label(rank: int) -> str:
     """A league position as the table reads it: "1st", "7th", "12th"."""
     return f"{rank}{ordinal_suffix(rank)}"
+
+
+# ---------------------------------------------------------------------------
+# Manager and Dud of the Month (issue #425)
+# ---------------------------------------------------------------------------
+
+
+def month_holders(totals: Sequence[MonthTotal]) -> str:
+    """Who holds a month award and on what: "Alice Smith with 245 pts", or
+    "Alice Smith and Bob Jones with 245 pts each" for a tie, which is always
+    on one total."""
+    each = " each" if len(totals) > 1 else ""
+    return f"{join_and([t.manager_name for t in totals])} with {points_label(totals[0].points)}{each}"
+
+
+def format_month_honours_line(awards: MonthAwards) -> str:
+    """One completed month on the honours list, worded once for the report's
+    Monthly Honours section, the editorial's and the JSON's `text`:
+    "October (GW6-9): Manager of the Month Alice Smith with 245 pts; Dud of
+    the Month Dan Evans with 172 pts", or "October (GW6-9): not awarded, as
+    GW8 was never captured"."""
+    if not awards.awarded:
+        return f"{awards.month.label}: not awarded, as {awards.withheld_reason}"
+    duds = awards.duds_of_the_month
+    dud = (
+        f"Dud of the Month {month_holders(duds)}" if duds
+        else "no Dud of the Month, as nobody finished below them"
+    )
+    return f"{awards.month.label}: Manager of the Month {month_holders(awards.managers_of_the_month)}; {dud}"
+
+
+def month_table_withheld_reason(disagreements: int) -> str:
+    """Why the month's awards are withheld when FPL's own table for it
+    disagrees with the ledger's totals, as the clause a withheld reason is:
+    the surfaces people read say so in their own words, and the stderr line
+    and the JSON warning carry the totals."""
+    managers = f"{disagreements} manager{'s' if disagreements != 1 else ''}"
+    return f"FPL's own table for the month disagrees with this recap's totals for {managers}"
+
+
+def recap_month_tables(honours: MonthlyHonours) -> list[RecapMonthTable]:
+    """Each awarded month's places on the honours list, for the tie check."""
+    return [
+        RecapMonthTable(
+            name=awards.month.name,
+            closing=awards.month.last_gameweek == honours.through_gameweek,
+            ranks=[(total.manager_name, total.rank) for total in awards.totals],
+        )
+        for awards in honours.months
+        if awards.awarded
+    ]
+
+
+def month_awards_withheld_line(awards: MonthAwards) -> str:
+    """What the Awards print in place of a withheld month's two awards:
+    "Withheld for October (GW6-9), as GW8 was never captured."."""
+    return f"Withheld for {awards.month.label}, as {awards.withheld_reason}."
 
 
 def recap_title(gameweek: int, league_name: str | None) -> str:

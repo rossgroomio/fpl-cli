@@ -67,6 +67,7 @@ from fpl_cli.models.league_history import (
     LedgerPlayer,
     LedgerTransaction,
 )
+from fpl_cli.models.season_month import season_months
 from fpl_cli.season import CHIP_SPLIT_GW, TOTAL_GAMEWEEKS, get_season_year, season_label
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_notes import (
@@ -85,6 +86,7 @@ from tests.conftest import (
     make_gameweek_status,
     make_history_row,
     make_player,
+    make_season_months,
 )
 
 SEASON = "2026-27"
@@ -850,6 +852,11 @@ def _fpl_client(gw: int = 5) -> MagicMock:
     # FPL has finished processing `gw`: bonus confirmed and league tables
     # refreshed, so no run warns unless a test sets the feed otherwise.
     client.get_gameweek_status = AsyncMock(return_value=make_gameweek_status(gw))
+    # 2026-27's months (#425), so GW5 closes September as it did live.
+    client.get_months = AsyncMock(return_value=make_season_months())
+    # FPL's own table for a month, read only to cross-check one the recap
+    # awards (#425): empty, so it agrees with any ledger unless a test says.
+    client.get_classic_league_standings = AsyncMock(return_value={"standings": {"results": []}})
     return client
 
 
@@ -8212,3 +8219,358 @@ class TestStandoutAcquisitionSurfaces:
         assert "provenance_season" not in collector.call_args_list[0].kwargs
         assert "draft_provenance_unavailable" not in result.stdout
         assert all("acquisition" not in row for row in json.loads(result.stdout)["metadata"]["standout_players"]["top_scorers"])
+
+
+# ---------------------------------------------------------------------------
+# Manager and Dud of the Month (issue #425)
+# ---------------------------------------------------------------------------
+
+
+class TestManagerAndDudOfTheMonth:
+    """Through the full command: the gameweek that closes a month gets its
+    two awards on every surface, and every completed month reaches the
+    honours list. GW5 closes September (GW3-5) in 2026-27."""
+
+    @staticmethod
+    def _seed(*gameweeks: int, fpl_format: str = "classic", bob: str = "Bob") -> None:
+        """Alice 70 and Bob 50 in each gameweek before the recapped one."""
+        store = _store(fpl_format)
+        keys = (10, 11) if fpl_format == "draft" else (1, 2)
+        cost = 0 if fpl_format == "classic" else None
+        for gameweek in gameweeks:
+            store.append_rows(gameweek, [
+                make_history_row(
+                    season=SEASON, fpl_format=fpl_format, league_id=42, gameweek=gameweek,
+                    manager_key=key, manager_name=name, gross_points=points, transfer_cost=cost,
+                )
+                for key, name, points in ((keys[0], "Alice", 70), (keys[1], bob, 50))
+            ])
+
+    @staticmethod
+    def _week(
+        gameweek: int = 5, *, fpl_format: str = "classic", bob: str = "Bob", **kwargs: Any,
+    ) -> LeagueRecapData:
+        """The recapped gameweek: Alice 60, Bob 10."""
+        draft = fpl_format == "draft"
+        alice_key, bob_key = (10, 11) if draft else (1, 2)
+        extra_alice: dict[str, Any] = {"league_entry_id": alice_key} if draft else {}
+        extra_bob: dict[str, Any] = {"league_entry_id": bob_key} if draft else {}
+        return _recap_data(
+            gameweek=gameweek, fpl_format=fpl_format,
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=60, **extra_alice),
+                _manager(name=bob, entry_id=2, gross_points=10, gw_rank=2, overall_rank=2, **extra_bob),
+            ],
+            cohort=_cohort((alice_key, "Alice", 1, 60, 300), (bob_key, bob, 2, 10, 200)),
+            **kwargs,
+        )
+
+    @staticmethod
+    def _honours(result: Any) -> dict[str, Any]:
+        assert result.exit_code == 0, result.output
+        return json.loads(result.stdout)["metadata"]["monthly_honours"]
+
+    def test_the_month_end_recap_awards_both_on_the_console_and_in_the_report(self, tmp_path: Path):
+        self._seed(3, 4)
+
+        result = _invoke_recap(self._week(), ["--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        console = result.output.replace("\n", "")
+        assert "Manager of the Month: Alice with 200 pts across September (GW3-5), ahead of Bob (110)" in console
+        assert "Dud of the Month: Bob with 110 pts across September (GW3-5)" in console
+        report = (tmp_path / season_label() / "gw5-league-recap.md").read_text(encoding="utf-8")
+        assert "**Manager of the Month:** Alice with 200 pts across September (GW3-5), ahead of Bob (110)" in report
+        assert "**Dud of the Month:** Bob with 110 pts across September (GW3-5)" in report
+        # The honours list waits for a season milestone, like the fines table.
+        assert "Monthly Honours" not in report
+        assert "Monthly Honours" not in console
+
+    def test_no_other_gameweek_carries_them(self, tmp_path: Path):
+        self._seed(1, 2, 3)
+
+        result = _invoke_recap(
+            self._week(4), ["--save", "--output", str(tmp_path)], client=_fpl_client(4), gw=4,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "of the Month" not in result.output.replace("\n", "")
+        report = (tmp_path / season_label() / "gw4-league-recap.md").read_text(encoding="utf-8")
+        assert "of the Month" not in report
+        assert "Monthly Honours" not in report
+
+    @pytest.mark.parametrize(
+        ("gameweek", "months"),
+        [(CHIP_SPLIT_GW, ["August", "September", "October", "November", "December"]),
+         (TOTAL_GAMEWEEKS, ["August", "September", "October", "November", "December",
+                            "January", "February", "March", "April", "May"])],
+    )
+    def test_the_halfway_and_final_recaps_print_every_month_so_far(
+        self, tmp_path: Path, gameweek: int, months: list[str],
+    ):
+        """The season fines table's set-piece rhythm (`is_season_milestone`):
+        half a season's months at GW19, the whole season's at the finale."""
+        self._seed(*range(1, gameweek))
+
+        result = _invoke_recap(
+            self._week(gameweek), ["--save", "--output", str(tmp_path)],
+            client=_fpl_client(gameweek), gw=gameweek,
+        )
+
+        assert result.exit_code == 0, result.output
+        report = (tmp_path / season_label() / f"gw{gameweek}-league-recap.md").read_text(encoding="utf-8")
+        listed = [line for line in report.splitlines() if line.startswith("- ") and "Manager of the Month" in line]
+        assert [line[2:].split(" (")[0] for line in listed] == months
+        assert "# Monthly Honours" in report
+        assert "- August (GW1-2): Manager of the Month Alice with 140 pts; Dud of the Month Bob with 100 pts" in report
+        console = result.output.replace("\n", "")
+        assert "Monthly Honours" in console
+        assert "August (GW1-2): Manager of the Month Alice with 140 pts" in console
+
+    def test_a_month_with_a_gap_withholds_both_and_says_why(self, tmp_path: Path):
+        self._seed(3)
+
+        result = _invoke_recap(self._week(), ["--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        assert (
+            "Manager and Dud of the Month: Withheld for September (GW3-5), as GW4 was never captured."
+            in result.output.replace("\n", "")
+        )
+        report = (tmp_path / season_label() / "gw5-league-recap.md").read_text(encoding="utf-8")
+        assert (
+            "**Manager and Dud of the Month:** Withheld for September (GW3-5), as GW4 was never captured."
+            in report
+        )
+        assert "**Manager of the Month:**" not in report
+
+    def test_a_withheld_month_stays_on_the_honours_list_with_its_reason(self, tmp_path: Path):
+        self._seed(*(gw for gw in range(1, CHIP_SPLIT_GW) if gw != 4))
+
+        result = _invoke_recap(
+            self._week(CHIP_SPLIT_GW), ["--save", "--output", str(tmp_path)],
+            client=_fpl_client(CHIP_SPLIT_GW), gw=CHIP_SPLIT_GW,
+        )
+
+        assert result.exit_code == 0, result.output
+        report = (tmp_path / season_label() / f"gw{CHIP_SPLIT_GW}-league-recap.md").read_text(encoding="utf-8")
+        assert "- September (GW3-5): not awarded, as GW4 was never captured" in report
+        assert "- October (GW6-9): Manager of the Month Alice" in report
+
+    def test_the_json_carries_every_completed_month(self):
+        self._seed(3, 4)
+
+        result = _invoke_recap(self._week(), ["--format", "json"])
+
+        honours = self._honours(result)
+        assert honours["through_gameweek"] == 5
+        assert (honours["season"], honours["fpl_format"], honours["league_id"]) == (SEASON, "classic", 42)
+        august, september = honours["months"]
+        assert august["awarded"] is False
+        assert august["withheld_reason"] == "GW1-2 were never captured"
+        assert august["manager_of_the_month"] == august["totals"] == []
+        assert (september["id"], september["name"], september["first_gameweek"], september["last_gameweek"]) == (
+            3, "September", 3, 5,
+        )
+        assert september["awarded"] is True
+        assert september["manager_of_the_month"] == [{"manager_key": 1, "manager_name": "Alice", "points": 200}]
+        assert september["dud_of_the_month"] == [{"manager_key": 2, "manager_name": "Bob", "points": 110}]
+        assert [(row["manager_name"], row["rank"]) for row in september["totals"]] == [("Alice", 1), ("Bob", 2)]
+        assert september["text"] == (
+            "September (GW3-5): Manager of the Month Alice with 200 pts; Dud of the Month Bob with 110 pts"
+        )
+        assert json.loads(result.stdout)["metadata"]["warnings"] == []
+
+    def test_fpls_own_month_table_agreeing_passes_silently(self):
+        self._seed(3, 4)
+        client = _fpl_client()
+        client.get_classic_league_standings = AsyncMock(return_value={"standings": {"results": [
+            {"entry": 1, "total": 200}, {"entry": 2, "total": 110},
+        ]}})
+
+        result = _invoke_recap(self._week(), ["--format", "json"], client=client)
+
+        assert result.exit_code == 0, result.output
+        client.get_classic_league_standings.assert_awaited_once_with(42, month_id=3)
+        assert json.loads(result.stdout)["metadata"]["warnings"] == []
+        assert "disagrees" not in result.stderr
+
+    def test_fpls_own_month_table_disagreeing_withholds_both_everywhere(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """FPL's month table is what a league checks the awards against, so
+        the report, the editorial and the JSON name nobody rather than crown
+        what it contradicts, and the warning says where they differ."""
+        monkeypatch.chdir(tmp_path)  # debug prompts land in ./data/debug
+        self._seed(3, 4)
+        client = _fpl_client()
+        client.get_classic_league_standings = AsyncMock(return_value={"standings": {"results": [
+            {"entry": 1, "total": 196}, {"entry": 2, "total": 110},
+        ]}})
+        withheld = (
+            "Withheld for September (GW3-5), as FPL's own table for the month disagrees with"
+            " this recap's totals for 1 manager."
+        )
+
+        result = _invoke_recap(self._week(), ["--format", "json"], client=client)
+
+        warnings = json.loads(result.stdout)["metadata"]["warnings"]
+        assert [w["code"] for w in warnings] == ["league_month_table_disagrees"]
+        assert "(Alice: 200 here, 196 on FPL), so this recap withholds" in warnings[0]["message"]
+        assert "Alice: 200 here, 196 on FPL" in result.stderr.replace("\n", "")
+        september = self._honours(result)["months"][1]
+        assert september["awarded"] is False
+        assert september["manager_of_the_month"] == september["totals"] == []
+        assert september["text"] == f"September (GW3-5): not awarded, as {withheld[35:-1]}"
+
+        saved = _invoke_recap(self._week(), ["--save", "--output", str(tmp_path), "--dry-run"], client=client)
+
+        assert saved.exit_code == 0, saved.output
+        # Rich wraps a long line at a space and drops it, so compare words.
+        assert f"Manager and Dud of the Month: {withheld}" in " ".join(saved.output.split())
+        report = (tmp_path / season_label() / "gw5-league-recap.md").read_text(encoding="utf-8")
+        assert f"**Manager and Dud of the Month:** {withheld}" in report
+        assert "**Manager of the Month:**" not in report
+        prompt = (tmp_path / "data" / "debug" / "recap_prompt.txt").read_text(encoding="utf-8")
+        assert f"- **Manager and Dud of the Month:** {withheld}" in prompt
+        assert "Manager of the Month Alice" not in prompt
+
+    def test_a_league_read_in_part_withholds_both_and_says_why(self, tmp_path: Path):
+        """Classic standings come one page of 50 at a time: the members past
+        it are a gap the ledger cannot see, and the Dud is almost always one
+        of them, so neither award is named and FPL's table is not asked."""
+        self._seed(3, 4)
+        client = _fpl_client()
+
+        result = _invoke_recap(
+            self._week(standings_truncated=True), ["--save", "--output", str(tmp_path)], client=client,
+        )
+
+        assert result.exit_code == 0, result.output
+        withheld = "Withheld for September (GW3-5), as the recap reads only the first 2 of the league's members."
+        # Rich wraps a long line at a space and drops it, so compare words.
+        assert f"Manager and Dud of the Month: {withheld}" in " ".join(result.output.split())
+        report = (tmp_path / season_label() / "gw5-league-recap.md").read_text(encoding="utf-8")
+        assert f"**Manager and Dud of the Month:** {withheld}" in report
+        assert "**Manager of the Month:**" not in report
+        client.get_classic_league_standings.assert_not_awaited()
+
+    def test_a_true_month_tie_in_the_editorial_raises_no_unsupported_tie(self):
+        """The tie check reads a tie said of the month against the month's
+        own table: Alice and Bob share September on 180, while Alice tops
+        the week and the season table alone."""
+        store = _store()
+        for gameweek, alice, bob in ((3, 70, 50), (4, 50, 120)):
+            store.append_rows(gameweek, [
+                make_history_row(
+                    season=SEASON, league_id=42, gameweek=gameweek, manager_key=key,
+                    manager_name=name, gross_points=points, transfer_cost=0,
+                )
+                for key, name, points in ((1, "Alice", alice), (2, "Bob", bob))
+            ])
+        stub, provider = _queued_provider("Alice and Bob finished joint-top for the month.")
+
+        with provider:
+            result = _invoke_recap(self._week(), ["--summarise", "--format", "json"])
+
+        assert result.exit_code == 0, result.stderr
+        assert len(stub.prompts) == 1
+        honours = json.loads(result.stdout)["metadata"]["monthly_honours"]
+        assert [t["rank"] for t in honours["months"][1]["totals"]] == [1, 1]
+        assert not [w for w in json.loads(result.stdout)["metadata"]["warnings"] if w["code"].startswith("synthesis_")]
+
+    def test_the_cross_check_waits_while_fpl_is_still_updating_its_tables(self):
+        self._seed(3, 4)
+        client = _fpl_client()
+        client.get_gameweek_status = AsyncMock(return_value=make_gameweek_status(5, leagues="Updating"))
+
+        result = _invoke_recap(self._week(), ["--format", "json"], client=client)
+
+        assert self._honours(result)["months"][1]["awarded"] is True
+        client.get_classic_league_standings.assert_not_awaited()
+
+    def test_a_draft_league_is_scored_from_its_ledger_on_the_main_games_months(self):
+        self._seed(3, 4, fpl_format="draft")
+        client = _fpl_client()
+
+        result = _invoke_recap(
+            self._week(fpl_format="draft"), ["--draft", "--format", "json"],
+            client=client, settings={"fpl": {"draft_league_id": 42}},
+        )
+
+        honours = self._honours(result)
+        assert honours["fpl_format"] == "draft"
+        september = honours["months"][1]
+        assert september["manager_of_the_month"] == [{"manager_key": 10, "manager_name": "Alice", "points": 200}]
+        assert september["dud_of_the_month"] == [{"manager_key": 11, "manager_name": "Bob", "points": 110}]
+        client.get_classic_league_standings.assert_not_awaited()
+
+    def test_months_fpl_does_not_list_skip_the_awards_and_say_so(self):
+        self._seed(3, 4)
+        client = _fpl_client()
+        client.get_months = AsyncMock(return_value=[])
+
+        result = _invoke_recap(self._week(), ["--format", "json"], client=client)
+
+        assert self._honours(result) is None
+        warnings = json.loads(result.stdout)["metadata"]["warnings"]
+        assert [w["code"] for w in warnings] == ["league_months_unavailable"]
+        assert warnings[0]["message"].startswith(
+            "Manager and Dud of the Month skipped: FPL's bootstrap lists no months",
+        )
+        assert _store().captured_gameweeks() == [3, 4, 5]
+
+    def test_months_fpl_lists_unreadably_skip_the_awards_and_say_so(self):
+        def _unreadable() -> list[Any]:
+            return season_months([{"id": 1, "name": "Overall"}, {"id": 2, "name": "August"}])
+
+        client = _fpl_client()
+        client.get_months = AsyncMock(side_effect=_unreadable)
+
+        result = _invoke_recap(self._week(), ["--format", "json"], client=client)
+
+        assert self._honours(result) is None
+        message = json.loads(result.stdout)["metadata"]["warnings"][0]["message"]
+        assert "a month in FPL's bootstrap could not be read" in message
+        assert "Manager and Dud of the Month skipped" in result.stderr.replace("\n", "")
+
+    def test_the_editorial_gets_the_honours_at_a_months_end_and_at_a_milestone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A month's last gameweek hands the editorial the month's two awards
+        with the months before them, and the two milestones hand it the list
+        the report prints. Any other gameweek has neither."""
+        monkeypatch.chdir(tmp_path)  # debug prompts land in ./data/debug
+        prompt = tmp_path / "data" / "debug" / "recap_prompt.txt"
+        self._seed(1, 2, 3)
+
+        mid_month = _invoke_recap(self._week(4), ["--dry-run"], client=_fpl_client(4), gw=4)
+        assert mid_month.exit_code == 0, mid_month.output
+        assert "## Monthly Honours" not in prompt.read_text(encoding="utf-8")
+
+        month_end = _invoke_recap(self._week(), ["--dry-run"])
+        assert month_end.exit_code == 0, month_end.output
+        text = prompt.read_text(encoding="utf-8")
+        assert "- **Manager of the Month:** Alice with 190 pts across September (GW3-5), ahead of Bob (70)" in text
+        assert "## Monthly Honours" in text
+        assert "Total months completed: 2" in text
+        assert "- August (GW1-2): Manager of the Month Alice with 140 pts; Dud of the Month Bob with 100 pts" in text
+
+        self._seed(*range(6, CHIP_SPLIT_GW))
+        halfway = _invoke_recap(
+            self._week(CHIP_SPLIT_GW), ["--dry-run"], client=_fpl_client(CHIP_SPLIT_GW), gw=CHIP_SPLIT_GW,
+        )
+        assert halfway.exit_code == 0, halfway.output
+        text = prompt.read_text(encoding="utf-8")
+        assert "## Monthly Honours" in text
+        assert "Total months completed: 5" in text
+        assert "- September (GW3-5): Manager of the Month Alice with 190 pts; Dud of the Month Bob with 70 pts" in text
+        assert "**Manager of the Month:**" not in text, "GW19 closes no month"
+
+    def test_manager_names_in_the_month_awards_are_not_read_as_markup(self):
+        self._seed(3, 4, bob="[b]B[/b]")
+
+        result = _invoke_recap(self._week(bob="[b]B[/b]"))
+
+        assert result.exit_code == 0, result.output
+        assert "Dud of the Month: [b]B[/b] with 110 pts" in result.output.replace("\n", "")

@@ -37,8 +37,8 @@ from fpl_cli.cli._league_recap_types import (
     RecapFinePenalty,
     RecapFineResult,
     RecapManagerEntry,
+    RecapMonthTable,
     RecapSeasonRecord,
-    competition_rank,
     contested_draft_claims,
     draft_transaction_chains,
     draft_transaction_kind_label,
@@ -52,6 +52,7 @@ from fpl_cli.cli._league_recap_types import (
     recap_fines_roll_call,
 )
 from fpl_cli.prompts.league_recap import format_recap_fines_roll_call
+from fpl_cli.utils.ranking import competition_rank
 from fpl_cli.utils.text import ORDINAL_WORDS, join_and
 
 # The JSON warning code each check raises when a claim it caught survives
@@ -1358,6 +1359,12 @@ _TIE_TABLE_RE = re.compile(
 # season") also reads against the season's record, which the League History
 # section states with every score that reached it (#494).
 _TIE_SEASON_RE = re.compile(r"(?<!\w)season\w*(?!\w)", re.IGNORECASE)
+# A tie said of a month ("joint-top for the month", "tied for first in
+# October's table") reads against that month's own table, which the Awards
+# and Monthly Honours sections state the ties on (#425). The word "month"
+# alone means the month the recapped gameweek closed; a month's name means
+# that month, matched as FPL capitalises it, so "may" is no May.
+_TIE_MONTH_RE = re.compile(r"(?<!\w)month\w*(?!\w)", re.IGNORECASE)
 # The words that name the table or the season outright. "Spot", "place" and
 # "position" do not: a week has a top spot too ("shared the top spot on 55
 # points", #511).
@@ -1422,6 +1429,7 @@ def check_tie_claims(
     names: RecapNames,
     *,
     season_records: Mapping[str, RecapSeasonRecord] | None = None,
+    month_tables: Sequence[RecapMonthTable] = (),
 ) -> list[str]:
     """Every tie the editorial claims at a rank no two managers share (#359).
 
@@ -1455,6 +1463,13 @@ def check_tie_claims(
     more than one score reached it and the tie is said of no other figure
     (`_tie_figures`); the record only ever adds a reading, so a tie the week
     or the table bears out still passes.
+
+    `month_tables` are the months the editorial was shown (#425), each with
+    every manager's place on the month's points. A tie said of a month --
+    one whose words name it, or say "month" on a recap that closed one --
+    has that month's table as one more reading, which holds where more than
+    one manager shares the place; a tie said of a month the editorial was
+    not shown gets no such reading. Like the record, it only ever adds one.
     """
     if len(managers) < 2:
         return []
@@ -1490,6 +1505,22 @@ def check_tie_claims(
         return f"{place_label(target)} place in the table is {holders[0]}'s alone"
 
     records = season_records or {}
+
+    def months_named(window: str) -> list[RecapMonthTable]:
+        tables = [table for table in month_tables if table["ranks"]]
+        named = [table for table in tables if re.search(rf"(?<!\w){re.escape(table['name'])}(?!\w)", window)]
+        if named or not _TIE_MONTH_RE.search(window):
+            return named
+        return [table for table in tables if table["closing"]]
+
+    def month_fact(rank: int | str, tables: Sequence[RecapMonthTable]) -> str | None:
+        if any(len(_rank_holders(table["ranks"], rank)[1]) > 1 for table in tables):
+            return None
+        target, holders = _rank_holders(tables[0]["ranks"], rank)
+        where = f"{tables[0]['name']}'s table"
+        if not holders:
+            return f"nobody is {place_label(target)} in {where}"
+        return f"{place_label(target)} place in {where} is {holders[0]}'s alone"
 
     def season_fact(rank: str, figures: Sequence[int]) -> str | None:
         record = records[rank]
@@ -1562,20 +1593,27 @@ def check_tie_claims(
             week_figures = [*figures, int(held.group("figure"))] if held else figures
             if len(holders) > 1 and points[holders[0]] in week_figures and not _TIE_TABLE_NAMED_RE.search(window):
                 continue
+            # Each reading says why the tie does not hold in it; the tie
+            # passes if any one holds.
             if isinstance(rank, str) and rank in records and about_week and _TIE_SEASON_RE.search(window):
-                readings = (gameweek_fact(rank), table_fact(rank), season_fact(rank, figures))
-                fact = None if None in readings else "no reading holds: " + "; ".join(
-                    reading for reading in readings if reading is not None
-                )
+                readings = [gameweek_fact(rank), table_fact(rank), season_fact(rank, figures)]
             elif about_week and not about_table:
-                fact = gameweek_fact(rank)
+                readings = [gameweek_fact(rank)]
             elif about_table and not about_week:
-                fact = table_fact(rank)
+                readings = [table_fact(rank)]
             else:
-                week, table = gameweek_fact(rank), table_fact(rank)
-                fact = f"neither reading holds: {week}, and {table}" if week and table else None
-            if fact is None:
+                readings = [gameweek_fact(rank), table_fact(rank)]
+            if tables_named := months_named(window):
+                readings.append(month_fact(rank, tables_named))
+            failed = [reading for reading in readings if reading is not None]
+            if len(failed) < len(readings):
                 continue
+            if len(failed) == 1:
+                fact = failed[0]
+            elif len(failed) == 2:
+                fact = f"neither reading holds: {failed[0]}, and {failed[1]}"
+            else:
+                fact = "no reading holds: " + "; ".join(failed)
             problem = f'the editorial says "{match.group(0)}", but {fact}'
             if problem not in problems:
                 problems.append(problem)
@@ -2432,7 +2470,7 @@ def check_penalty_repetitions(summary: str, penalties: Sequence[RecapFinePenalty
 _BRIEF_SECTIONS = (
     "Awards", "GW Standings", "Standout Players", "Captains", "Chips Played", "Transfers",
     "Waivers and Free Agents", "Player Clubs", "Fines", "Season Fines", "League History",
-    "Prior Seasons", "GW Context",
+    "Monthly Honours", "Prior Seasons", "GW Context",
 )
 # Quote marks and emphasis a section's name may be wrapped in, as the brief
 # quotes it ('the "## Fines" section') or a draft bolds it.
@@ -2953,7 +2991,10 @@ def _ties(summary: str, data: LeagueRecapData, names: RecapNames) -> list[str]:
         records["top"] = highest
     if (lowest := data.get("season_lowest_score")) is not None:
         records["bottom"] = lowest
-    return check_tie_claims(summary, data["managers"], names, season_records=records)
+    return check_tie_claims(
+        summary, data["managers"], names,
+        season_records=records, month_tables=data.get("month_tables") or [],
+    )
 
 
 EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (

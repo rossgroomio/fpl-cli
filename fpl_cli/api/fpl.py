@@ -9,6 +9,7 @@ import httpx
 from fpl_cli.models.fixture import Fixture
 from fpl_cli.models.gameweek_status import GameweekStatus
 from fpl_cli.models.player import Player
+from fpl_cli.models.season_month import SeasonMonth, season_months
 from fpl_cli.models.team import Team
 from fpl_cli.season import resolve_season_year
 
@@ -185,6 +186,25 @@ class FPLClient:
         data = await self.get_bootstrap_static()
         return data["events"]
 
+    async def get_months(self) -> list[SeasonMonth]:
+        """Get the season's months, as FPL divides the gameweeks between them.
+
+        Read off the cached bootstrap, so it costs no request of its own.
+        Empty when the bootstrap carries no months at all. The draft game's
+        bootstrap has none, but its gameweeks are this game's, so a draft
+        caller reads the months here too.
+
+        Returns:
+            The months in gameweek order, the season-long phase left out.
+
+        Raises:
+            pydantic.ValidationError: a month is missing an id, name or
+                either boundary.
+        """
+        data = await self.get_bootstrap_static()
+        phases = data.get("phases")
+        return season_months(phases) if isinstance(phases, list) else []
+
     async def get_current_gameweek(self) -> dict[str, Any] | None:
         """Get the current gameweek.
 
@@ -285,17 +305,25 @@ class FPLClient:
         self,
         league_id: int,
         page: int = 1,
+        month_id: int | None = None,
     ) -> dict[str, Any]:
         """Get classic league standings.
 
         Args:
             league_id: The league ID.
             page: Page number for pagination (default 1).
+            month_id: A `SeasonMonth.id` (see `get_months()`) for the league's
+                table over that month alone, as the month selector on the
+                league's page shows it: each `total` is then the manager's
+                points for the month. None for the season table.
 
         Returns:
             League standings data including league info and standings list.
         """
-        return await self._get(f"leagues-classic/{league_id}/standings/?page_standings={page}")
+        endpoint = f"leagues-classic/{league_id}/standings/?page_standings={page}"
+        if month_id is not None:
+            endpoint += f"&phase={month_id}"
+        return await self._get(endpoint)
 
     async def get_gameweek_status(self) -> GameweekStatus:
         """Get where FPL has got to in processing the latest gameweek.

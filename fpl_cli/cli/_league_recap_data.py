@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from fpl_cli.models.player import Player
     from fpl_cli.models.team import Team
     from fpl_cli.services.draft_provenance import DraftInForce, DraftPlayerHistory
+    from fpl_cli.services.league_history_months import MonthAwards
 
     class ManagerPicksClient(Protocol):
         """The subset of FPLClient that _fetch_all_manager_data calls.
@@ -57,7 +58,6 @@ if TYPE_CHECKING:
             self, league_id: int, page: int = 1, /,
         ) -> dict[str, Any]: ...
 from fpl_cli.cli._league_recap_types import (
-    DETAIL_CAP,
     STANDOUT_BLANK_MAX_POINTS,
     STANDOUT_PPG_FROM_GW,
     STANDOUT_PPG_MIN_APPEARANCES,
@@ -85,8 +85,11 @@ from fpl_cli.cli._league_recap_types import (
     format_contested_claim,
     format_move_counts,
     format_standout_player,
+    month_holders,
+    points_label,
     recap_manager_key,
 )
+from fpl_cli.constants import DETAIL_CAP
 from fpl_cli.models.player import usable_code
 from fpl_cli.services.fixture_predictions import had_fixture
 from fpl_cli.services.league_history_drafts import draft_snapshot_path
@@ -2152,6 +2155,79 @@ def _compute_most_contested_award(
         value=top_count,
         detail=detail,
     )
+
+
+# ---------------------------------------------------------------------------
+# Manager and Dud of the Month (issue #425)
+# ---------------------------------------------------------------------------
+
+
+def month_award_entries(awards: MonthAwards) -> RecapAwards:
+    """Manager and Dud of the Month for the month the recapped gameweek
+    closed, or nothing for a month withheld, whose reason the caller prints
+    in their place.
+
+    Manager of the Month names the rest of the top three after the winners
+    ("..., ahead of Bob Jones (238) and Cara Diaz (230)"), a tie on a place
+    naming everyone on it up to `DETAIL_CAP` and counting the rest, who all
+    share the last total named. The Dud names everyone on the lowest total,
+    as GW Loser does, and is absent when that is everyone.
+    """
+    entries = RecapAwards()
+    if not awards.awarded:
+        return entries
+    span = f"across {awards.month.label}"
+
+    winners = awards.managers_of_the_month
+    detail = f"{month_holders(winners)} {span}"
+    runners_up = [total for total in awards.top_three if total.rank > 1]
+    if runners_up:
+        named = [f"{total.manager_name} ({total.points})" for total in runners_up[:DETAIL_CAP]]
+        omitted = len(runners_up) - len(named)
+        if omitted:
+            named.append(f"{omitted} more on {points_label(runners_up[-1].points)}")
+        detail += f", ahead of {join_and(named)}"
+    entries["manager_of_the_month"] = RecapAwardEntry(
+        manager_name=" and ".join(total.manager_name for total in winners),
+        value=winners[0].points,
+        detail=detail,
+    )
+
+    duds = awards.duds_of_the_month
+    if duds:
+        entries["dud_of_the_month"] = RecapAwardEntry(
+            manager_name=" and ".join(total.manager_name for total in duds),
+            value=duds[0].points,
+            detail=f"{month_holders(duds)} {span}",
+        )
+    return entries
+
+
+def month_table_mismatches(
+    awards: MonthAwards, table: Sequence[Any],
+) -> list[tuple[str, int, int]]:
+    """Each manager whose month total differs from FPL's own table for the
+    month, as (name, the ledger's total, FPL's), in the ledger's order.
+
+    The classic cross-check on the month's awards, in the spirit of
+    `_reconcile_classic_headline_numbers` but never a stop: a disagreement
+    withholds the month's awards, not the recap. Matched on `entry`, the
+    ledger's classic key, so a manager only one side holds is no
+    disagreement: FPL's table is the league as it stands when read, which a
+    manager who has since left is no longer in. A row without an int
+    `entry` and `total` is skipped.
+    """
+    fpl_totals = {
+        row["entry"]: row["total"]
+        for row in table
+        if isinstance(row, Mapping)
+        and isinstance(row.get("entry"), int) and isinstance(row.get("total"), int)
+    }
+    return [
+        (total.manager_name, total.points, fpl_totals[total.manager_key])
+        for total in awards.totals
+        if total.manager_key in fpl_totals and fpl_totals[total.manager_key] != total.points
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from fpl_cli.cli._league_recap_types import (
     draft_transaction_kind_label,
     draft_transaction_kind_nets,
     format_contested_claim,
+    format_month_honours_line,
     format_move_counts,
     gameweek_rank,
     last_place_escape,
@@ -31,6 +32,7 @@ from fpl_cli.cli._league_recap_types import (
     standout_players_note,
 )
 from fpl_cli.services.league_history_fines import SeasonFinesTally, format_fine_breakdown
+from fpl_cli.services.league_history_months import MonthlyHonours
 from fpl_cli.services.league_history_notes import NotesPack, NoteSurface
 from fpl_cli.utils.gameweek import format_gameweek_list, is_opening_gameweek
 from fpl_cli.utils.markdown import fence_flags, parse_heading, unwrap_emphasis
@@ -67,7 +69,7 @@ The lines a league quotes back in its group chat are short and dry, and they are
 
 <rules>
 - This is a recap, not a preview: no advice, no recommendations, and nothing about future gameweeks
-- Stick to what happened this gameweek. The only facts spanning more than this gameweek you may state are the ones a section hands you, with its counts, spans and qualifiers kept exactly as it states them: streaks, season counts and the season's highest and lowest gameweek scores from the "## League History" section, a manager's FPL seasons before this one as the "## Prior Seasons" rule below allows, season fine totals from the "## Season Fines" section, where this gameweek's fine sits in a manager's season from the "## Fines" section, and who led before this gameweek from the GW Standings section's previous-leader statement. A streak, trend, total or season-arc fact none of them states is not yours to mention, however obvious it looks. Beyond that statement, the Awards and GW Standings sections describe one gameweek and are never a source of history
+- Stick to what happened this gameweek. The only facts spanning more than this gameweek you may state are the ones a section hands you, with its counts, spans and qualifiers kept exactly as it states them: streaks, season counts and the season's highest and lowest gameweek scores from the "## League History" section, a manager's FPL seasons before this one as the "## Prior Seasons" rule below allows, season fine totals from the "## Season Fines" section, where this gameweek's fine sits in a manager's season from the "## Fines" section, who led before this gameweek from the GW Standings section's previous-leader statement, and the Manager and Dud of the Month from the Awards section and the "## Monthly Honours" section, stated as their lines give them and never with how the month's race stood before this gameweek, which no section states. A streak, trend, total or season-arc fact none of them states is not yours to mention, however obvious it looks. Beyond that statement and those month awards, the Awards and GW Standings sections describe one gameweek and are never a source of history
 - Every League History entry is about one named manager only. Never combine two managers into a shared record, streak, or "club" - phrasing like "joined by X", "joins Y in that club", or "the two of them share" is forbidden unless a single League History entry explicitly names both managers together. Two managers who each had a one-off gameweek in a different week (e.g. one finished last in GW1, a different one finished last in GW2) do not form a joint record for either of them - each stays a separate, single-gameweek fact, and under the previous rule a single gameweek's worth of an event is not itself a reportable streak at all
 - A claim that a manager "topped the table", "was previously top", "led before this gameweek", or "fell from the top/first place" must match the "Previous gameweek's leader" statement at the top of the GW Standings section exactly - never infer the previous leader yourself from the size of a fall, the Prev column, or anything else. If that statement names no leader, make no such claim about anyone
 - "Joint", "tied", "level", "shared", "equal" and every other tie word may only be used where the data states the tie. The GW Standings section names the gameweek's highest and lowest scores, says whether each was one manager's alone, and lists every gameweek score and every league position (Pos, and Prev where any is shared) more than one manager holds, plus any season totals that are level but placed apart by the league's tie-break: a score or position it does not list as shared belonged to one manager, so it is "the lowest", never "the joint-lowest". A tie on season totals in the table's Pos column is not a tie on gameweek scores, and a tie on gameweek scores is not one in the table. Managers level on points but placed apart are "level on points", never "joint" in position. The same goes for superlatives: "the highest" or "the lowest" score of the week belongs only to the manager(s) that section names for it. A "## League History" season-record line says how many times the season's highest or lowest score was scored: one scored more than once is shared, and one scored once is that score's alone
@@ -113,6 +115,7 @@ def get_recap_synthesis_prompt(
     waivers_text: str = "",
     player_clubs_text: str = "",
     league_history_text: str = "",
+    monthly_honours_text: str = "",
     prior_seasons_text: str = "",
     standout_players_text: str = "",
     is_bgw: bool = False,
@@ -180,6 +183,9 @@ def get_recap_synthesis_prompt(
 
     if league_history_text:
         sections.extend(["", "## League History", league_history_text])
+
+    if monthly_honours_text:
+        sections.extend(["", "## Monthly Honours", monthly_honours_text])
 
     if prior_seasons_text:
         sections.extend(["", "## Prior Seasons", prior_seasons_text])
@@ -285,8 +291,20 @@ def normalise_recap_editorial(summary: str, *, league_name: str) -> str:
 # =============================================================================
 
 
+# Labels the key's title case would get wrong ("Manager Of The Month").
+_AWARD_LABELS = {
+    "manager_of_the_month": "Manager of the Month",
+    "dud_of_the_month": "Dud of the Month",
+}
+
+
 def format_recap_awards_context(data: LeagueRecapData) -> str:
-    """Format awards into text for the LLM prompt."""
+    """Format awards into text for the LLM prompt.
+
+    A month withheld on the gameweek that closed it (#425) is stated where
+    its awards would be, so its absence reads as a decision rather than an
+    invitation to name a winner.
+    """
     awards = data.get("awards", {})
     lines = []
 
@@ -295,11 +313,14 @@ def format_recap_awards_context(data: LeagueRecapData) -> str:
         "best_captain", "worst_captain",
         "transfer_genius", "transfer_disaster",
         "waiver_genius", "waiver_disaster", "most_contested",
+        "manager_of_the_month", "dud_of_the_month",
     ):
         award = awards.get(key)
         if award:
-            label = key.replace("_", " ").title()
+            label = _AWARD_LABELS.get(key) or key.replace("_", " ").title()
             lines.append(f"- **{label}:** {award['detail']}")
+    if withheld := data.get("month_awards_withheld"):
+        lines.append(f"- **Manager and Dud of the Month:** {withheld}")
 
     return "\n".join(lines) if lines else "No notable awards."
 
@@ -1015,6 +1036,29 @@ def format_recap_league_history_context(pack: NotesPack | None) -> str:
         lines.append("Coverage:")
         for entry in pack.coverage_entries:
             lines.append(f"- {entry.text}")
+    return "\n".join(lines)
+
+
+def format_recap_monthly_honours_context(honours: MonthlyHonours | None) -> str:
+    """Every completed month's Manager and Dud of the Month (#425), for the
+    recap of a gameweek that closes a month and for the halfway recap and
+    the finale.
+
+    Enumerate-and-lock, like the other season sections: an explicit count of
+    the months, then one line each, worded as the report's Monthly Honours
+    lines are, a withheld month with its reason. The caller hands it over on
+    a month's last gameweek, so the month's two awards come with the months
+    before them, and at the two season milestones, the recaps that print the
+    list; empty otherwise, and the section is then absent.
+    """
+    if honours is None or not honours.months:
+        return ""
+    lines = [
+        "Each completed month this season with its Manager of the Month (the month's top "
+        "scorer) and Dud of the Month (its lowest), on points over the month's gameweeks.",
+        f"Total months completed: {len(honours.months)}",
+    ]
+    lines.extend(f"- {format_month_honours_line(awards)}" for awards in honours.months)
     return "\n".join(lines)
 
 
