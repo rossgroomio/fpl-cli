@@ -75,6 +75,7 @@ from fpl_cli.cli._league_recap_types import (
     standout_players_lines,
     summarise_prior_seasons,
 )
+from fpl_cli.constants import DETAIL_CAP
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.prompts.league_recap import (
     collect_player_clubs,
@@ -2734,6 +2735,248 @@ def _txn(pin: str, pin_pts: int, pout: str, pout_pts: int, kind: str = "w") -> R
     )
 
 
+def _transfer(pin: str, pin_pts: int, pout: str, pout_pts: int) -> RecapTransfer:
+    return RecapTransfer(
+        player_in=pin, player_in_team="???", player_in_points=pin_pts,
+        player_out=pout, player_out_team="???", player_out_points=pout_pts,
+        net=pin_pts - pout_pts, cost=0,
+    )
+
+
+def _move_award(
+    award: str, managers: list[RecapManagerEntry],
+) -> RecapAwardEntry | None:
+    awards: RecapAwards = {}  # type: ignore[typeddict-item]
+    if award.startswith("waiver"):
+        _compute_waiver_awards(managers, awards)
+    else:
+        _compute_transfer_awards(managers, awards)
+    return awards.get(award)
+
+
+class TestMoveAwardTies:
+    """#546: a move award on a shared figure names every manager on it and
+    says the figure is shared, rather than handing it to whoever came first
+    in the list. Each manager's part is the detail they would get alone."""
+
+    def test_waiver_genius_names_both_managers_level_on_the_top_net(self):
+        """GW8 of the pr545 A/B: two managers' one move each netted +3, and the
+        award named only the first, which the editorial read as the week's
+        best move. Listed out of name order, so the order is the award's."""
+        managers = [
+            _make_manager_with_txns("Bob", [_txn("Rogers", 5, "Gakpo", 2, kind="f")], entry_id=2),
+            _make_manager_with_txns("Cam", [_txn("Elanga", 2, "Wood", 1)], entry_id=3),
+            _make_manager_with_txns("Alice", [_txn("Neto", 3, "Sávio", 0)], entry_id=1),
+        ]
+        award = _move_award("waiver_genius", managers)
+        assert award == RecapAwardEntry(
+            manager_name="Alice and Bob",
+            value=3,
+            detail=(
+                "Shared by 2 managers, who each gained 3 net pts overall. "
+                "Alice gained 3 net pts overall (1 waiver). Best: Neto in for Sávio (+3). "
+                "Bob gained 3 net pts overall (1 free agent). Best: Rogers in for Gakpo (+3)."
+            ),
+        )
+
+    @pytest.mark.parametrize(
+        ("award", "lead"),
+        [
+            ("waiver_genius", "Shared by 2 managers, who each gained 3 net pts overall. "),
+            ("waiver_disaster", "Shared by 2 managers, who each lost 3 net pts overall. "),
+            ("transfer_genius", "Shared by 2 managers, who each gained 3 net pts overall. "),
+            ("transfer_disaster", "Shared by 2 managers, who each lost 3 net pts overall. "),
+        ],
+    )
+    def test_each_move_award_names_every_manager_on_its_figure(self, award, lead):
+        """Each tied manager's part is exactly the detail they would get as
+        the award's only winner. The classic disaster pairs a losing swap
+        with a profitable one sunk by a hit, so the two parts differ in shape."""
+        sign = 1 if award.endswith("genius") else -1
+        if award.startswith("waiver"):
+            alice = _make_manager_with_txns(
+                "Alice", [_txn("A", 4, "B", 4 - 3 * sign), _txn("C", 2, "D", 2)], entry_id=1,
+            )
+            bob = _make_manager_with_txns("Bob", [_txn("E", 6, "F", 6 - 3 * sign, kind="f")], entry_id=2)
+            other = _make_manager_with_txns("Cam", [_txn("G", 3, "H", 2 if sign > 0 else 4)], entry_id=3)
+        else:
+            alice = _make_manager(name="Alice", entry_id=1, transfers=[_transfer("A", 4, "B", 4 - 3 * sign)])
+            bob = (
+                _make_manager(name="Bob", entry_id=2, transfers=[_transfer("E", 5, "F", 2), _transfer("G", 1, "H", 1)])
+                if sign > 0 else
+                _make_manager(name="Bob", entry_id=2, transfers=[_transfer("E", 3, "F", 2)], transfer_cost=4)
+            )
+            other = _make_manager(name="Cam", entry_id=3, transfers=[_transfer("G", 3, "H", 2 if sign > 0 else 4)])
+
+        tied = _move_award(award, [bob, other, alice])
+        alone = [_move_award(award, [m]) for m in (alice, bob)]
+
+        assert tied is not None and all(a is not None for a in alone)
+        assert tied["manager_name"] == "Alice and Bob"
+        assert tied["value"] == 3 * sign
+        assert tied["detail"] == lead + " ".join(a["detail"] for a in alone if a is not None)
+        assert "Cam" not in tied["detail"]
+
+    def test_wider_tie_than_the_cap_names_the_first_three_and_counts_the_rest(self):
+        managers = [
+            _make_manager_with_txns(f"M{i}", [_txn(f"In{i}", 3, f"Out{i}", 0)], entry_id=i)
+            for i in (4, 2, 0, 3, 1)
+        ]
+        award = _move_award("waiver_genius", managers)
+        assert award is not None
+        detail = award["detail"]
+        assert detail.startswith(
+            "Shared by 5 managers, who each gained 3 net pts overall; 2 more managers omitted. M0 gained"
+        )
+        assert detail.count("gained 3 net pts overall") == DETAIL_CAP + 1 == 4
+        assert [n for n in ("M0", "M1", "M2", "M3", "M4") if n in detail] == ["M0", "M1", "M2"]
+        assert detail.endswith("Best: In2 in for Out2 (+3).")
+        # The award still records every tied manager; only the prose is capped.
+        assert award["manager_name"] == "M0 and M1 and M2 and M3 and M4"
+
+    def test_omitted_managers_are_counted_apart_from_a_managers_omitted_moves(self):
+        """#549 review: the last manager shown had more moves than the cap, so
+        his own "; 2 more omitted" tail used to run straight into the tie's
+        "; 1 more manager omitted", and the count of either could be misread.
+        The tie's count now sits in the lead."""
+        managers = [
+            _make_manager(name=f"M{i}", entry_id=i, transfers=[_transfer(f"In{i}", 5, f"Out{i}", 0)])
+            for i in (0, 1, 3)
+        ]
+        managers.append(_make_manager(
+            name="M2", entry_id=2, transfers=[_transfer(f"In2{j}", 1, f"Out2{j}", 0) for j in range(5)],
+        ))
+        award = _move_award("transfer_genius", managers)
+        assert award is not None
+        assert award["detail"] == (
+            "Shared by 4 managers, who each gained 5 net pts overall; 1 more manager omitted. "
+            "M0 gained 5 net pts overall. Best: In0 in for Out0 (+5). "
+            "M1 gained 5 net pts overall. Best: In1 in for Out1 (+5). "
+            "M2 gained 5 net pts overall (+5 raw across 5 transfers). "
+            "Best: In20 in for Out20 (+1); also In21 in for Out21 (+1), In22 in for Out22 (+1); 2 more omitted."
+        )
+
+    @pytest.mark.parametrize(
+        ("award", "expected"),
+        [
+            ("waiver_genius", "Alice gained 9 net pts overall (1 free agent). Best: Star in for Dud (+9)."),
+            ("waiver_disaster", "Alice lost 8 net pts overall (1 waiver). Worst: Flop in for Legend (-8)."),
+            ("transfer_genius", "Alice gained 9 net pts overall. Best: Star in for Dud (+9)."),
+            ("transfer_disaster", "Alice lost 8 net pts overall. Worst: Flop in for Legend (-8)."),
+        ],
+    )
+    def test_a_lone_winner_reads_as_before(self, award, expected):
+        """Bob moved too, on a different figure, so the award has a field to
+        win and nothing in it to share."""
+        if award.startswith("waiver"):
+            alice_txns = (
+                [_txn("Star", 9, "Dud", 0, kind="f")] if award.endswith("genius")
+                else [_txn("Flop", 0, "Legend", 8)]
+            )
+            managers = [
+                _make_manager_with_txns("Alice", alice_txns, entry_id=1),
+                _make_manager_with_txns("Bob", [_txn("A", 3, "B", 2)], entry_id=2),
+            ]
+        else:
+            alice_moves = (
+                [_transfer("Star", 9, "Dud", 0)] if award.endswith("genius")
+                else [_transfer("Flop", 0, "Legend", 8)]
+            )
+            managers = [
+                _make_manager(name="Alice", entry_id=1, transfers=alice_moves),
+                _make_manager(name="Bob", entry_id=2, transfers=[_transfer("A", 3, "B", 2)]),
+            ]
+        result = _move_award(award, managers)
+        assert result is not None
+        assert result["manager_name"] == "Alice"
+        assert result["detail"] == expected
+
+    def test_a_closed_loop_beside_a_tied_move_is_neither_named_nor_counted_as_a_mover(self):
+        """Alice went A out for B and straight back, then made a +3 move; Bob
+        made one +3 move; Cam's only activity was a loop. Alice's loop
+        contracts to nothing, so her part names only the move that stuck
+        while still counting every move she made, and Cam -- level on no
+        net at all -- is in neither award."""
+        managers = [
+            _make_manager_with_txns(
+                "Alice", [_txn("B", 4, "A", 1), _txn("A", 1, "B", 4), _txn("C", 5, "D", 2, kind="f")], entry_id=1,
+            ),
+            _make_manager_with_txns("Bob", [_txn("E", 3, "F", 0)], entry_id=2),
+            _make_manager_with_txns("Cam", [_txn("X", 2, "Y", 6), _txn("Y", 6, "X", 2)], entry_id=3),
+        ]
+        awards: RecapAwards = {}  # type: ignore[typeddict-item]
+        _compute_waiver_awards(managers, awards)
+        assert awards["waiver_genius"] == RecapAwardEntry(
+            manager_name="Alice and Bob",
+            value=3,
+            detail=(
+                "Shared by 2 managers, who each gained 3 net pts overall. "
+                "Alice gained 3 net pts overall (+3 raw across 3 moves: 2 waivers, 1 free agent). "
+                "Best: C in for D (+3). "
+                "Bob gained 3 net pts overall (1 waiver). Best: E in for F (+3)."
+            ),
+        )
+        assert "waiver_disaster" not in awards
+
+    async def test_draft_recap_names_both_managers_level_on_the_top_waiver_net(self):
+        """End to end through the draft collector, the draft ids numbered
+        apart from the main game's so a move read on the wrong id would
+        score the wrong player."""
+        teams = {1: make_team(id=1, name="Alpha", short_name="ALP")}
+        draft_players = [
+            make_draft_player(id=900 + i, web_name=name, team=1, element_type=3)
+            for i, name in enumerate(("In1", "Out1", "In2", "Out2"))
+        ]
+        main_players = [
+            make_player(id=5 + i, code=dp["code"], web_name=dp["web_name"], team_id=1)
+            for i, dp in enumerate(draft_players)
+        ]
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [
+                {"league_entry": 10, "event_total": 5, "total": 5},
+                {"league_entry": 20, "event_total": 4, "total": 4},
+            ],
+            "league_entries": [
+                {"id": 10, "entry_id": 1, "player_first_name": "Ann", "player_last_name": "Ash"},
+                {"id": 20, "entry_id": 2, "player_first_name": "Ben", "player_last_name": "Birch"},
+            ],
+        }
+        txns = {"transactions": [
+            {"event": 8, "result": "a", "entry": 1, "element_in": 900, "element_out": 901, "kind": "w"},
+            {"event": 8, "result": "a", "entry": 2, "element_in": 902, "element_out": 903, "kind": "w"},
+        ]}
+        picks = {
+            1: {"picks": [{"element": 900, "position": 1}], "subs": []},
+            2: {"picks": [{"element": 902, "position": 1}], "subs": []},
+        }
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": draft_players})
+        client.get_league_transactions = AsyncMock(return_value=txns)
+        client.get_entry_picks = AsyncMock(side_effect=lambda entry_id, gw: picks[entry_id])
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 1}}, gw=8,
+                live_stats={
+                    5: {"total_points": 5}, 6: {"total_points": 2},
+                    7: {"total_points": 4}, 8: {"total_points": 1},
+                },
+                players=main_players, teams=teams, is_live_gw=False,
+            )
+        award = data["awards"]["waiver_genius"]
+        assert award["manager_name"] == "Ann Ash and Ben Birch"
+        assert award["value"] == 3
+        assert award["detail"] == (
+            "Shared by 2 managers, who each gained 3 net pts overall. "
+            "Ann Ash gained 3 net pts overall (1 waiver). Best: In1 in for Out1 (+3). "
+            "Ben Birch gained 3 net pts overall (1 waiver). Best: In2 in for Out2 (+3)."
+        )
+
+
 class TestFormatMoveCounts:
     """One rendering of a kind-count breakdown, shared by the award headline
     and the waiver roster (PR #303 review)."""
@@ -4518,6 +4761,28 @@ class TestPromptFormatting:
         assert 'treat the "## Transfers" section as the source of truth' in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert "Do not infer transfer activity from the Awards section" in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert "not licence to invent" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+    def test_synthesis_system_prompt_says_a_move_award_can_name_a_tie(self):
+        """#546: a move award on a shared figure names every manager on it, so
+        the rules no longer say it names a single best and worst mover, still
+        say it is no count of movers, and keep a shared figure shared."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        assert "single best and single worst" not in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "Do not infer transfer activity from the Awards section - it names only the best and worst"
+            " mover, or every mover tied on that figure, so it never tells you how many managers"
+            " transferred or what anyone else did."
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "Waiver Genius and Waiver Disaster name only the best and worst mover, or every mover tied"
+            " on that figure, and Most Contested only the player the most managers claimed, so they"
+            " never tell you how many managers moved"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "where an Awards line says its figure is shared, no manager it names made the week's best"
+            " or worst move alone"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_synthesis_system_prompt_binds_club_claims_to_the_data(self):
         """#150: clubs are supplied now, so the rule binds to them rather than

@@ -1150,6 +1150,12 @@ headline and prose — is one contiguous block to copy out.
 
 **Awards:** GW winner/loser, biggest bench haul, best/worst captain, transfer/waiver genius and disaster,
 and on the gameweek that closes one of FPL's months, Manager and Dud of the Month (below).
+Each names every manager on its figure rather than whichever came first. A transfer or waiver award
+whose net is shared says so ("Shared by 2 managers, who each gained 3 net pts overall.") and then
+gives each manager, in name order, the detail a lone winner would get. As with Biggest Bench Haul's
+tie, at most three managers are described; the opening line counts the rest ("; 2 more managers
+omitted") without naming them. The editorial then has a tie to quote, rather than one manager it
+could call the week's sole best or worst mover (issue #546).
 Biggest Bench Haul ranks on what the bench actually cost: how many more points the best legal XI
 from the same 15 would have scored than the XI that counted, with the player whose points were
 doubled (the captain, or the vice when the captain did not play) held in place so the multiplier is
