@@ -1631,10 +1631,9 @@ dates, so a season of a different length moves them and the stated gameweek numb
 with it. `metadata.season_phase` carries the live value, and is `null` on any run that built no
 notes pack — an unreadable store, or no league id configured for the format.
 
-A phase is the season's arc, not its chip half. `midpoint` opens on GW19, the halfway
-milestone, which is still the first half; the second half and its chips start at GW20. A
-consumer asking whether the second set of chips is live compares `metadata.gameweek` with 20
-rather than reading `season_phase`.
+`midpoint` covers GW19-31, so it doesn't tell you which chip half a gameweek is in: the second
+half starts at GW20. To ask whether the second set of chips is live, compare
+`metadata.gameweek` with 20 rather than reading `season_phase`.
 
 #### Capture warnings
 

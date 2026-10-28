@@ -90,7 +90,7 @@ For a complete inventory of CLI commands, analysis agents, and skills with JSON 
 
 ## FPL Domain Knowledge
 `docs/fpl-rules.md` is the authority on scoring, BPS, chips, transfers, waivers and the classic/draft split — read it rather than reasoning from memory, and correct it there when a rule changes. The shape that drives most code:
-- Chips: each available **twice** per season, one up to and including GW19, the other from GW20 (Wildcard, Free Hit, Bench Boost, Triple Captain); one chip per gameweek. In code `CHIP_SPLIT_GW` (19) is the first half's last gameweek and the halfway milestone, `SECOND_HALF_START_GW` (20) the second half's first (`second_half_start(split)` for a test season of another length): ask "second half?" as `>= SECOND_HALF_START_GW`, never `> CHIP_SPLIT_GW`, and never from the season phase, whose `midpoint` opens at GW19
+- Chips: each available **twice** per season, one up to and including GW19, the other from GW20 (Wildcard, Free Hit, Bench Boost, Triple Captain); one chip per gameweek. In code `CHIP_SPLIT_GW` (19) is the first half's last gameweek and the halfway milestone, `SECOND_HALF_START_GW` (20) the second half's first (`second_half_start(split)` for a test season of another length): ask "second half?" as `>= SECOND_HALF_START_GW`, never `> CHIP_SPLIT_GW`, and never from the season phase, whose `midpoint` runs GW19-31
 - Transfers: 1 free/GW, banked up to 5; extras cost 4pts each; Wildcard/Free Hit preserve banked transfers
 - Draft has no captains, no budget, no transfers and no chips — acquisition is via waivers and free agents
 

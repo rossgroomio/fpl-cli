@@ -125,8 +125,8 @@ def derive_season_phase(
     here avoids inventing a third, unrelated notion of "how far into the
     season".
 
-    So midpoint opens on the halfway milestone, which is still the first
-    half (GW19 of 38): a phase is the season's arc, not its chip half. Ask
+    So midpoint runs from GW19, still the first half, to GW31, well into
+    the second: it says nothing about which chip half a gameweek is in. Ask
     `second_half_start(chip_split_gw)` (GW20), never the phase, whether the
     second set of chips is live.
     """
