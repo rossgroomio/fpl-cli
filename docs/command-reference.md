@@ -1243,8 +1243,9 @@ same two milestone gameweeks as the printed season fines table: GW19 (half a sea
 and the finale (all ten), so the GW38 recap is the season's honours board with no extra step.
 Every other week those surfaces leave it out, since between month ends it only repeats itself.
 With `--summarise` the same lines reach the editorial as a `## Monthly Honours` section with an
-explicit count of the months, on the recap of a gameweek that closes a month instead, when the
-two awards reach its Awards section too; `metadata.monthly_honours` carries it every week. When
+explicit count of the months on those two recaps, so it can speak to the list the report prints,
+and on every month's last gameweek, so the two awards in its Awards section come with the months
+before them. `metadata.monthly_honours` carries the list every week. When
 the months cannot be read off the bootstrap, both awards and the list are skipped with a
 `league_months_unavailable` warning.
 

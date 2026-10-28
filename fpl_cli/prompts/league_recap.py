@@ -1041,13 +1041,15 @@ def format_recap_league_history_context(pack: NotesPack | None) -> str:
 
 def format_recap_monthly_honours_context(honours: MonthlyHonours | None) -> str:
     """Every completed month's Manager and Dud of the Month (#425), for the
-    recap of a gameweek that closed a month.
+    recap of a gameweek that closes a month and for the halfway recap and
+    the finale.
 
     Enumerate-and-lock, like the other season sections: an explicit count of
     the months, then one line each, worded as the report's Monthly Honours
-    lines are, a withheld month with its reason. The caller hands it over
-    only on a month's last gameweek, since mid-month the list holds nothing
-    new to say; empty otherwise, and the section is then absent.
+    lines are, a withheld month with its reason. The caller hands it over on
+    a month's last gameweek, so the month's two awards come with the months
+    before them, and at the two season milestones, the recaps that print the
+    list; empty otherwise, and the section is then absent.
     """
     if honours is None or not honours.months:
         return ""

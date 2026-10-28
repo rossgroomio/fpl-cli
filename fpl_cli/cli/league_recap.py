@@ -616,10 +616,12 @@ def league_recap_command(
             # The honours list is printed on the season fines table's rhythm:
             # at the halfway boundary and the finale, where half a season's
             # months or all of them are worth reading, and repetition in
-            # between. The editorial gets it on a month's last gameweek
-            # instead, when a month has just been decided, and `--format json`
-            # every week.
-            if is_season_milestone(gw) and month_honours is not None and month_honours.months:
+            # between. The editorial gets it on those two gameweeks too, so it
+            # can speak to the list the report prints, and on every month's
+            # last gameweek, so the month's two awards reach it beside the
+            # months before them. `--format json` carries it every week.
+            honours_milestone = is_season_milestone(gw)
+            if honours_milestone and month_honours is not None and month_honours.months:
                 collected_data["monthly_honours_lines"] = [
                     format_month_honours_line(awards) for awards in month_honours.months
                 ]
@@ -694,9 +696,11 @@ def league_recap_command(
                         # every week and chooses whether to use them.
                         fines_tally=capture_result.fines_tally,
                         prior_seasons=prior_seasons,
-                        # Gated, unlike the fines: mid-month the honours list
-                        # holds nothing new for the editorial to say (#425).
-                        month_honours=month_honours if closing_month is not None else None,
+                        # On a month's last gameweek and at the two season
+                        # milestones (#425): see above.
+                        month_honours=(
+                            month_honours if closing_month is not None or honours_milestone else None
+                        ),
                     )
                 except ProviderError as e:
                     error_console.print(f"[yellow]LLM summarisation failed: {e}[/yellow]")

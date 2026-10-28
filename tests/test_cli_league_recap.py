@@ -8463,9 +8463,12 @@ class TestManagerAndDudOfTheMonth:
         assert "a month in FPL's bootstrap could not be read" in message
         assert "Manager and Dud of the Month skipped" in result.stderr.replace("\n", "")
 
-    def test_the_editorial_gets_the_honours_only_on_a_months_last_gameweek(
+    def test_the_editorial_gets_the_honours_at_a_months_end_and_at_a_milestone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ):
+        """A month's last gameweek hands the editorial the month's two awards
+        with the months before them, and the two milestones hand it the list
+        the report prints. Any other gameweek has neither."""
         monkeypatch.chdir(tmp_path)  # debug prompts land in ./data/debug
         prompt = tmp_path / "data" / "debug" / "recap_prompt.txt"
         self._seed(1, 2, 3)
@@ -8481,6 +8484,17 @@ class TestManagerAndDudOfTheMonth:
         assert "## Monthly Honours" in text
         assert "Total months completed: 2" in text
         assert "- August (GW1-2): Manager of the Month Alice with 140 pts; Dud of the Month Bob with 100 pts" in text
+
+        self._seed(*range(6, CHIP_SPLIT_GW))
+        halfway = _invoke_recap(
+            self._week(CHIP_SPLIT_GW), ["--dry-run"], client=_fpl_client(CHIP_SPLIT_GW), gw=CHIP_SPLIT_GW,
+        )
+        assert halfway.exit_code == 0, halfway.output
+        text = prompt.read_text(encoding="utf-8")
+        assert "## Monthly Honours" in text
+        assert "Total months completed: 5" in text
+        assert "- September (GW3-5): Manager of the Month Alice with 190 pts; Dud of the Month Bob with 70 pts" in text
+        assert "**Manager of the Month:**" not in text, "GW19 closes no month"
 
     def test_manager_names_in_the_month_awards_are_not_read_as_markup(self):
         self._seed(3, 4, bob="[b]B[/b]")
