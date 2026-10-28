@@ -2689,8 +2689,9 @@ async def collect_draft_recap_data(
     reconciled against those standings as the only independent check the
     reconstruction is right (RecapReconciliationError on divergence). The
     cumulative total can only be trusted from the standings for a live
-    capture; a replayed gameweek leaves it unset (R10) until a ledger exists
-    to sum it from (U6, not built yet).
+    capture; a replayed gameweek leaves it and the position unset (R10), and
+    the capture shows whatever the ledger holds for that gameweek
+    (`_show_ledger_standings`, issue #534).
 
     `bgw_team_ids` / `players_with_fixture` / `gameweek_clubs` carry the same
     meaning they do on the classic collector. Clubs are read against the
@@ -3060,9 +3061,10 @@ async def collect_draft_recap_data(
         )
 
         # A live capture already carries the league's own rank (set above).
-        # A replay has no cumulative total to rank on at all -- draft has no
-        # ledger in Phase A -- so position stays unavailable rather than
-        # derived from the always-current standings order.
+        # A replay has no cumulative total to rank on at all, so position is
+        # left unset here rather than derived from the always-current
+        # standings order. The capture then shows whatever the ledger holds
+        # for the gameweek (`_show_ledger_standings`, issue #534).
         league_rows = [
             (
                 entry_map.get(s.get("league_entry"), {}).get("entry_id") or 0,

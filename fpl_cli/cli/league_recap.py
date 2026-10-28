@@ -1324,10 +1324,10 @@ def _render_console_highlights(
             console.print(f"  {arrow} {m['manager_name']}: {prev} → {curr}")
 
     # R10: a manager whose position or total could not be derived (e.g. a
-    # replayed draft gameweek with no earlier rows) is named as unavailable
-    # rather than silently dropped from the standings -- the same constants
-    # `_format_standings_block` uses for the report surface, so the two
-    # can't drift onto different wording.
+    # replayed draft gameweek the ledger holds no whole table for) is named as
+    # unavailable rather than silently dropped from the standings -- the
+    # same constants `_format_standings_block` uses for the report surface,
+    # so the two can't drift onto different wording.
     from fpl_cli.agents.orchestration.report import POSITION_UNAVAILABLE, TOTAL_UNAVAILABLE
 
     unavailable: list[str] = []

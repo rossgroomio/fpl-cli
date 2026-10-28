@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
@@ -1137,6 +1137,18 @@ def _pair_squads(
 # (`_assign_point_in_time_positions`).
 _CARRIED_STANDINGS_FIELDS = ("league_position", "previous_league_position", "total_points")
 
+# Each carried field under the name the recap's manager entry gives it, which
+# predates the ledger and calls a league position `overall_rank`
+# (`_show_ledger_standings`). Keyed on exactly the carried fields, so one
+# added there and not here is a figure the ledger keeps and the recap never
+# shows -- issue #534 over again; `test_cli_league_recap.py` holds the two
+# together.
+_RECAP_STANDINGS_KEYS: dict[str, Literal["overall_rank", "previous_rank", "total_points"]] = {
+    "league_position": "overall_rank",
+    "previous_league_position": "previous_rank",
+    "total_points": "total_points",
+}
+
 # The one carried field a null does not mean damage for, named once so the
 # gate below and the repair tally cannot disagree about which it is.
 _GATED_STANDINGS_FIELD = "previous_league_position"
@@ -1423,6 +1435,37 @@ def _fill_draft_standings(
         row.total_points is not None and row.league_position is None for row in rows
     ):
         _assign_cohort_ranks(rows)
+
+
+def _show_ledger_standings(data: LeagueRecapData, rows: list[LeagueHistoryRow]) -> None:
+    """Show a draft gameweek's standings on the recap as its ledger rows hold them.
+
+    A draft replay's collector leaves every position and total unset, and the
+    carry and the reconstruction above fill them on the rows alone -- while
+    the prompt's standings table, the report's standings block and the
+    console all read `data["managers"]`. So a run that recorded the whole
+    table printed every figure as unknown, beside a warning saying it had
+    kept them (issue #534). Copying the rows' figures, rather than only what
+    the carry restored, is what keeps the recap agreeing with `--format json`,
+    which emits these rows, and with itself across runs: a table the ledger
+    sums on one run is a recorded one to the carry on the next.
+
+    A whole column or none of it, per field: the prompt's leader and tie
+    lines are worked out over whoever holds a value, so a half-filled column
+    would be stated as the whole table. Only an absent value is filled, so a
+    figure the collector supplied always stands.
+
+    Draft only. Classic re-derives both figures from each manager's history,
+    and where it cannot place one manager it leaves them out on purpose,
+    while the rows rank whoever is left (`_assign_cohort_ranks`) -- the
+    renumbering the collector refuses.
+    """
+    for name, key in _RECAP_STANDINGS_KEYS.items():
+        held = {row.manager_key: getattr(row, name) for row in rows if getattr(row, name) is not None}
+        missing = [m for m in data["managers"] if m.get(key) is None]
+        if all(recap_manager_key(m) in held for m in missing):
+            for m in missing:
+                m[key] = held[recap_manager_key(m)]
 
 
 def _derived_codes(data: LeagueRecapData) -> frozenset[int]:
@@ -2542,6 +2585,9 @@ async def capture_recap_history(
             gameweek=data["gameweek"],
             start_gameweek=start_gameweek,
         )
+        # Before the write rather than after it, so a store that refuses the
+        # write costs the ledger, not the standings the recap shows.
+        _show_ledger_standings(data, rows)
     _quality_warnings(data, rows, warnings)
 
     try:
@@ -2647,6 +2693,9 @@ async def capture_recap_history(
             for name in _STANDINGS_ROW_FIELDS:
                 setattr(row, name, getattr(winner, name))
             row.captured_at = winner.captured_at
+        # And the recap with them, for the same reason (issue #534).
+        if fpl_format == "draft":
+            _show_ledger_standings(data, rows)
 
     coverage = store.coverage()
     _report_coverage(
