@@ -107,6 +107,7 @@ from fpl_cli.prompts.league_recap_checks import (
     RECAP_WARNING_UNSUPPORTED_TIE,
     RECAP_WARNING_WRONG_PLACING,
     RecapNames,
+    _free_agents_set_apart,
     check_brief_echoes,
     check_contested_attributions,
     check_contested_roll_calls,
@@ -8748,6 +8749,88 @@ class TestGenericWaiverWordIsEveryMove:
         assert len(problems) == 1
         assert "+0 is the net across Manager D's 2 waivers, not the free agents' own net of -9" in problems[0]
 
+
+
+def _breakdown_mover() -> list[RecapManagerEntry]:
+    """Issue #543's shape: Manager A's three waivers Gordon for Barnes (-2),
+    Elanga for Isak (-3) and Wood for Watkins (-2) net -7, and free agent
+    Mateta for Ings nets +0, so -7 overall."""
+    return [
+        _make_manager_with_txns("Manager A", [
+            _txn("Gordon", 1, "Barnes", 3), _txn("Elanga", 2, "Isak", 5), _txn("Wood", 0, "Watkins", 2),
+            _txn("Mateta", 4, "Ings", 4, kind="f"),
+        ], entry_id=1),
+        _make_manager(name="Manager B", entry_id=2),
+    ]
+
+
+class TestKindBreakdownOfANeutralNoun:
+    """Issue #543: "Four moves (three waivers, one free agent) netted -7
+    overall." The -7 is the four moves', but the check gave it to the free
+    agent named last in the breakdown, whose own net is +0. A breakdown of a
+    neutral noun into kinds is that noun, so the figure keeps it as its
+    subject, and the free agents it names set nothing apart from the
+    waivers."""
+
+    _LEAD = "Manager A had a week to forget. "
+    _OVERALL = "-7 is Manager A's net for the whole gameweek (4 moves: 3 waivers, 1 free agent)"
+
+    def _kind(self, summary: str) -> list[str]:
+        managers = _breakdown_mover()
+        return check_kind_net_scopes(summary, managers, RecapNames.of(managers))
+
+    @pytest.mark.parametrize("summary", [
+        _LEAD + "Four moves (three waivers, one free agent) netted -7 overall.",
+        "Manager A won the week's Waiver Disaster with four moves, three of them waivers and one a free agent, "
+        "netting -7.",
+    ])
+    def test_the_issue_s_two_sentences_pass(self, summary):
+        assert self._kind(summary) == []
+
+    @pytest.mark.parametrize("sentence", [
+        "His free agent netted -7.",
+        "Four moves netted -7, his free agent -7 of it.",
+        # An appositive closes on its comma: without one, the participle
+        # is the free agent's.
+        "He made four moves, three of them waivers and one a free agent netting -7.",
+    ])
+    def test_a_free_agent_named_on_its_own_is_still_caught(self, sentence):
+        problems = self._kind(self._LEAD + sentence)
+        assert len(problems) == 1
+        assert self._OVERALL in problems[0]
+        assert "not the free agents' own net of +0" in problems[0]
+
+    def test_a_contrast_with_the_free_agents_still_pins_the_waivers(self):
+        """PR #542's contrast holds: free agents of the manager's own, set
+        against the waivers, make the sentence's waiver words the waivers
+        alone (#539's data: waivers +0, free agents -9, -9 overall)."""
+        assert _free_agents_set_apart("His waivers broke even but his free agents lost 9 net.")
+        managers = _lost_net_mover()
+        problems = check_kind_net_scopes(
+            "Manager D had a week to forget. His waivers lost 9 net but his free agents only 1.",
+            managers, RecapNames.of(managers),
+        )
+        assert len(problems) == 1
+        assert "not the waivers' own net of +0" in problems[0]
+
+    @pytest.mark.parametrize("sentence", [
+        "His waiver work lost 9 net across four moves (two waivers, two free agents).",
+        "His waiver work lost 9 net across four moves, two of them waivers and two free agents.",
+    ])
+    def test_free_agents_in_a_breakdown_are_no_contrast(self, sentence):
+        assert not _free_agents_set_apart(sentence)
+        managers = _lost_net_mover()
+        summary = "Manager D had a week to forget. " + sentence
+        assert check_kind_net_scopes(summary, managers, RecapNames.of(managers)) == []
+
+    def test_the_waiver_disaster_is_no_kind(self):
+        assert self._kind("Manager A won the week's Waiver Disaster at -7 net overall.") == []
+        # In a sentence whose waivers are set against the free agents, an
+        # award read as a waiver word would be given the overall -9.
+        managers = _lost_net_mover()
+        for award in ("Waiver Disaster", "Waiver Genius"):
+            summary = f"Manager D took -9 net in the {award}, his free agents doing the damage."
+            assert check_kind_net_scopes(summary, managers, RecapNames.of(managers)) == []
 
 def _reported_table() -> list[RecapManagerEntry]:
     """The reported gameweek's shape: the outright lowest score (29) belongs
