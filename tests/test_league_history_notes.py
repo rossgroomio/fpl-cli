@@ -1437,9 +1437,18 @@ class TestMidpointAndRunInPhases:
         assert "chip" not in text.lower()
         assert "past" not in text
 
-    def test_split_gameweek_is_still_a_milestone(self):
-        assert derive_season_phase(19) is SeasonPhase.MIDPOINT
+    def test_split_gameweek_is_still_midpoint_and_carries_the_milestone_set_piece(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, manager_name="Alice", league_position=1)])
+        for gw in range(2, 20):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=2)])
+
+        pack = build_notes_pack(store, 19, total_gameweeks=38, chip_split_gw=19)
+
+        assert pack.phase is SeasonPhase.MIDPOINT
         assert is_season_milestone(19) is True
+        entry = next(e for e in pack.season_count_entries if e.condition_key == "weeks_on_top")
+        assert entry.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
 
     def test_gameweeks_either_side_of_the_split_keep_their_lines(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)

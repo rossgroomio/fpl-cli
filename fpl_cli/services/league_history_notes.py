@@ -118,7 +118,7 @@ def derive_season_phase(
 
     Only the opener and finale boundaries are handed down by the plan
     verbatim; midpoint and run_in split the remaining span at the
-    chip-availability boundary and at a trailing window sized to match the
+    chip split gameweek (the last of the first half) and at a trailing window sized to match the
     pack-builder's own raw-row read window (see `build_notes_pack`), rather
     than at some other arbitrary fraction of the season -- both boundaries
     are already-meaningful points elsewhere in the codebase, so reusing them
@@ -148,8 +148,8 @@ def is_season_milestone(
     spans thirteen gameweeks, so gating a once-a-season set-piece on the
     phase would fire it thirteen times and turn the set-piece into
     wallpaper. The moment is the phase's own first gameweek -- the
-    chip-availability boundary, which is `TOTAL_GAMEWEEKS // 2` and so is
-    the halfway point too -- and the finale.
+    chip split gameweek, the last of the first half, which is
+    `TOTAL_GAMEWEEKS // 2` and so is the halfway point too -- and the finale.
 
     Both are compared exactly rather than asked of `derive_season_phase`,
     whose FINALE branch is deliberately open-ended (`>= total_gameweeks`, so
