@@ -251,6 +251,13 @@ here so the brief stays short enough to read before the round starts.
   round spent about an hour building unscoped harness and kept it only
   because the user asked. A small harness fix the round cannot run
   without may ride the round's vault PR; anything bigger is a finding.
+- **Scratch paths outside the harness's own scripts** are written
+  `${TMPDIR:-/tmp}/...`, the fallback the harness's `common.sh` already
+  uses, never a bare `$TMPDIR/...`. A fresh vault session may not set
+  `TMPDIR`; the pr545 brief's `cp -R "$FPL_CLI_CONFIG_DIR"
+  "$TMPDIR/pr545-config"` expanded to a path at the filesystem root, so
+  the session improvised `/tmp` and logged a harness gap that was really
+  a brief gap.
 - **The handback** (below) is required in full, because in October the
   whole vault transcript, progress chatter included, was pasted back and
   the fpl-cli session had to dig the results out.
@@ -383,6 +390,7 @@ the approach is wrong, which is their decision, not a fix to push.
 - A placeholder or hand-typed SHA, or a short one
 - A sentence shape trimmed to the fragment a test matches
 - "Don't commit anything" in place of the landing rules
+- A scratch path written `$TMPDIR/...` with no `:-/tmp` fallback
 - Printing the brief before subscribing to the PR
 - A brief that asks for the handback as a plain comment, which does not
   wake the subscribed session
