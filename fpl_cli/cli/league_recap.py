@@ -289,8 +289,7 @@ def league_recap_command(
             # and the season moved past it -- an explicitly older `-g` is a
             # replay by intent and needs no explaining. Without this the
             # degradation is silent, and for draft it is visible (cumulative
-            # totals and positions fall back to what the ledger recorded for
-            # the gameweek, or go unavailable -- issue #534).
+            # totals and positions fall back to the ledger, or go unavailable).
             standings_moved_on = (
                 is_max_finished and api_current_gw_id is not None and gw != api_current_gw_id
             )
@@ -1325,7 +1324,7 @@ def _render_console_highlights(
             console.print(f"  {arrow} {m['manager_name']}: {prev} → {curr}")
 
     # R10: a manager whose position or total could not be derived (e.g. a
-    # replayed draft gameweek the ledger recorded neither for) is named as
+    # replayed draft gameweek the ledger holds no whole table for) is named as
     # unavailable rather than silently dropped from the standings -- the
     # same constants `_format_standings_block` uses for the report surface,
     # so the two can't drift onto different wording.

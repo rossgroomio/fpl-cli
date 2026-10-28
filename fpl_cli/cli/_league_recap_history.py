@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
@@ -1137,6 +1137,18 @@ def _pair_squads(
 # (`_assign_point_in_time_positions`).
 _CARRIED_STANDINGS_FIELDS = ("league_position", "previous_league_position", "total_points")
 
+# Each carried field under the name the recap's manager entry gives it, which
+# predates the ledger and calls a league position `overall_rank`
+# (`_show_ledger_standings`). Keyed on exactly the carried fields, so one
+# added there and not here is a figure the ledger keeps and the recap never
+# shows -- issue #534 over again; `test_cli_league_recap.py` holds the two
+# together.
+_RECAP_STANDINGS_KEYS: dict[str, Literal["overall_rank", "previous_rank", "total_points"]] = {
+    "league_position": "overall_rank",
+    "previous_league_position": "previous_rank",
+    "total_points": "total_points",
+}
+
 # The one carried field a null does not mean damage for, named once so the
 # gate below and the repair tally cannot disagree about which it is.
 _GATED_STANDINGS_FIELD = "previous_league_position"
@@ -1241,7 +1253,7 @@ def _last_recorded_standings(
 def _apply_recorded_standings(
     rows: list[LeagueHistoryRow], recorded: dict[int, dict[str, int]],
     *, fields: Collection[str],
-) -> dict[int, dict[str, int]]:
+) -> int:
     """Fill each row's null standings fields from what was recorded before.
 
     Only nulls are filled, so a replay that derived its own position keeps it
@@ -1254,10 +1266,9 @@ def _apply_recorded_standings(
     (`_carried_standings_fields`), and every caller of this fill knows the
     gameweek it is filling.
 
-    Returns what was restored, per manager and field, so the caller can say
-    so and hand the same figures on (`_show_carried_standings`).
+    Returns how many values were restored, so the caller can say so.
     """
-    restored: dict[int, dict[str, int]] = {}
+    carried = 0
     for row in rows:
         known = recorded.get(row.manager_key)
         if not known:
@@ -1266,14 +1277,14 @@ def _apply_recorded_standings(
             value = known.get(name)
             if value is not None and getattr(row, name) is None:
                 setattr(row, name, value)
-                restored.setdefault(row.manager_key, {})[name] = value
-    return restored
+                carried += 1
+    return carried
 
 
 def _carry_recorded_standings(
     store: LeagueHistoryStore, gameweek: int, rows: list[LeagueHistoryRow],
     *, start_gameweek: int, warnings: list[dict[str, str]],
-) -> dict[int, dict[str, int]]:
+) -> int:
     """Keep the league position and cumulative total the gameweek recorded.
 
     A draft replay cannot fetch either (see `_CARRIED_STANDINGS_FIELDS`), so
@@ -1291,23 +1302,19 @@ def _carry_recorded_standings(
     holds: at the league's first scored gameweek `previous_league_position`
     is null by design, so carrying one in resurrects a value #147 removed
     (issue #319).
-
-    Returns what was restored, per manager and field: the rows are not the
-    only reader of these figures (`_show_carried_standings`).
     """
     try:
         previous = store.load_gameweek(gameweek)
     except LeagueHistoryError:
         # Degrades silently for the reason `_freeze_recorded_fines` gives.
-        return {}
+        return 0
     if not previous:
-        return {}
+        return 0
 
-    restored = _apply_recorded_standings(
+    carried = _apply_recorded_standings(
         rows, _last_recorded_standings(previous),
         fields=_carried_standings_fields(gameweek, start_gameweek),
     )
-    carried = sum(len(fields) for fields in restored.values())
     if carried:
         _warn(
             warnings, HISTORY_WARNING_STANDINGS_CARRIED,
@@ -1317,37 +1324,7 @@ def _carry_recorded_standings(
             f"gameweek -- so the recorded figures stand rather than being overwritten "
             f"with nothing.",
         )
-    return restored
-
-
-def _show_carried_standings(
-    data: LeagueRecapData, restored: dict[int, dict[str, int]],
-) -> None:
-    """Hand the standings the carry restored on to the recap being rendered.
-
-    The carry puts a replay's recorded figures back on its ledger rows, but the
-    prompt's standings table, the report's standings block and the console all
-    read `data["managers"]`, where a draft replay's collector left them unset.
-    Without this the run recorded every position and total and printed each
-    one as unknown (issue #534). Same move as R13's
-    `_apply_recorded_previous_positions`, onto the entry's own names for the
-    fields.
-
-    Only what the carry restored is copied, never whatever else the rows hold:
-    a draft table the ledger reconstructs from earlier gameweeks
-    (`_fill_draft_standings`) stays a ledger-only figure, and the recap shows
-    a gameweek's standings only as that gameweek recorded them.
-    """
-    for m in data["managers"]:
-        fields = restored.get(recap_manager_key(m))
-        if not fields:
-            continue
-        if (position := fields.get("league_position")) is not None:
-            m["overall_rank"] = position
-        if (previous := fields.get("previous_league_position")) is not None:
-            m["previous_rank"] = previous
-        if (total := fields.get("total_points")) is not None:
-            m["total_points"] = total
+    return carried
 
 
 def _fullest_recorded_claims(rows: list[LeagueHistoryRow]) -> dict[int, list[LedgerLostClaim]]:
@@ -1458,6 +1435,37 @@ def _fill_draft_standings(
         row.total_points is not None and row.league_position is None for row in rows
     ):
         _assign_cohort_ranks(rows)
+
+
+def _show_ledger_standings(data: LeagueRecapData, rows: list[LeagueHistoryRow]) -> None:
+    """Show a draft gameweek's standings on the recap as its ledger rows hold them.
+
+    A draft replay's collector leaves every position and total unset, and the
+    carry and the reconstruction above fill them on the rows alone -- while
+    the prompt's standings table, the report's standings block and the
+    console all read `data["managers"]`. So a run that recorded the whole
+    table printed every figure as unknown, beside a warning saying it had
+    kept them (issue #534). Copying the rows' figures, rather than only what
+    the carry restored, is what keeps the recap agreeing with `--format json`,
+    which emits these rows, and with itself across runs: a table the ledger
+    sums on one run is a recorded one to the carry on the next.
+
+    A whole column or none of it, per field: the prompt's leader and tie
+    lines are worked out over whoever holds a value, so a half-filled column
+    would be stated as the whole table. Only an absent value is filled, so a
+    figure the collector supplied always stands.
+
+    Draft only. Classic re-derives both figures from each manager's history,
+    and where it cannot place one manager it leaves them out on purpose,
+    while the rows rank whoever is left (`_assign_cohort_ranks`) -- the
+    renumbering the collector refuses.
+    """
+    for name, key in _RECAP_STANDINGS_KEYS.items():
+        held = {row.manager_key: getattr(row, name) for row in rows if getattr(row, name) is not None}
+        missing = [m for m in data["managers"] if m.get(key) is None]
+        if all(recap_manager_key(m) in held for m in missing):
+            for m in missing:
+                m[key] = held[recap_manager_key(m)]
 
 
 def _derived_codes(data: LeagueRecapData) -> frozenset[int]:
@@ -2561,14 +2569,10 @@ async def capture_recap_history(
         # moving, so a run that cannot re-derive it must not write it away
         # (issue #223). A gameweek still live is skipped because a fresh
         # position there genuinely supersedes the last one.
-        restored = _carry_recorded_standings(
+        _carry_recorded_standings(
             store, data["gameweek"], rows,
             start_gameweek=start_gameweek, warnings=warnings,
         )
-        # And onto `data` too, which the prompt, the report and the console
-        # read after this returns: kept in the ledger alone, they showed every
-        # restored figure as unknown (issue #534).
-        _show_carried_standings(data, restored)
         # And the same gate again: this run ruled the fines against the same
         # drifted bootstrap, so they name players by today's names on a row
         # whose squad the carry above has just put back (issue #176). While
@@ -2581,6 +2585,9 @@ async def capture_recap_history(
             gameweek=data["gameweek"],
             start_gameweek=start_gameweek,
         )
+        # Before the write rather than after it, so a store that refuses the
+        # write costs the ledger, not the standings the recap shows.
+        _show_ledger_standings(data, rows)
     _quality_warnings(data, rows, warnings)
 
     try:
@@ -2686,6 +2693,9 @@ async def capture_recap_history(
             for name in _STANDINGS_ROW_FIELDS:
                 setattr(row, name, getattr(winner, name))
             row.captured_at = winner.captured_at
+        # And the recap with them, for the same reason (issue #534).
+        if fpl_format == "draft":
+            _show_ledger_standings(data, rows)
 
     coverage = store.coverage()
     _report_coverage(

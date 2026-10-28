@@ -17,6 +17,8 @@ from click.testing import CliRunner
 
 from fpl_cli.cli._league_recap_data import RecapReconciliationError
 from fpl_cli.cli._league_recap_history import (
+    _CARRIED_STANDINGS_FIELDS,
+    _RECAP_STANDINGS_KEYS,
     DETAIL_FLAG,
     HISTORY_WARNING_BACKFILL_MANAGER_UNREACHABLE,
     HISTORY_WARNING_BACKFILL_REPLAY_FAILED,
@@ -7369,11 +7371,11 @@ class TestDraftReplayShowsRecordedStandings:
             for m in data["managers"]
         ] == [("Alice", 2, 3, 300), ("Bob", 1, 1, 320)]
 
-    async def test_a_table_the_ledger_reconstructs_stays_in_the_ledger(self):
-        """Only what the gameweek recorded is shown. A replayed draft gameweek
-        nothing was recorded for still gets a table summed from the ones
-        before it, but that is the ledger's own derivation: the recap shows
-        the gameweek's standings as recorded or not at all."""
+    async def test_a_table_the_ledger_sums_is_shown_as_the_json_rows_carry_it(self):
+        """A replayed draft gameweek nothing was recorded for still gets a
+        table summed from the ones before it. The recap shows it as the rows
+        `--format json` emits do, and on the first run as on every later one,
+        where the carry reads that summed table back as recorded."""
         store = _store("draft")
         for gameweek in range(1, 5):
             store.append_rows(gameweek, [
@@ -7383,13 +7385,45 @@ class TestDraftReplayShowsRecordedStandings:
                 )
                 for key, name in ((10, "Alice"), (20, "Bob"))
             ])
+
+        for _ in range(2):
+            data = self._replay()
+            result = await capture_recap_history(
+                data, season=SEASON, is_live_gw=False, finished_gameweeks=[5],
+            )
+
+            assert [
+                (m["manager_name"], m.get("overall_rank"), m.get("total_points"))
+                for m in data["managers"]
+            ] == [("Alice", 1, 260), ("Bob", 2, 240)]
+            assert {(r.manager_name, r.league_position, r.total_points) for r in result.rows} == {
+                ("Alice", 1, 260), ("Bob", 2, 240),
+            }
+
+    async def test_a_column_the_ledger_holds_for_some_managers_only_is_not_shown(self):
+        """The prompt's leader and tie lines are worked out over whoever holds
+        a value, so half a column would be stated as the whole table. Bob has
+        no GW5 line and no earlier gameweeks to sum one from."""
+        _store("draft").append_rows(5, [make_history_row(
+            season=SEASON, fpl_format="draft", league_id=42, gameweek=5,
+            manager_key=10, manager_name="Alice", gross_points=60,
+            league_position=2, previous_league_position=3, total_points=300,
+        )])
         data = self._replay()
 
         await capture_recap_history(data, season=SEASON, is_live_gw=False, finished_gameweeks=[5])
 
-        resolved = _store("draft").resolved_gameweek(5)
-        assert {k: r.total_points for k, r in resolved.items()} == {10: 260, 20: 240}
-        assert all("overall_rank" not in m and "total_points" not in m for m in data["managers"])
+        assert all(
+            key not in m for m in data["managers"]
+            for key in ("overall_rank", "previous_rank", "total_points")
+        )
+        # The ledger keeps what it recorded either way.
+        assert _store("draft").resolved_gameweek(5)[10].league_position == 2
+
+    def test_every_carried_field_has_a_name_on_the_recap(self):
+        """A field carried in the ledger but missing here would be kept and
+        never shown: issue #534 again, for that field."""
+        assert set(_RECAP_STANDINGS_KEYS) == set(_CARRIED_STANDINGS_FIELDS)
 
 
 # ---------------------------------------------------------------------------
