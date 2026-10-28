@@ -8279,14 +8279,11 @@ class TestManagerAndDudOfTheMonth:
         report = (tmp_path / season_label() / "gw5-league-recap.md").read_text(encoding="utf-8")
         assert "**Manager of the Month:** Alice with 200 pts across September (GW3-5), ahead of Bob (110)" in report
         assert "**Dud of the Month:** Bob with 110 pts across September (GW3-5)" in report
-        assert "# Monthly Honours" in report
-        assert "- August (GW1-2): not awarded, as GW1-2 were never captured" in report
-        assert (
-            "- September (GW3-5): Manager of the Month Alice with 200 pts; Dud of the Month Bob with 110 pts"
-            in report
-        )
+        # The honours list waits for a season milestone, like the fines table.
+        assert "Monthly Honours" not in report
+        assert "Monthly Honours" not in console
 
-    def test_no_other_gameweek_carries_them_though_its_honours_list_does(self, tmp_path: Path):
+    def test_no_other_gameweek_carries_them(self, tmp_path: Path):
         self._seed(1, 2, 3)
 
         result = _invoke_recap(
@@ -8294,15 +8291,38 @@ class TestManagerAndDudOfTheMonth:
         )
 
         assert result.exit_code == 0, result.output
-        assert "of the Month:" not in result.output.replace("\n", "")
+        assert "of the Month" not in result.output.replace("\n", "")
         report = (tmp_path / season_label() / "gw4-league-recap.md").read_text(encoding="utf-8")
-        assert "**Manager of the Month:**" not in report
-        assert "**Dud of the Month:**" not in report
-        assert (
-            "- August (GW1-2): Manager of the Month Alice with 140 pts; Dud of the Month Bob with 100 pts"
-            in report
+        assert "of the Month" not in report
+        assert "Monthly Honours" not in report
+
+    @pytest.mark.parametrize(
+        ("gameweek", "months"),
+        [(CHIP_SPLIT_GW, ["August", "September", "October", "November", "December"]),
+         (TOTAL_GAMEWEEKS, ["August", "September", "October", "November", "December",
+                            "January", "February", "March", "April", "May"])],
+    )
+    def test_the_halfway_and_final_recaps_print_every_month_so_far(
+        self, tmp_path: Path, gameweek: int, months: list[str],
+    ):
+        """The season fines table's set-piece rhythm (`is_season_milestone`):
+        half a season's months at GW19, the whole season's at the finale."""
+        self._seed(*range(1, gameweek))
+
+        result = _invoke_recap(
+            self._week(gameweek), ["--save", "--output", str(tmp_path)],
+            client=_fpl_client(gameweek), gw=gameweek,
         )
-        assert "September" not in report
+
+        assert result.exit_code == 0, result.output
+        report = (tmp_path / season_label() / f"gw{gameweek}-league-recap.md").read_text(encoding="utf-8")
+        listed = [line for line in report.splitlines() if line.startswith("- ") and "Manager of the Month" in line]
+        assert [line[2:].split(" (")[0] for line in listed] == months
+        assert "# Monthly Honours" in report
+        assert "- August (GW1-2): Manager of the Month Alice with 140 pts; Dud of the Month Bob with 100 pts" in report
+        console = result.output.replace("\n", "")
+        assert "Monthly Honours" in console
+        assert "August (GW1-2): Manager of the Month Alice with 140 pts" in console
 
     def test_a_month_with_a_gap_withholds_both_and_says_why(self, tmp_path: Path):
         self._seed(3)
@@ -8320,7 +8340,19 @@ class TestManagerAndDudOfTheMonth:
             in report
         )
         assert "**Manager of the Month:**" not in report
+
+    def test_a_withheld_month_stays_on_the_honours_list_with_its_reason(self, tmp_path: Path):
+        self._seed(*(gw for gw in range(1, CHIP_SPLIT_GW) if gw != 4))
+
+        result = _invoke_recap(
+            self._week(CHIP_SPLIT_GW), ["--save", "--output", str(tmp_path)],
+            client=_fpl_client(CHIP_SPLIT_GW), gw=CHIP_SPLIT_GW,
+        )
+
+        assert result.exit_code == 0, result.output
+        report = (tmp_path / season_label() / f"gw{CHIP_SPLIT_GW}-league-recap.md").read_text(encoding="utf-8")
         assert "- September (GW3-5): not awarded, as GW4 was never captured" in report
+        assert "- October (GW6-9): Manager of the Month Alice" in report
 
     def test_the_json_carries_every_completed_month(self):
         self._seed(3, 4)

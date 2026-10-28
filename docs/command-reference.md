@@ -1237,13 +1237,15 @@ first page): a manager whose total there differs from the ledger's raises a
 The check is skipped while FPL is still updating its league tables (see [When to run
 it](#league-recap)), and quietly when the table cannot be read.
 
-**Monthly honours:** every recap from the end of the first month on carries a `# Monthly
-Honours` report section listing each completed month's Manager and Dud of the Month, or why it
-has none, so the GW38 recap is the season's honours board with no extra step. With
-`--summarise` the same lines reach the editorial as a `## Monthly Honours` section with an
-explicit count of the months, but only on the recap of a gameweek that closes a month, when the
-two awards reach its Awards section too; mid-month the list has nothing new to say. When the
-months cannot be read off the bootstrap, both awards and the list are skipped with a
+**Monthly honours:** each completed month's Manager and Dud of the Month, or why it has none,
+listed under `Monthly Honours` on console and as a `# Monthly Honours` report section, at the
+same two milestone gameweeks as the printed season fines table: GW19 (half a season's months)
+and the finale (all ten), so the GW38 recap is the season's honours board with no extra step.
+Every other week those surfaces leave it out, since between month ends it only repeats itself.
+With `--summarise` the same lines reach the editorial as a `## Monthly Honours` section with an
+explicit count of the months, on the recap of a gameweek that closes a month instead, when the
+two awards reach its Awards section too; `metadata.monthly_honours` carries it every week. When
+the months cannot be read off the bootstrap, both awards and the list are skipped with a
 `league_months_unavailable` warning.
 
 **Standings movement:** position changes derived from point differentials, per-manager highlights. Both tables — this gameweek's and the one before it — are ranked the same way, so managers level on points share a place on each and no arrow is reported for a tie nobody left.

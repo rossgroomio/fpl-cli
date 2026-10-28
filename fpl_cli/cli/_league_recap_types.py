@@ -1103,8 +1103,9 @@ class LeagueRecapData(TypedDict):
     # on every other gameweek, and when the month's awards stand.
     month_awards_withheld: NotRequired[str]
     # Every completed month's awards so far, one `format_month_honours_line`
-    # each, for the report's Monthly Honours section (issue #425). Absent
-    # until a month has completed, and when the months could not be read.
+    # each, for the console's and the report's Monthly Honours (issue #425).
+    # Set only at the two season milestones (`is_season_milestone`), the
+    # printed season fines table's rhythm, and absent every other week.
     monthly_honours_lines: NotRequired[list[str]]
 
 

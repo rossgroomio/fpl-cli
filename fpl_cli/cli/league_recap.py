@@ -605,9 +605,7 @@ def league_recap_command(
                 collected_data["prior_seasons_coverage_lines"] = prior_seasons.coverage_lines
 
             # Manager and Dud of the Month (#425): the month this gameweek
-            # closed gets its two awards, or the reason it has none, and every
-            # month completed so far reaches the report's honours list --
-            # every week, so the finale's recap is the season's honours board.
+            # closed gets its two awards, or the reason it has none.
             month_honours = capture_result.month_honours
             closing_month = month_honours.ending_at(gw) if month_honours is not None else None
             if closing_month is not None:
@@ -615,7 +613,13 @@ def league_recap_command(
                     collected_data["awards"].update(month_award_entries(closing_month))
                 else:
                     collected_data["month_awards_withheld"] = month_awards_withheld_line(closing_month)
-            if month_honours is not None and month_honours.months:
+            # The honours list is printed on the season fines table's rhythm:
+            # at the halfway boundary and the finale, where half a season's
+            # months or all of them are worth reading, and repetition in
+            # between. The editorial gets it on a month's last gameweek
+            # instead, when a month has just been decided, and `--format json`
+            # every week.
+            if is_season_milestone(gw) and month_honours is not None and month_honours.months:
                 collected_data["monthly_honours_lines"] = [
                     format_month_honours_line(awards) for awards in month_honours.months
                 ]
@@ -1260,6 +1264,15 @@ def _render_console_highlights(
             console.print("  [dim]Nobody has been fined this season.[/dim]")
         for line in fines_tally.qualifiers:
             console.print(f"  [dim]{rich_escape(line)}[/dim]")
+
+    # Every completed month's awards (#425), at the same two milestones as the
+    # season fines above: the caller sets the lines on those gameweeks alone.
+    # Escaped, as they carry manager names.
+    honours = data.get("monthly_honours_lines")
+    if honours:
+        console.print("\n[bold]Monthly Honours[/bold]")
+        for line in honours:
+            console.print(f"  {rich_escape(line)}")
 
     # Standings movement. A manager missing either position has no movement
     # to report -- see _assign_point_in_time_positions, which leaves both
