@@ -987,6 +987,15 @@ def _season_phase_text(
             return f"GW{gameweek} is before the season's halfway point (GW{chip_split_gw})."
         return f"GW{gameweek} is before the GW{chip_split_gw} chip-availability boundary."
     if phase is SeasonPhase.MIDPOINT:
+        if gameweek == chip_split_gw:
+            # The split gameweek is the last of the first half; the second
+            # set of chips starts the gameweek after it.
+            if fpl_format == "draft":
+                return f"GW{gameweek} is the season midpoint, the last gameweek of the first half."
+            return (
+                f"GW{gameweek} is the season midpoint, the last gameweek of the first half, "
+                f"with the second set of chips available from GW{chip_split_gw + 1}."
+            )
         if fpl_format == "draft":
             return (
                 f"GW{gameweek} is the season midpoint, past the GW{chip_split_gw} halfway "
@@ -1291,9 +1300,9 @@ def build_notes_pack(
         season_count_entries=_season_count_entries(
             gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
             milestone=is_season_milestone(gameweek, total_gameweeks, chip_split_gw),
-            # The chip boundary is the season's halfway point (GW19 of 38),
-            # so its deadline is where "second half" starts for the count
-            # policies' first-in-second-half and second-half-only rules.
+            # The chip split gameweek (GW19 of 38) is the last of the first
+            # half, so "second half" starts the gameweek after it for the
+            # count policies' first-in-second-half and second-half-only rules.
             second_half=gameweek > chip_split_gw,
         ),
         season_record_entries=_season_record_entries(

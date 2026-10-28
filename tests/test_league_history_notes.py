@@ -1411,6 +1411,49 @@ class TestMidpointAndRunInPhases:
         assert "GW35 is in the run-in" in pack.season_phase_entry.text
         assert "GW38" in pack.season_phase_entry.text
 
+    def test_split_gameweek_is_last_of_first_half_for_classic(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(19, [make_history_row(gameweek=19, manager_key=1, manager_name="Alice")])
+
+        pack = build_notes_pack(store, 19, total_gameweeks=38, chip_split_gw=19)
+
+        text = pack.season_phase_entry.text
+        assert pack.phase is SeasonPhase.MIDPOINT
+        assert text == (
+            "GW19 is the season midpoint, the last gameweek of the first half, "
+            "with the second set of chips available from GW20."
+        )
+        assert "past" not in text
+
+    def test_split_gameweek_is_last_of_first_half_for_draft(self):
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        store.append_rows(19, [make_history_row(gameweek=19, manager_key=1, manager_name="Alice")])
+
+        pack = build_notes_pack(store, 19, total_gameweeks=38, chip_split_gw=19)
+
+        text = pack.season_phase_entry.text
+        assert pack.phase is SeasonPhase.MIDPOINT
+        assert text == "GW19 is the season midpoint, the last gameweek of the first half."
+        assert "chip" not in text.lower()
+        assert "past" not in text
+
+    def test_split_gameweek_is_still_a_milestone(self):
+        assert derive_season_phase(19) is SeasonPhase.MIDPOINT
+        assert is_season_milestone(19) is True
+
+    def test_gameweeks_either_side_of_the_split_keep_their_lines(self):
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (18, 20):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, manager_name="Alice")])
+
+        before = build_notes_pack(store, 18, total_gameweeks=38, chip_split_gw=19)
+        after = build_notes_pack(store, 20, total_gameweeks=38, chip_split_gw=19)
+
+        assert before.season_phase_entry.text == "GW18 is before the GW19 chip-availability boundary."
+        assert after.season_phase_entry.text == (
+            "GW20 is the season midpoint, past the GW19 chip boundary and before the run-in."
+        )
+
     def test_classic_pre_chip_boundary_text_names_the_chip_boundary(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, manager_name="Alice")])

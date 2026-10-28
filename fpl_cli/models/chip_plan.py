@@ -64,7 +64,7 @@ class ChipPlan(BaseModel):
     def get_available_chips(self, current_gw: int) -> list[ChipType]:
         """Get chips available in the current half of the season.
 
-        Each chip is available once before the GW19 deadline and once after.
+        Each chip is available once up to and including GW19 and once from GW20.
         """
         in_second_half = current_gw > CHIP_SPLIT_GW
         used_in_half = {
