@@ -36,6 +36,9 @@ from fpl_cli.cli._json import (
 from fpl_cli.cli._league_recap_types import (
     LeagueRecapData,
     PriorSeasonsSummary,
+    RecapPersonalEqual,
+    RecapRecordRow,
+    RecapRecordTable,
     RecapSeasonRecord,
     RecapStandoutPlayers,
     format_month_honours_line,
@@ -595,6 +598,24 @@ def league_recap_command(
                     for entry in notes_pack.season_count_entries
                     if NoteSurface.REPORT in entry.surfaces
                 ]
+                # The milestone report's highs and lows tables (issue #496),
+                # beside the Season Counts set-piece: every manager's own
+                # highest and lowest. The week's personal-record sentences
+                # stay the editorial's alone.
+                collected_data["league_history_record_tables"] = [
+                    RecapRecordTable(
+                        highest=table.highest,
+                        span=table.span,
+                        rows=[
+                            RecapRecordRow(
+                                rank=row.rank, manager_name=row.manager_name, points=row.points,
+                                detail=row.detail,
+                            )
+                            for row in table.rows
+                        ],
+                    )
+                    for table in notes_pack.personal_record_tables
+                ]
                 collected_data["league_history_coverage_lines"] = [
                     entry.text for entry in notes_pack.coverage_entries
                 ]
@@ -612,6 +633,19 @@ def league_recap_command(
                         collected_data["season_highest_score"] = record
                     else:
                         collected_data["season_lowest_score"] = record
+                # The week's equalled personal records the editorial is shown
+                # (issue #496), kept for the tie check, which reads "her
+                # joint-highest score of the season" as the tie the line states.
+                collected_data["personal_record_equals"] = [
+                    RecapPersonalEqual(
+                        manager_name=entry.manager_name,
+                        highest=entry.condition_key == "personal_highest_gameweek_score",
+                        points=entry.points,
+                    )
+                    for entry in notes_pack.personal_record_entries
+                    if NoteSurface.PROMPT in entry.surfaces and entry.manager_name is not None
+                    and entry.points is not None and entry.previous_points == entry.points
+                ]
 
             # Prior seasons (issue #131): folded once and read by the report
             # and the editorial alike, so neither surface can describe a
@@ -1178,6 +1212,11 @@ def _serialize_notes_pack_entry(entry: NotesPackEntry) -> dict[str, Any]:
             {"manager_key": h.manager_key, "manager_name": h.manager_name, "gameweek": h.gameweek}
             for h in entry.holders
         ],
+        "previous_points": entry.previous_points,
+        "previous_holders": [
+            {"manager_key": h.manager_key, "manager_name": h.manager_name, "gameweek": h.gameweek}
+            for h in entry.previous_holders
+        ],
     }
 
 
@@ -1201,6 +1240,32 @@ def _serialize_notes_pack(pack: NotesPack) -> dict[str, Any]:
         ],
         "season_record_entries": [
             _serialize_notes_pack_entry(entry) for entry in pack.season_record_entries
+        ],
+        # Every manager's own highest and lowest, not just the ones this
+        # gameweek set and the editorial was shown (issue #496).
+        "personal_record_entries": [
+            _serialize_notes_pack_entry(entry) for entry in pack.personal_record_entries
+        ],
+        # The milestones' ranked highs and lows tables; empty every other week.
+        # Each row's gameweeks and unrecorded gameweeks travel as fields, and
+        # `detail` is only the report's wording of them (PR #552 review).
+        "personal_record_tables": [
+            {
+                "highest": table.highest,
+                "window": {
+                    "start_gameweek": table.window.start_gameweek, "end_gameweek": table.window.end_gameweek,
+                },
+                "unrecorded": list(table.unrecorded),
+                "rows": [
+                    {
+                        "rank": row.rank, "manager_key": row.manager_key, "manager_name": row.manager_name,
+                        "points": row.points, "gameweeks": list(row.gameweeks),
+                        "unrecorded": list(row.unrecorded), "detail": row.detail,
+                    }
+                    for row in table.rows
+                ],
+            }
+            for table in pack.personal_record_tables
         ],
         "coverage_entries": [_serialize_notes_pack_entry(entry) for entry in pack.coverage_entries],
         "entry_count": pack.entry_count,

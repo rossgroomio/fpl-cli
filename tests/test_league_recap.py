@@ -61,7 +61,10 @@ from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
     RecapManagerPlayer,
     RecapMonthTable,
+    RecapPersonalEqual,
     RecapPriorSeason,
+    RecapRecordRow,
+    RecapRecordTable,
     RecapSeasonRecord,
     RecapTransfer,
     contested_draft_claims,
@@ -105,6 +108,7 @@ from fpl_cli.prompts.league_recap_checks import (
     RECAP_WARNING_KIND_NET_MISATTRIBUTION,
     RECAP_WARNING_NET_MISATTRIBUTION,
     RECAP_WARNING_PENALTY_REPEATED,
+    RECAP_WARNING_UNSUPPORTED_SEASON_RECORD,
     RECAP_WARNING_UNSUPPORTED_TIE,
     RECAP_WARNING_WRONG_PLACING,
     RecapNames,
@@ -119,6 +123,7 @@ from fpl_cli.prompts.league_recap_checks import (
     check_net_attributions,
     check_penalty_repetitions,
     check_recap_editorial,
+    check_season_record_claims,
     check_tie_claims,
     editorial_warning_message,
     get_recap_editorial_retry_prompt,
@@ -134,6 +139,8 @@ from fpl_cli.services.league_history_notes import (
     NotesPack,
     NotesPackEntry,
     NoteSurface,
+    PersonalRecordRow,
+    PersonalRecordTable,
     SeasonPhase,
 )
 from fpl_cli.utils.ranking import competition_rank
@@ -4845,6 +4852,8 @@ def _history_pack(
     *,
     season_count_entries: list[NotesPackEntry] | None = None,
     season_record_entries: list[NotesPackEntry] | None = None,
+    personal_record_entries: list[NotesPackEntry] | None = None,
+    personal_record_tables: tuple[PersonalRecordTable, ...] = (),
     phase: SeasonPhase = SeasonPhase.MIDPOINT,
     phase_text: str = "GW20 is the season midpoint.",
     fpl_format: str = "classic",
@@ -4859,6 +4868,8 @@ def _history_pack(
         entries=entries or [],
         season_count_entries=season_count_entries or [],
         season_record_entries=season_record_entries or [],
+        personal_record_entries=personal_record_entries or [],
+        personal_record_tables=personal_record_tables,
         coverage_entries=coverage_entries if coverage_entries is not None else [
             NotesPackEntry(
                 kind=NoteKind.COVERAGE, text="Recorded history is complete from its start (GW1) through GW20.",
@@ -4947,15 +4958,16 @@ class TestFormatRecapLeagueHistoryContext:
             assert "Recorded history is complete" not in line
 
         # The very next non-blank content is the season-count total (its own
-        # counted block, empty here), then the season-record total (empty
-        # too), then the coverage label -- never a third, uncounted
-        # streak-shaped bullet.
+        # counted block, empty here), then the season-record and
+        # personal-record totals (empty too), then the coverage label --
+        # never a third, uncounted streak-shaped bullet.
         remainder = [line for line in lines[count_index + 3 :] if line]
         assert remainder[0] == "Total season-count entries: 0"
         assert remainder[1] == "Total season-record entries: 0"
-        assert remainder[2] == "Coverage:"
-        assert remainder[3] == "- Recorded history is complete from its start (GW1) through GW20."
-        assert remainder[4] == (
+        assert remainder[2] == "Total personal-record entries: 0"
+        assert remainder[3] == "Coverage:"
+        assert remainder[4] == "- Recorded history is complete from its start (GW1) through GW20."
+        assert remainder[5] == (
             "- Carol: recorded history begins at GW10, later than the league's "
             "start (GW1); earlier gameweeks are not available for this manager."
         )
@@ -5008,12 +5020,123 @@ class TestFormatRecapLeagueHistoryContext:
         assert lines[total - 1] == "Total season-count entries: 0"
         assert lines[total + 1] == f"- {records[0].text}"
         assert lines[total + 2] == f"- {records[1].text}"
-        assert lines[total + 3] == "Coverage:"
+        assert lines[total + 3] == "Total personal-record entries: 0"
+        assert lines[total + 4] == "Coverage:"
 
     def test_no_season_record_is_stated_as_a_zero_total_rather_than_left_out(self):
         text = format_recap_league_history_context(_history_pack())
 
         assert "Total season-record entries: 0" in text
+
+    def test_personal_records_render_under_their_own_total_before_coverage(self):
+        """Issue #496: a manager's own best or worst week gets a counted
+        block of its own after the league's, and one withheld from the
+        prompt -- a record that stands from an earlier week, kept for
+        `--format json` -- is neither listed nor counted."""
+        shown = NotesPackEntry(
+            kind=NoteKind.PERSONAL_RECORD,
+            text=(
+                "Bob scored 65 points this gameweek, their highest gameweek score this season, "
+                "above their previous highest of 61 in GW9 (GW1-GW20)."
+            ),
+            surfaces=frozenset({NoteSurface.PROMPT}), manager_key=2, manager_name="Bob", points=65,
+        )
+        withheld = NotesPackEntry(
+            kind=NoteKind.PERSONAL_RECORD,
+            text="Alice's highest gameweek score this season is 80 points, in GW3 (GW1-GW20).",
+            surfaces=frozenset(), manager_key=1, manager_name="Alice", points=80,
+        )
+        lines = [
+            line for line in format_recap_league_history_context(
+                _history_pack(personal_record_entries=[withheld, shown]),
+            ).splitlines() if line
+        ]
+
+        total = lines.index("Total personal-record entries: 1")
+        assert lines[total - 1] == "Total season-record entries: 0"
+        assert lines[total + 1] == f"- {shown.text}"
+        assert lines[total + 2] == "Coverage:"
+        assert not any("Alice" in line for line in lines)
+
+    def test_milestone_tables_rank_every_manager_after_the_weeks_records(self):
+        """Issue #496: at the two milestones every manager's own highest and
+        lowest arrive as two counted tables, places shared where scores tie,
+        after the week's personal-record lines and before coverage."""
+        window = GameweekWindow(start_gameweek=1, end_gameweek=19)
+        joined = tuple(range(1, 10))
+        tables = (
+            PersonalRecordTable(highest=True, window=window, rows=(
+                PersonalRecordRow(rank=1, manager_key=1, manager_name="Alice", points=91, gameweeks=(2,)),
+                PersonalRecordRow(rank=1, manager_key=2, manager_name="Bob", points=91, gameweeks=(4, 9)),
+                PersonalRecordRow(
+                    rank=3, manager_key=3, manager_name="Carol", points=70, gameweeks=(12,), unrecorded=joined,
+                ),
+            )),
+            PersonalRecordTable(highest=False, window=window, rows=(
+                PersonalRecordRow(rank=1, manager_key=2, manager_name="Bob", points=18, gameweeks=(19,)),
+                PersonalRecordRow(
+                    rank=2, manager_key=1, manager_name="Alice", points=25, gameweeks=(3,), unrecorded=(5,),
+                ),
+                PersonalRecordRow(
+                    rank=3, manager_key=3, manager_name="Carol", points=31, gameweeks=(11,), unrecorded=joined,
+                ),
+            ), unrecorded=(1, 2)),
+        )
+        lines = [
+            line for line in format_recap_league_history_context(
+                _history_pack(personal_record_tables=tables, phase_text="GW19 is the season midpoint."),
+            ).splitlines() if line
+        ]
+
+        start = lines.index("Total personal-record entries: 0")
+        assert lines[start + 1 : start + 10] == [
+            "Season highs table: each manager's highest gameweek score this season (GW1-GW19), "
+            "highest first, places shared where scores tie. Total managers: 3",
+            "1. Alice: 91 (GW2)",
+            "1. Bob: 91 (GW4 and GW9)",
+            "3. Carol: 70 (GW12; GW1-9 not recorded)",
+            "Season lows table: each manager's lowest gameweek score this season (GW1-GW19; not "
+            "recorded for anyone in GW1-2), lowest first, places shared where scores tie. Total managers: 3",
+            "1. Bob: 18 (GW19)",
+            "2. Alice: 25 (GW3; GW5 not recorded)",
+            "3. Carol: 31 (GW11; GW1-9 not recorded)",
+            "Coverage:",
+        ]
+
+    def test_no_milestone_tables_leave_no_trace_on_an_ordinary_week(self):
+        text = format_recap_league_history_context(_history_pack())
+
+        assert "Season highs table" not in text
+        assert "Season lows table" not in text
+
+    def test_system_prompt_holds_a_managers_own_best_to_the_personal_record_line(self):
+        """Issue #496: "their best week of the season" is quoted from the
+        manager's own line, an equalled best is never a new one, and with no
+        line the editorial says nothing either way."""
+        from fpl_cli.prompts.league_recap import RECAP_SYNTHESIS_SYSTEM_PROMPT
+
+        # The personal example is one no reader takes for the league's, and
+        # the league rule is scoped to the league's season, so the two never
+        # claim the same phrase (PR #552 review).
+        assert (
+            'A manager\'s own best or worst week of the season ("their best week of the season", '
+            '"a new low for them this season") comes only from a "## League History" personal-record '
+            "line about them"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert '"a new season low"' not in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "a score that equalled their earlier best or worst matched it and is never a new one"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert (
+            "Where no line says so, make no claim either way about how a manager's week ranks in their "
+            'own season ("one of their best", "not their worst")'
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        # The milestone tables: a place comes from them, and their rows are
+        # never counted into a claim no line states.
+        assert (
+            "a manager's place in either, shared where the table shares it, comes from there, and never "
+            "count a table's rows to make a claim no line states"
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_system_prompt_holds_a_season_superlative_to_the_record_line(self):
         """Issue #494: "the week of the season" was said of a 65 in a season
@@ -5022,12 +5145,12 @@ class TestFormatRecapLeagueHistoryContext:
 
         assert (
             'A gameweek score is "the week of the season", "the season\'s best", "a season low" or '
-            'any other best or worst of the season only when a "## League History" season-record '
-            "line names it"
+            'any other best or worst of the league\'s season only when a "## League History" '
+            "season-record line names it"
         ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
         assert (
-            "streaks, season counts and the season's highest and lowest gameweek scores from the "
-            '"## League History" section'
+            "streaks, season counts, and the season's highest and lowest gameweek scores, the league's "
+            'and a manager\'s own, from the "## League History" section'
         ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_a_count_that_did_not_grow_this_gameweek_is_withheld_from_the_prompt(self):
@@ -5738,6 +5861,25 @@ class TestCollectorLedgerContract:
         assert data["league_id"] == 77
         assert data["standings_truncated"] is False
 
+    @pytest.mark.parametrize("sent", [(1, 2, 3), (1, 3, 2)])
+    async def test_classic_managers_sharing_a_position_come_out_in_one_order(self, sent):
+        """#555: the API sends managers who share a position in no fixed
+        order, and two runs over one gameweek listed them differently."""
+        rows = {
+            1: {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500, "rank": 1},
+            2: {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 480, "rank": 2},
+            3: {"entry": 3, "player_name": "Cara", "event_total": 40, "total": 480, "rank": 2},
+        }
+        client = _FakeClassicClient(
+            _standings_response([rows[entry] for entry in sent]),
+            {entry: _picks_response(points=row["event_total"], total_points=row["total"]) for entry, row in rows.items()},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 77}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=True,
+        )
+        assert [c["manager_key"] for c in data["standings_cohort"]] == [1, 2, 3]
+
     async def test_classic_truncated_standings_are_flagged(self):
         standings = [{"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500}]
         response = _standings_response(standings)
@@ -5942,6 +6084,38 @@ class TestCollectorLedgerContract:
         assert sorted(c["manager_key"] for c in data["standings_cohort"]) == [10, 11]
         assert all(c["entry_id"] is None for c in data["standings_cohort"])
         assert data["league_id"] == 3
+
+    @pytest.mark.parametrize("sent", [(10, 11), (11, 10)])
+    async def test_draft_teams_sharing_a_position_come_out_in_one_order(self, sent):
+        """#555, draft: two teams level on a position in either order the API
+        sends them come out in league-entry order."""
+        draft_player = make_draft_player(id=900, code=555, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, code=555, web_name="Star", team_id=1)
+        rows = {
+            key: {"league_entry": key, "event_total": 5, "total": 5, "rank": 1} for key in (10, 11)
+        }
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [rows[key] for key in sent],
+            "league_entries": [
+                {"id": 10, "entry_id": None, "entry_name": "Ghost A"},
+                {"id": 11, "entry_id": None, "entry_name": "Ghost B"},
+            ],
+        }
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [draft_player]})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_entry_picks = AsyncMock(return_value={"picks": [{"element": 900, "position": 1}], "subs": []})
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 3}}, gw=15, live_stats={5: {"total_points": 5}},
+                players=[main_player], teams={}, is_live_gw=False,
+            )
+        assert [c["manager_key"] for c in data["standings_cohort"]] == [10, 11]
 
     async def test_draft_unmatched_player_carries_no_code(self):
         matched = make_draft_player(id=900, code=555, web_name="Star", team=1, element_type=3)
@@ -9180,6 +9354,120 @@ class TestTieClaimCheck:
             'the editorial says "joint-tenth", but 10th place in the table is Fay Lund\'s alone'
         ]
 
+    @staticmethod
+    def _record_tables() -> list[RecapRecordTable]:
+        """GW19's highs and lows tables for `_reported_table`'s managers, the
+        highs sharing 2nd on 80, the lows sharing their bottom place on 30."""
+        def table(highest: bool, rows: list[tuple[int, str, int]]) -> RecapRecordTable:
+            return RecapRecordTable(highest=highest, span="GW1-GW19", rows=[
+                RecapRecordRow(rank=rank, manager_name=name, points=points, detail="GW4")
+                for rank, name, points in rows
+            ])
+
+        return [
+            table(True, [
+                (1, "Dee Ford", 91), (2, "Bea Gale", 80), (2, "Cy Hart", 80), (4, "Eli Ray", 75),
+                (5, "Fay Lund", 70), (6, "Ann Moss", 60),
+            ]),
+            table(False, [
+                (1, "Fay Lund", 20), (2, "Eli Ray", 22), (3, "Dee Ford", 25), (4, "Cy Hart", 28),
+                (5, "Ann Moss", 30), (5, "Bea Gale", 30),
+            ]),
+        ]
+
+    @pytest.mark.parametrize("summary", [
+        "Bea Gale and Cy Hart sit joint-second in the season highs table on 80.",
+        "Ann Moss is joint-bottom of the season lows table.",
+    ])
+    def test_a_shared_place_in_a_milestone_table_bears_out_its_tie(self, summary):
+        """PR #552 review: the prompt asks for a manager's place in the
+        highs or lows table "shared where the table shares it", so quoting
+        one is no unsupported tie, though the league table's places are
+        each one manager's."""
+        managers = _reported_table()
+
+        assert check_tie_claims(
+            summary, managers, RecapNames.of(managers), record_tables=self._record_tables(),
+        ) == []
+
+    def test_the_lows_table_reads_its_lowest_score_as_its_top_place(self):
+        """The lows run worst first, so "joint-lowest" in the lows table is
+        its top place, not its bottom."""
+        managers = _reported_table()
+        tables = self._record_tables()
+        tables[1]["rows"][1] = RecapRecordRow(rank=1, manager_name="Eli Ray", points=20, detail="GW6")
+
+        assert check_tie_claims(
+            "Fay Lund's 20 is the joint-lowest in the season lows table.",
+            managers, RecapNames.of(managers), record_tables=tables,
+        ) == []
+
+    @pytest.mark.parametrize(("summary", "fact"), [
+        (
+            "Eli Ray sits joint-fourth in the season highs table.",
+            "neither reading holds: nobody is 4th in the table, and 4th place in the season highs "
+            "table is Eli Ray's alone",
+        ),
+        (
+            "Bea Gale's 85 was joint-second in the season highs table.",
+            "neither reading holds: 2nd place in the table is Eli Ray's alone, and 2nd place in the "
+            "season highs table is shared on 80 pts, not 85 pts",
+        ),
+        (
+            "Dee Ford and Bea Gale share top spot in the season highs table.",
+            "neither reading holds: 1st place in the table is Dee Ford's alone, and 1st place in the "
+            "season highs table is Dee Ford's alone",
+        ),
+    ])
+    def test_a_milestone_table_place_held_alone_or_on_another_score_is_caught(self, summary, fact):
+        managers = _reported_table()
+
+        problems = check_tie_claims(
+            summary, managers, RecapNames.of(managers), record_tables=self._record_tables(),
+        )
+
+        assert len(problems) == 1
+        assert problems[0].endswith(fact)
+
+    def test_an_equalled_personal_best_bears_out_a_joint_best_of_their_season(self):
+        """PR #552 review: a personal-record line saying a manager equalled
+        their season best states the tie between their two weeks, though
+        the league's season record is someone else's alone."""
+        summary = "Fay Lund's 58 equalled her season best, her joint-highest score of the season."
+        managers = _reported_table()
+        alone = RecapSeasonRecord(points=72, scores=[("Eli Ray", 4)])
+        equalled = [RecapPersonalEqual(manager_name="Fay Lund", highest=True, points=58)]
+
+        assert check_tie_claims(
+            summary, managers, RecapNames.of(managers), season_records={"top": alone},
+            personal_equals=equalled,
+        ) == []
+
+    @pytest.mark.parametrize(("summary", "fact"), [
+        # Someone else equalled theirs.
+        (
+            "Dee Ford's 43 matched his season best, his joint-highest score of the season.",
+            "Dee Ford did not equal their own season best this gameweek",
+        ),
+        # Said of the league's season, which a manager's own record never answers for.
+        (
+            "Fay Lund's 58 was the joint-highest score of the season.",
+            "the season's highest gameweek score, 72 pts, was Eli Ray's alone, in GW4",
+        ),
+    ])
+    def test_an_equalled_personal_record_answers_only_for_its_own_manager(self, summary, fact):
+        managers = _reported_table()
+        alone = RecapSeasonRecord(points=72, scores=[("Eli Ray", 4)])
+        equalled = [RecapPersonalEqual(manager_name="Fay Lund", highest=True, points=58)]
+
+        problems = check_tie_claims(
+            summary, managers, RecapNames.of(managers), season_records={"top": alone},
+            personal_equals=equalled,
+        )
+
+        assert len(problems) == 1
+        assert problems[0].endswith(fact)
+
     def test_a_shared_season_record_bears_out_a_season_tie(self):
         """PR #495 review: the season-record line can state a shared record,
         and quoting it is no unsupported tie, though the week's highest score
@@ -9551,6 +9839,120 @@ def _placings_table() -> list[RecapManagerEntry]:
         )
         for pos, (name, pts, total) in enumerate(rows, start=1)
     ]
+
+
+def _season_week() -> list[RecapManagerEntry]:
+    """A gameweek whose top score (65) and an own new low (30) are neither
+    the season's highest (72, scored twice) nor its lowest (21)."""
+    rows = [("Ann Moss", 30), ("Bea Gale", 27), ("Cy Hart", 46), ("Dee Ford", 65), ("Eli Ray", 41), ("Fay Lund", 52)]
+    return [_make_manager(name=name, entry_id=i, gw_points=pts) for i, (name, pts) in enumerate(rows, start=1)]
+
+
+_SEASON_RECORDS = {
+    "top": RecapSeasonRecord(points=72, scores=[("Eli Ray", 4), ("Fay Lund", 6)]),
+    "bottom": RecapSeasonRecord(points=21, scores=[("Cy Hart", 3)]),
+}
+
+
+class TestSeasonRecordClaimCheck:
+    """PR #552's A/B: with personal-record lines shown, an editorial gave a
+    manager's own new low the league's words, "set a new season low of 30",
+    when the season's lowest was 21. #495's "had the week of the season: 65
+    points" beside a season's best of 72 is the same claim made of the
+    week's winner."""
+
+    def _check(self, summary: str, records: dict[str, RecapSeasonRecord] | None = None) -> list[str]:
+        managers = _season_week()
+        return check_season_record_claims(
+            summary, managers, RecapNames.of(managers),
+            season_records=_SEASON_RECORDS if records is None else records,
+        )
+
+    def test_the_a_b_sentence_is_caught(self):
+        assert self._check("Ann Moss avoided last place and set a new season low of 30.") == [
+            'the editorial calls 30 "season low", but the season\'s lowest gameweek score is 21 pts, '
+            "scored by Cy Hart in GW3",
+        ]
+
+    @pytest.mark.parametrize("summary", [
+        "Dee Ford had the week of the season: 65 points.",
+        # The PR #552 replay: a comma and "with" before the figure.
+        "Dee Ford had the week of the season, with 65 points.",
+        "Dee Ford had the week of the season so far, with 65 points.",
+    ])
+    def test_the_week_of_the_season_is_held_to_the_season_s_best(self, summary):
+        assert self._check(summary) == [
+            'the editorial calls 65 "week of the season", but the season\'s highest gameweek score is 72 pts, '
+            "scored by Eli Ray in GW4 and Fay Lund in GW6",
+        ]
+
+    def test_a_record_scored_more_than_once_by_one_manager_names_their_weeks_once(self):
+        records = {"bottom": RecapSeasonRecord(points=21, scores=[("Cy Hart", 3), ("Cy Hart", 4), ("Cy Hart", 6)])}
+
+        problems = self._check("Ann Moss set a new season low of 30.", records)
+
+        assert problems[0].endswith("scored by Cy Hart in GW3-4, GW6")
+
+    @pytest.mark.parametrize("summary", [
+        "Ann Moss posted a season-low 30.",
+        "Ann Moss's 30 was a new season low.",
+        "Ann Moss's 30 was the lowest score of the season.",
+        "Dee Ford's 65, the season's best score, won the week.",
+        "Ann Moss sank to the league's season low with 30.",
+        "**Ann Moss Hits A Season Low Of 30**",
+    ])
+    def test_the_league_s_words_on_a_score_that_is_not_the_record_are_caught(self, summary):
+        assert len(self._check(summary)) == 1
+
+    @pytest.mark.parametrize("summary", [
+        # Owned, so the manager's own season, which the personal-record lines state.
+        "Ann Moss's 30 was his own season low.",
+        "Ann Moss's 30 was her lowest score of the season, below her previous lowest of 33 in GW5 and GW7.",
+        "Ann Moss set a new season low of 30 for herself.",
+        "Ann Moss's new season low of 30 stung.",
+        "A season-low 30 for Ann Moss.",
+        "Ann Moss's 30 was a personal season low.",
+        # The record's own figure.
+        "Cy Hart's 21 is still the season low.",
+        "The season low of 21 still stands.",
+        "Eli Ray's 72 is still the week of the season.",
+        # After a comma, a figure is the superlative's only straight after it
+        # or after "with", "on", "at" or "of": another manager's is theirs.
+        "Eli Ray's 72 is still the week of the season, with Dee Ford's 65 this week next.",
+        # Ranked or tied: not the record itself, and a tie is the tie check's.
+        "Dee Ford's 65 was the second highest score of the season.",
+        "Dee Ford's 65 was the joint-highest score of the season.",
+        # Negated, or with no figure attached.
+        "Ann Moss's 30 was not a season low.",
+        "Ann Moss's 30 was nowhere near a season low.",
+        "Ann Moss set a new season low.",
+        "With 72 in GW4, Eli Ray still owns the week of the season.",
+        # Not the superlative ("a week of the season") or not a score.
+        "Dee Ford had a week of the season to remember with 65.",
+        "Ann Moss hit the season low 3 times.",
+        "Ann Moss left a season-high 30 points on the bench.",
+        "Salah's 30 was a season high.",
+        "A season-high 30 from Salah carried her.",
+        # A figure that is no score this gameweek cannot be judged.
+        "Ann Moss set a new season low of 34 last month.",
+    ])
+    def test_a_claim_this_data_cannot_settle_or_that_holds_is_left_alone(self, summary):
+        assert self._check(summary) == []
+
+    def test_no_season_record_means_nothing_to_hold_a_claim_to(self):
+        assert self._check("Ann Moss set a new season low of 30.", {}) == []
+        assert self._check("Ann Moss set a new season low of 30.", {"top": _SEASON_RECORDS["top"]}) == []
+
+    def test_the_registry_reads_the_records_off_the_recap_data(self):
+        data = _make_recap_data(managers=_season_week())
+        data["season_lowest_score"] = _SEASON_RECORDS["bottom"]
+
+        assert RECAP_WARNING_UNSUPPORTED_SEASON_RECORD in check_recap_editorial(
+            "Ann Moss avoided last place and set a new season low of 30.", data,
+        )
+        assert RECAP_WARNING_UNSUPPORTED_SEASON_RECORD not in check_recap_editorial(
+            "Ann Moss's 30 was her lowest of the season.", data,
+        )
 
 
 class TestGameweekPlacingCheck:
@@ -10496,6 +10898,7 @@ class TestEditorialChecks:
         assert sorted(codes) == sorted({
             RECAP_WARNING_CONTESTED_MISATTRIBUTION, RECAP_WARNING_NET_MISATTRIBUTION,
             RECAP_WARNING_KIND_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE,
+            RECAP_WARNING_UNSUPPORTED_SEASON_RECORD,
             RECAP_WARNING_WRONG_PLACING, RECAP_WARNING_ESCAPE_MISATTRIBUTION, RECAP_WARNING_CONTESTED_ROLL_CALL,
             RECAP_WARNING_PENALTY_REPEATED, RECAP_WARNING_BRIEF_ECHOED, RECAP_WARNING_FINE_CLAIM_CONTRADICTED,
         })

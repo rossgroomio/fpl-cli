@@ -960,6 +960,37 @@ class RecapSeasonRecord(TypedDict):
     scores: list[tuple[str, int]]
 
 
+class RecapRecordRow(TypedDict):
+    """One manager's line in a milestone report's highs or lows table."""
+
+    rank: int
+    manager_name: str
+    points: int
+    # The gameweeks the record came in and any qualifier, as the notes pack
+    # words them: "GW2 and GW4", "GW12; recorded from GW10".
+    detail: str
+
+
+class RecapRecordTable(TypedDict):
+    """Every manager's own highest gameweek score this season, highest
+    first, or their lowest, lowest first, as the milestone report prints
+    it (issue #496)."""
+
+    highest: bool
+    span: str
+    rows: list[RecapRecordRow]
+
+
+class RecapPersonalEqual(TypedDict):
+    """A manager's own season best or worst equalled this gameweek, as the
+    editorial's League History section states it (issue #496), kept for the
+    tie check, which reads it as the tie between that manager's two weeks."""
+
+    manager_name: str
+    highest: bool
+    points: int
+
+
 class RecapMonthTable(TypedDict):
     """One completed month's places as the editorial is shown that month
     (issue #425), kept for the tie check, which reads a month tie the
@@ -1119,6 +1150,13 @@ class LeagueRecapData(TypedDict):
     # season milestones -- the report's Season Counts subsection is a
     # set-piece on the fines cadence, absent every other week.
     league_history_season_count_lines: NotRequired[list[str]]
+    # Every manager's own highest and lowest gameweek score this season
+    # (issue #496), the highs table then the lows. Populated only at the two
+    # season milestones, beside the Season Counts set-piece.
+    league_history_record_tables: NotRequired[list[RecapRecordTable]]
+    # The week's equalled personal records the editorial is shown (issue
+    # #496), kept with the tables above for the tie check.
+    personal_record_equals: NotRequired[list[RecapPersonalEqual]]
     league_history_coverage_lines: NotRequired[list[str]]
     # The season's highest and lowest gameweek score from the notes pack
     # (issue #494), kept beside the managers so the tie check can read a tie

@@ -174,7 +174,12 @@ gameweeks are always stated beside the number — see
 
 With `--summarise` the editorial is also told the league's highest and lowest gameweek
 score of the season, who scored each and when, and may call a week the season's best or
-worst only where that record says so.
+worst only where that record says so. Once a manager has ten gameweeks of their own
+behind them, a week that sets or equals their own best or worst of the season reaches
+the editorial too, beside the score it beat, so "their best week of the season" is quoted
+rather than guessed. At GW19 and the finale the report also prints two tables under
+Season Highs and Lows, every manager's highest gameweek score of the season ranked
+highest first and their lowest ranked worst first, and the editorial gets them too.
 
 On the league's first gameweek the recap also looks up each manager's FPL record from
 previous seasons — how many they have played, how they finished last season, their best
