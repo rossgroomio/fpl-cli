@@ -12768,6 +12768,34 @@ class TestBriefEchoes:
     def test_the_brief_in_the_editorials_own_words_is_caught(self, summary):
         assert check_brief_echoes(summary) != []
 
+    def test_the_style_paragraphs_clause_of_its_own_is_caught_lifted_or_played_on(self):
+        """#553: two shipped GW8 draft editorials in #552's A/B read the
+        style paragraph's "a league place keeps a clause of its own" out to
+        the league, quoted here with their managers masked."""
+        found = check_brief_echoes("Manager A won by 30. He sits third in the league, a clause of its own.")
+        assert found == [
+            'the editorial reads its brief\'s own wording, "a clause of its own", out to the league '
+            '("He sits third in the league, a clause of its own")',
+        ]
+        found = check_brief_echoes(
+            "Manager B lost by two and is now second in the table, a clause that hurts less than the score."
+        )
+        assert found == [
+            'the editorial reads its brief\'s own wording, "a clause", out to the league '
+            '("is now second in the table, a clause that hurts less than the score")',
+        ]
+        assert check_brief_echoes("The place got clauses of their own this week.") != []
+
+    def test_a_place_in_a_clause_of_its_own_or_a_contracts_clause_passes(self):
+        for summary in (
+            "Manager A sits third in the league. His 41 was the week's worst.",
+            "Third in the league, Manager A still posted the week's worst score.",
+            "His release clause is £60m, a clause in his contract City will test.",
+            "Under his new deal, a clause lets him leave in January.",
+            "Bob's buy-back clause, a clause nobody expected, kicked in.",
+        ):
+            assert check_brief_echoes(summary) == [], summary
+
     def test_the_forfeit_label_is_caught_only_as_a_label(self):
         assert check_brief_echoes("Under its Naming the forfeit line, a pint.") != []
         assert check_brief_echoes('Bob owes one. "Naming the forfeit" says a pint.') != []
