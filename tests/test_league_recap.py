@@ -10378,6 +10378,11 @@ class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
         "Manager A took top spot with a 46 that ranked second on the week.",
         "Manager A takes first place with a 46 that was only the joint-second best score of the week.",
         "Manager A takes top spot after a 46 that tied for second-best of the week.",
+        # PR #559 replay: "good for" or "enough for" before the rank.
+        "Manager A takes top spot with a 46 that was good for joint second on the week.",
+        "Manager A takes top spot with a 46 that was enough for joint second on the week.",
+        "Manager A takes top spot with a 46 that was good for joint second of the week.",
+        "Manager A takes top spot with a 46, good enough for second on the week.",
         # A season total, and "the week's" owning a noun of its own.
         "Manager A takes top spot on 423 for the week's quietest promotion.",
         "Manager A takes top spot on 46 for the week's quietest promotion.",
@@ -10393,6 +10398,7 @@ class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
 
     @pytest.mark.parametrize("summary", [
         "Manager A took top spot with a 46 for the week.",
+        "Manager A takes top spot with 46 for the week.",
         "Manager B was top of the week on 27.",
         "Manager E was last in the week's scores.",
         # PR #559 review: any form of a word for the week's ranking, one word
