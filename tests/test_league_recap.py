@@ -10263,10 +10263,11 @@ class TestPlacingBesideAStatedWeekRank:
         "Manager B left second with 27, which was 3rd best on the week.",
         "Manager B had a shocker. He arrived as leader and left second, with 27 points, the week's highest.",
         "Manager B left second on 27, the week's second-lowest.",
+        "Manager A takes first with 52, which was 3rd best on the week.",
     ])
     def test_a_week_rank_the_score_does_not_hold_lets_nothing_off(self, summary):
-        """A wrong week rank says nothing about the placing beside it, so the
-        #483 reading stands."""
+        """A wrong week rank never lets the placing beside it off, and since
+        #558 makes it the week's whatever the verb."""
         assert len(self._check(summary)) == 1
 
     def test_a_bare_ordinal_is_the_gameweek_rank_alone(self):
@@ -10367,6 +10368,10 @@ class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
         ("Manager E scored 30 for 1st place.", "Manager E"),
         # PR #559 review: "wound up" finishes as "ended up" does.
         ("Manager E wound up 6th with 30.", "Manager E"),
+        # PR #559 replay: a week rank the score does not hold makes the
+        # sentence wrong on the week, whatever the verb.
+        ("Manager A takes top spot with a 46 that was the week's best.", "Manager A"),
+        ("Manager A takes top spot with a 46, the highest score of the week.", "Manager A"),
     ])
     def test_a_finish_or_the_week_beside_the_score_is_still_caught(self, summary, placed):
         problems = self._check(summary)
@@ -10383,6 +10388,7 @@ class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
         "Manager A takes top spot with a 46 that was enough for joint second on the week.",
         "Manager A takes top spot with a 46 that was good for joint second of the week.",
         "Manager A takes top spot with a 46, good enough for second on the week.",
+        "Manager A takes top spot with a 46 that was the week's second-best.",
         # A season total, and "the week's" owning a noun of its own.
         "Manager A takes top spot on 423 for the week's quietest promotion.",
         "Manager A takes top spot on 46 for the week's quietest promotion.",

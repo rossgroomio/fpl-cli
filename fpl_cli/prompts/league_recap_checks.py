@@ -2475,7 +2475,10 @@ def check_gameweek_placings(
     or "took top spot with a 46 that ranked second on the week", #558), is
     about the table, unless the week is the placing's scope as above or a
     finishing verb leads into a placing that score is attached to ("finished
-    fifth on 27, the week's lowest"). "The week's" owning a noun is no scope
+    fifth on 27, the week's lowest"); one the score does not hold makes a
+    placing it is attached to the week's whatever the verb ("takes top spot
+    with a 46 that was the week's best" of a 46 that came second). "The
+    week's" owning a noun is no scope
     unless the noun ranks the week ("last in the week's scores"), nor is the
     week after its start or end ("top at the start of the week"). A stretch
     with any word for the table, a season, holding a place or a span longer
@@ -2545,18 +2548,20 @@ def check_gameweek_placings(
         claimed = _ORDINAL_NUMBERS.get(word) or int(word[:-2])
         return ranks[name] == claimed or (best and scores.index(score) + 1 == claimed)
 
-    def states_week_rank(text: str, name: str) -> bool:
-        """Whether `text` follows `name`'s gameweek score with its true rank
-        on the week (`_WEEK_RANK_AFTER_SCORE_RE`). A rank the score does not
-        hold says nothing about the placing beside it."""
+    def stated_week_ranks(text: str, name: str) -> list[bool]:
+        """Each rank on the week `text` states straight after `name`'s
+        gameweek score (`_WEEK_RANK_AFTER_SCORE_RE`), as whether the score
+        holds it. A true one puts the placing beside it in the table (#518);
+        a false one makes the sentence wrong on the week (#558)."""
         score = by_name[name]["gw_points"]
         if not is_score(score, by_name[name]):
-            return False
+            return []
+        ranks = []
         for figure in _FIGURE_RE.finditer(text):
             stated = _WEEK_RANK_AFTER_SCORE_RE.match(text, figure.end()) if int(figure.group(0)) == score else None
-            if stated and holds(name, stated.group("rank").lower(), best=bool(stated.group("best"))):
-                return True
-        return False
+            if stated:
+                ranks.append(holds(name, stated.group("rank").lower(), best=bool(stated.group("best"))))
+        return ranks
 
     aliases = _manager_aliases(names)
     problems: list[str] = []
@@ -2637,15 +2642,18 @@ def check_gameweek_placings(
                 # second on the week", #558), unless a finishing verb leads
                 # into a placing the score is attached to: "finished fifth on
                 # 27, the week's lowest" is still #483's shape.
-                if states_week_rank(text, name) and not (attached_score and finished):
+                week_ranks = stated_week_ranks(text, name)
+                if any(week_ranks) and not (attached_score and finished):
                     continue
                 if _PLACING_WEEK_AFTER_RE.search(after):
                     reading = "for the week"
                 # A score attached to the placing makes it the week's only
-                # where a finishing verb leads into it or the score buys it
-                # ("scored 35 for 6th place"); "takes top spot on 46" is the
-                # table's (#558).
-                elif attached_score and (buys or _FINISH_LEAD_RE.search(before)):
+                # where a finishing verb leads into it, the score buys it
+                # ("scored 35 for 6th place") or the clause gives the score a
+                # week rank it does not hold ("takes top spot with a 46 that
+                # was the week's best" of a 46 that came second); "takes top
+                # spot on 46" is the table's (#558).
+                elif attached_score and (buys or week_ranks or _FINISH_LEAD_RE.search(before)):
                     reading = "beside their gameweek score"
                 elif (
                     finished
