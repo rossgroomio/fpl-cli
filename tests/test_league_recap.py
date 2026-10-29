@@ -10344,6 +10344,9 @@ class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
         # "landed" takes a place as "took" does.
         "Manager E was last on 30.",
         "Manager A landed top spot on 46.",
+        # "It" as a finishing verb's object counts only beside an attached
+        # score: a saved draft's start and end of the week in the table.
+        "Manager E had a quiet week. He started it top, scored 30, and finished it second.",
         "Manager B fell to a share of second on 27.",
         # A move to a share of a place lands on it, as one to the place does.
         "Manager B fell to a share of second on the week.",

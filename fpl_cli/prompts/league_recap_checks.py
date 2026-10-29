@@ -2295,28 +2295,30 @@ _PLACING_OTHER_PERSON_RE = re.compile(
 # manager's only when it follows the name ("Bob, who finished eighth"): "Bob
 # beat only the manager who came last" puts nobody's placing on Bob.
 _RELATIVE_RE = re.compile(r"(?<!\w)(?:who|whom|whose|which)(?!\w)", re.IGNORECASE)
-# A finishing verb straight before a placing, or with "it" or the week as
-# its object, makes it the manager's finish ("finished eighth", "came in
-# last", "wound up sixth", "good for eighth", "ended the week second"),
+# A finishing verb straight before a placing makes it the manager's finish
+# ("finished eighth", "came in last", "wound up sixth", "good for eighth"),
 # which the clause's own gameweek score makes the week's ("scored 31 and
 # finished eighth").
 _FINISH_VERBS = (
     r"finish(?:ed|es|ing)?|came|comes?|coming|placed|end(?:ed|s|ing)?(?:\s+up)?|(?:wound|winds?|winding)\s+up"
     r"|good\s+for|enough\s+for"
 )
-_FINISH_OBJECT = rf"(?:\s+(?:it|{_PLACING_WEEK}))?\s+(?:in\s+)?$"
-_FINISH_BEFORE_RE = re.compile(rf"(?<!\w)(?:{_FINISH_VERBS}){_FINISH_OBJECT}", re.IGNORECASE)
+_FINISH_BEFORE_RE = re.compile(rf"(?<!\w)(?:{_FINISH_VERBS})\s+(?:in\s+)?$", re.IGNORECASE)
 # What makes a placing with the manager's own gameweek score attached their
 # finish on the week (#558): those verbs, "left" ("left it second, with 30")
-# and "managed" ("could only manage eighth on 31"). Any other verb leaves it
-# the table's: "takes top spot on 46", "went top on 46", "is now second",
-# "was second on 46", and "landed top spot on 46", which takes a place as
-# "took" does. Finishing wording is a short list and taking wording is not,
-# so the list names the finishes. The two extra words are kept to an
-# attached score, so "left second on 27, the week's lowest" still gives way
-# to the week rank stated beside it (#518).
+# and "managed" ("could only manage eighth on 31"), any of them with "it" or
+# the week as its object ("finished it second, on 30", "ended the week
+# second, on 27"). Any other verb leaves it the table's: "takes top spot on
+# 46", "went top on 46", "is now second", "was second on 46", and "landed
+# top spot on 46", which takes a place as "took" does. Finishing wording is
+# a short list and taking wording is not, so the list names the finishes.
+# The two extra words and the object are kept to an attached score, so
+# "left second on 27, the week's lowest" still gives way to the week rank
+# stated beside it (#518), and "He started it top, scored 30, and finished
+# it second" is the table's.
 _FINISH_LEAD_RE = re.compile(
-    rf"(?<!\w)(?:{_FINISH_VERBS}|left|manag(?:e|es|ed|ing)){_FINISH_OBJECT}", re.IGNORECASE,
+    rf"(?<!\w)(?:{_FINISH_VERBS}|left|manag(?:e|es|ed|ing))(?:\s+(?:it|{_PLACING_WEEK}))?\s+(?:in\s+)?$",
+    re.IGNORECASE,
 )
 # A figure where it stands: never signed, a decimal, part of a word ("GW31")
 # or a percentage, nor a gap or a count of places ("31 points behind", "3
