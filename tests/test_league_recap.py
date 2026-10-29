@@ -134,6 +134,8 @@ from fpl_cli.services.league_history_notes import (
     NotesPack,
     NotesPackEntry,
     NoteSurface,
+    PersonalRecordRow,
+    PersonalRecordTable,
     SeasonPhase,
 )
 from fpl_cli.utils.ranking import competition_rank
@@ -4846,6 +4848,7 @@ def _history_pack(
     season_count_entries: list[NotesPackEntry] | None = None,
     season_record_entries: list[NotesPackEntry] | None = None,
     personal_record_entries: list[NotesPackEntry] | None = None,
+    personal_record_tables: tuple[PersonalRecordTable, ...] = (),
     phase: SeasonPhase = SeasonPhase.MIDPOINT,
     phase_text: str = "GW20 is the season midpoint.",
     fpl_format: str = "classic",
@@ -4861,6 +4864,7 @@ def _history_pack(
         season_count_entries=season_count_entries or [],
         season_record_entries=season_record_entries or [],
         personal_record_entries=personal_record_entries or [],
+        personal_record_tables=personal_record_tables,
         coverage_entries=coverage_entries if coverage_entries is not None else [
             NotesPackEntry(
                 kind=NoteKind.COVERAGE, text="Recorded history is complete from its start (GW1) through GW20.",
@@ -5049,6 +5053,50 @@ class TestFormatRecapLeagueHistoryContext:
         assert lines[total + 2] == "Coverage:"
         assert not any("Alice" in line for line in lines)
 
+    def test_milestone_tables_rank_every_manager_after_the_weeks_records(self):
+        """Issue #496: at the two milestones every manager's own highest and
+        lowest arrive as two counted tables, places shared where scores tie,
+        after the week's personal-record lines and before coverage."""
+        window = GameweekWindow(start_gameweek=1, end_gameweek=19)
+        tables = (
+            PersonalRecordTable(highest=True, window=window, rows=(
+                PersonalRecordRow(rank=1, manager_key=1, manager_name="Alice", points=91, detail="GW2"),
+                PersonalRecordRow(rank=1, manager_key=2, manager_name="Bob", points=91, detail="GW4 and GW9"),
+                PersonalRecordRow(rank=3, manager_key=3, manager_name="Carol", points=70, detail="GW12; recorded from GW10"),
+            )),
+            PersonalRecordTable(highest=False, window=window, rows=(
+                PersonalRecordRow(rank=1, manager_key=2, manager_name="Bob", points=18, detail="GW19"),
+                PersonalRecordRow(rank=2, manager_key=1, manager_name="Alice", points=25, detail="GW3; GW5 not recorded"),
+                PersonalRecordRow(rank=3, manager_key=3, manager_name="Carol", points=31, detail="GW11; recorded from GW10"),
+            )),
+        )
+        lines = [
+            line for line in format_recap_league_history_context(
+                _history_pack(personal_record_tables=tables, phase_text="GW19 is the season midpoint."),
+            ).splitlines() if line
+        ]
+
+        start = lines.index("Total personal-record entries: 0")
+        assert lines[start + 1 : start + 10] == [
+            "Season highs table: each manager's highest gameweek score this season (GW1-GW19), "
+            "highest first, places shared where scores tie. Total managers: 3",
+            "1. Alice: 91 (GW2)",
+            "1. Bob: 91 (GW4 and GW9)",
+            "3. Carol: 70 (GW12; recorded from GW10)",
+            "Season lows table: each manager's lowest gameweek score this season (GW1-GW19), "
+            "lowest first, places shared where scores tie. Total managers: 3",
+            "1. Bob: 18 (GW19)",
+            "2. Alice: 25 (GW3; GW5 not recorded)",
+            "3. Carol: 31 (GW11; recorded from GW10)",
+            "Coverage:",
+        ]
+
+    def test_no_milestone_tables_leave_no_trace_on_an_ordinary_week(self):
+        text = format_recap_league_history_context(_history_pack())
+
+        assert "Season highs table" not in text
+        assert "Season lows table" not in text
+
     def test_system_prompt_holds_a_managers_own_best_to_the_personal_record_line(self):
         """Issue #496: "their best week of the season" is quoted from the
         manager's own line, an equalled best is never a new one, and with no
@@ -5065,6 +5113,12 @@ class TestFormatRecapLeagueHistoryContext:
         assert (
             "Where no line says so, make no claim either way about how a manager's week ranks in their "
             'own season ("one of their best", "not their worst")'
+        ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        # The milestone tables: a place comes from them, and their rows are
+        # never counted into a claim no line states.
+        assert (
+            "a manager's place in either, shared where the table shares it, comes from there, and never "
+            "count a table's rows to make a claim no line states"
         ) in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_system_prompt_holds_a_season_superlative_to_the_record_line(self):

@@ -15,6 +15,7 @@ from fpl_cli.cli._helpers import performer_score, rec_in_options, waiver_superse
 from fpl_cli.cli._league_recap_data import recap_fine_lines
 from fpl_cli.cli._league_recap_types import (
     RecapManagerEntry,
+    RecapRecordRow,
     draft_transaction_kind_label,
     gameweek_rank,
     recap_title,
@@ -684,6 +685,18 @@ class ReportAgent(Agent):
         data["title"] = recap_title(gameweek, data.get("league_name", ""))
         data.setdefault("generated_at", format_generated_at())
         data["standings_block"] = _format_standings_block(data.get("managers", []))
+        # The milestone recaps' highs and lows tables (#496), laid out as the
+        # standings block is, with the span they share said once above them.
+        record_tables = data.get("league_history_record_tables") or []
+        data["league_history_record_blocks"] = [
+            {"heading": "Highest" if table["highest"] else "Lowest", "block": _format_record_table_block(table["rows"])}
+            for table in record_tables
+        ]
+        if record_tables:
+            data["league_history_record_note"] = (
+                f"Each manager's highest and lowest gameweek score this season ({record_tables[0]['span']}), "
+                "the lowest listed worst first."
+            )
         # Grouped by the fine (#504), then any Player of the Month voucher
         # (#492): the same lines the console prints.
         data["fine_lines"] = recap_fine_lines(
@@ -770,6 +783,22 @@ def _format_standings_block(managers: Sequence[RecapManagerEntry]) -> str:
             f"{context}"
         )
     return "\n".join(lines)
+
+
+def _format_record_table_block(rows: Sequence[RecapRecordRow]) -> str:
+    """Render a milestone highs or lows table (#496) the way the standings
+    block renders a week: place, shared where records tie, then manager and
+    score, then the gameweeks the record came in, in brackets."""
+    if not rows:
+        return ""
+    rank_width = max(2, len(str(len(rows))))
+    name_width = max(len(row["manager_name"]) for row in rows)
+    pts_width = max(3, max(len(str(row["points"])) for row in rows))
+    return "\n".join(
+        f"{row['rank']:>{rank_width}}.  {row['manager_name']:<{name_width}}  "
+        f"{row['points']:>{pts_width}}   ({row['detail']})"
+        for row in rows
+    )
 
 
 # Sort-only sentinel for a manager with no derivable league position --

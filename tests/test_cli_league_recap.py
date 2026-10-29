@@ -50,6 +50,8 @@ from fpl_cli.cli._league_recap_types import (
     RecapFineResult,
     RecapManagerEntry,
     RecapManagerPlayer,
+    RecapRecordRow,
+    RecapRecordTable,
     RecapStandingsEntry,
     RecapTransfer,
 )
@@ -3939,6 +3941,36 @@ class TestLeagueHistoryReportSection:
         assert "## Streaks" not in content
         assert "Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek." in content
 
+    async def test_milestone_highs_and_lows_render_as_two_tables(self, tmp_path: Path):
+        """Issue #496: every manager's own highest, highest first, and their
+        lowest, worst first, laid out as the GW Standings block is."""
+        from fpl_cli.agents.orchestration.report import ReportAgent
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        data = dict(_recap_data(managers=[_manager(name="Alice", overall_rank=1, previous_rank=1)]))
+        data["league_history_record_tables"] = [
+            RecapRecordTable(highest=True, span="GW1-GW19", rows=[
+                RecapRecordRow(rank=1, manager_name="Alice", points=123, detail="GW2"),
+                RecapRecordRow(rank=2, manager_name="Bob", points=91, detail="GW4 and GW9"),
+            ]),
+            RecapRecordTable(highest=False, span="GW1-GW19", rows=[
+                RecapRecordRow(rank=1, manager_name="Bob", points=8, detail="GW19"),
+                RecapRecordRow(rank=2, manager_name="Alice", points=27, detail="GW1"),
+            ]),
+        ]
+
+        result = await agent.run(context={"report_type": "league-recap", "gameweek": 19, "data": data})
+
+        content = Path(result.data["report_path"]).read_text(encoding="utf-8")
+        assert "# League History" in content
+        assert "## Season Highs and Lows" in content
+        assert (
+            "*Each manager's highest and lowest gameweek score this season (GW1-GW19), "
+            "the lowest listed worst first.*"
+        ) in content
+        assert "**Highest**\n\n```\n 1.  Alice  123   (GW2)\n 2.  Bob     91   (GW4 and GW9)\n```" in content
+        assert "**Lowest**\n\n```\n 1.  Bob      8   (GW19)\n 2.  Alice   27   (GW1)\n```" in content
+
     async def test_no_streaks_heading_when_the_pack_has_no_open_runs(self, tmp_path: Path):
         from fpl_cli.agents.orchestration.report import ReportAgent
 
@@ -4556,6 +4588,59 @@ class TestLeagueRecapJsonEnvelope:
         assert best["window"] == {"start_gameweek": 1, "end_gameweek": 10}
         assert [r["surfaces"] for r in records[1:]] == [[], [], []]
         assert records[3]["previous_points"] is None
+        # The ranked tables are the milestones' alone.
+        assert json.loads(result.stdout)["metadata"]["notes_pack"]["personal_record_tables"] == []
+
+    @staticmethod
+    def _halfway_season() -> LeagueRecapData:
+        """GW1-18 in the ledger, then a GW19 where Bob sets his best and
+        Alice her worst."""
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in range(1, CHIP_SPLIT_GW):
+            store.append_rows(gw, [
+                make_history_row(
+                    season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                    manager_key=key, manager_name=name, gross_points=base + gw, transfer_cost=0,
+                )
+                for key, name, base in ((1, "Alice", 40), (2, "Bob", 30))
+            ])
+        return _recap_data(
+            gameweek=CHIP_SPLIT_GW,
+            managers=[
+                _manager(name="Alice", entry_id=1, gross_points=20, total_points=900),
+                _manager(name="Bob", entry_id=2, gross_points=70, total_points=800, overall_rank=2),
+            ],
+            cohort=_cohort((1, "Alice", 1, 20, 900), (2, "Bob", 2, 70, 800)),
+        )
+
+    def test_the_halfway_report_prints_every_managers_highs_and_lows(self, tmp_path: Path):
+        """Issue #496: the milestone report carries both tables, the highs
+        highest first and the lows worst first."""
+        result = _invoke_recap(
+            self._halfway_season(), ["--save", "--output", str(tmp_path)],
+            client=_fpl_client(CHIP_SPLIT_GW), gw=CHIP_SPLIT_GW,
+        )
+
+        assert result.exit_code == 0, result.output
+        report = (tmp_path / season_label() / f"gw{CHIP_SPLIT_GW}-league-recap.md").read_text(encoding="utf-8")
+        assert "## Season Highs and Lows" in report
+        assert "```\n 1.  Bob     70   (GW19)\n 2.  Alice   58   (GW18)\n```" in report
+        assert "```\n 1.  Alice   20   (GW19)\n 2.  Bob     31   (GW1)\n```" in report
+
+    def test_the_halfway_json_carries_both_ranked_tables(self):
+        result = _invoke_recap(
+            self._halfway_season(), ["--format", "json"], client=_fpl_client(CHIP_SPLIT_GW), gw=CHIP_SPLIT_GW,
+        )
+
+        assert result.exit_code == 0, result.output
+        highs, lows = json.loads(result.stdout)["metadata"]["notes_pack"]["personal_record_tables"]
+        assert (highs["highest"], lows["highest"]) == (True, False)
+        assert highs["window"] == {"start_gameweek": 1, "end_gameweek": CHIP_SPLIT_GW}
+        assert highs["rows"] == [
+            {"rank": 1, "manager_key": 2, "manager_name": "Bob", "points": 70, "detail": "GW19"},
+            {"rank": 2, "manager_key": 1, "manager_name": "Alice", "points": 58, "detail": "GW18"},
+        ]
+        assert [(row["manager_name"], row["points"]) for row in lows["rows"]] == [("Alice", 20), ("Bob", 31)]
 
     def test_a_streak_entry_serializes_its_inapplicable_gameweeks_apart_from_held_ones(self):
         """Issue #358: a JSON consumer reading `held_count` as missing data

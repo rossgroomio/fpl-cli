@@ -117,7 +117,7 @@
 {{ standings_block }}
 ```
 
-{% if (league_history_streak_lines is defined and league_history_streak_lines) or (league_history_season_count_lines is defined and league_history_season_count_lines) or (league_history_coverage_lines is defined and league_history_coverage_lines) %}
+{% if (league_history_streak_lines is defined and league_history_streak_lines) or (league_history_season_count_lines is defined and league_history_season_count_lines) or (league_history_record_blocks is defined and league_history_record_blocks) or (league_history_coverage_lines is defined and league_history_coverage_lines) %}
 ---
 
 # League History
@@ -137,6 +137,20 @@
 - {{ line }}
 {% endfor %}
 
+{% endif %}
+{% if league_history_record_blocks is defined and league_history_record_blocks %}
+## Season Highs and Lows
+
+*{{ league_history_record_note }}*
+
+{% for table in league_history_record_blocks %}
+**{{ table.heading }}**
+
+```
+{{ table.block }}
+```
+
+{% endfor %}
 {% endif %}
 {% if league_history_coverage_lines is defined and league_history_coverage_lines %}
 {% for line in league_history_coverage_lines %}
