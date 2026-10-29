@@ -1,6 +1,34 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.11.0] - 2026-10-29
+
+### Bug Fixes
+
+- league-recap editorial holds "the only one" to the fine counts (#512)
+- league-recap no longer flags true shared-score ties or table places (#521)
+- league-recap judges a chained draft move by its end-to-end swing (#522)
+- league-recap no longer gives a pronoun's escape to its yardstick (#526)
+- league-recap no longer puts GW19 in the second chip half (#530)
+- league-recap no longer flags true player scores or he/his claims (#538)
+- league-recap shows a draft replay's ledger positions and totals (#540)
+- league-recap reads "waiver work" as all of a manager's moves (#542)
+- league-recap no longer flags the net of moves broken down by kind (#544)
+- league-recap's move awards name every manager tied on the figure (#549)
+- league-recap flags "a clause of its own" lifted from its brief (#557)
+- league-recap no longer flags a true table place beside a score (#559)
+
+### Features
+
+- league-recap groups the week's fines into one line per fine (#506)
+- league-recap editorial varies how it names a fine's forfeit (#507)
+- league-recap editorial writes drier jokes from the week's facts (#515)
+- league-recap retries an editorial that reads out its instructions (#523)
+- league-recap retries an editorial wrong about who was fined (#527)
+- league-recap adds Manager and Dud of the Month and monthly honours (#528)
+- league-recap lets draft Player of the Month owners hand out a fine (#545)
+- league-recap's editorial knows a manager's best and worst week (#552)
+
 ## [2.10.0] - 2026-10-22
 
 ### Bug Fixes
