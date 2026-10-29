@@ -12768,6 +12768,57 @@ class TestBriefEchoes:
     def test_the_brief_in_the_editorials_own_words_is_caught(self, summary):
         assert check_brief_echoes(summary) != []
 
+    def test_the_style_paragraphs_clause_of_its_own_is_caught_lifted_or_played_on(self):
+        """#553: two shipped GW8 draft editorials in #552's A/B read the
+        style paragraph's "a league place keeps a clause of its own" out to
+        the league, quoted here with their managers masked."""
+        found = check_brief_echoes("Manager A won by 30. He sits third in the league, a clause of its own.")
+        assert found == [
+            'the editorial reads its brief\'s own wording, "a clause of its own", out to the league '
+            '("He sits third in the league, a clause of its own")',
+        ]
+        found = check_brief_echoes(
+            "Manager B lost by two and is now second in the table, a clause that hurts less than the score."
+        )
+        assert found == [
+            'the editorial reads its brief\'s own wording, "a clause", out to the league '
+            '("is now second in the table, a clause that hurts less than the score")',
+        ]
+        assert check_brief_echoes("The place got clauses of their own this week.") != []
+        # Lifted whole it is the brief with or without a place beside it.
+        assert check_brief_echoes("Bob's 12 points get a clause of its own.") != []
+
+    def test_a_clause_set_beside_a_league_place_is_caught_whatever_else_the_sentence_says(self):
+        """PR #557 review: a contract word anywhere in the sentence let the
+        echo through ("no big deal")."""
+        for summary in (
+            "Manager A is second in the table, a clause that is no big deal.",
+            "Top of the table, a clause he has earned twice now.",
+            "Manager B finished the week in last, a clause nobody wanted.",
+            # #557's A/B: a shipped draft joined the place to it with "which is".
+            "He sits third in the league, which is a clause he'd like to revisit.",
+            "Manager A was top of the table, that is a clause of sorts.",
+        ):
+            found = check_brief_echoes(summary)
+            assert [problem.split('"')[1] for problem in found] == ["a clause"], summary
+
+    def test_a_place_in_a_clause_of_its_own_or_footballs_own_clause_passes(self):
+        """PR #557 review: a football clause with no contract word in its
+        sentence, and one after a place in the sentence before, were read
+        as the brief."""
+        for summary in (
+            "Manager A sits third in the league. His 41 was the week's worst.",
+            "Third in the league, Manager A still posted the week's worst score.",
+            "His release clause is £60m, a clause in his contract City will test.",
+            "Palace recall him in January, a clause that was added to the loan.",
+            "He joined on loan, a clause allowing a recall.",
+            "Bob's buy-back clause, a clause nobody expected, kicked in.",
+            "Manager A is third in the league. His agent added, a clause that lets him leave.",
+            "Third in the league, he has a minimum-fee clause and a recall clause.",
+            "He scored in first-half stoppage time, a clause in his loan aside.",
+        ):
+            assert check_brief_echoes(summary) == [], summary
+
     def test_the_forfeit_label_is_caught_only_as_a_label(self):
         assert check_brief_echoes("Under its Naming the forfeit line, a pint.") != []
         assert check_brief_echoes('Bob owes one. "Naming the forfeit" says a pint.') != []
