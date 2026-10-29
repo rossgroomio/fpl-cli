@@ -2023,8 +2023,10 @@ _SEASON_RECORD_FOR_RE = re.compile(r"(?:\s*-?\s*(?:pts?|points?))?\s+for\s+", re
 _SEASON_RECORD_PRONOUN_RE = re.compile(r"(?:him|her|them|himself|herself|themselves)(?!\w)", re.IGNORECASE)
 # The figure the superlative is said of, attached to it: straight before it,
 # joined by a copula, a comma or a colon ("Bob's 30 was a new season low",
-# "30, a season low"), or straight after it ("a new season low of 30", "a
-# season-low 30", "the week of the season: 65 points").
+# "30, a season low"), or straight after it, a comma or a colon and "with",
+# "on", "at" or "of" allowed between ("a new season low of 30", "a
+# season-low 30", "the week of the season: 65 points", "the week of the
+# season so far, with 65 points").
 _SEASON_RECORD_FIGURE_BEFORE_RE = re.compile(
     r"(?<![\w.£+−–-])(?P<figure>\d+)(?:\s*(?:pts?|points?))?"
     r"(?:\s*[,:–—]|\s+(?:was|is|were|are|as|makes?|made|marks?|marked|stands?|stood|becomes?|became))"
@@ -2033,7 +2035,7 @@ _SEASON_RECORD_FIGURE_BEFORE_RE = re.compile(
 )
 _SEASON_RECORD_FIGURE_AFTER_RE = re.compile(
     r"(?:[\s-]+(?:gameweek\s+)?(?:scores?|week|return|tally|total))?(?:\s+so\s+far)?"
-    r"(?:\s*[,(:–—]\s*|\s+(?:of|at|on|with|was|is)\s+|\s+)(?P<figure>\d+)(?![\w.%])",
+    r"(?:\s*[,(:–—]\s*(?:(?:of|at|on|with)\s+)?|\s+(?:of|at|on|with|was|is)\s+|\s+)(?P<figure>\d+)(?![\w.%])",
     re.IGNORECASE,
 )
 # A figure that counts something else: "the season high 3 times", "a

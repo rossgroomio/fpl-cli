@@ -9874,8 +9874,14 @@ class TestSeasonRecordClaimCheck:
             "scored by Cy Hart in GW3",
         ]
 
-    def test_the_week_of_the_season_is_held_to_the_season_s_best(self):
-        assert self._check("Dee Ford had the week of the season: 65 points.") == [
+    @pytest.mark.parametrize("summary", [
+        "Dee Ford had the week of the season: 65 points.",
+        # The PR #552 replay: a comma and "with" before the figure.
+        "Dee Ford had the week of the season, with 65 points.",
+        "Dee Ford had the week of the season so far, with 65 points.",
+    ])
+    def test_the_week_of_the_season_is_held_to_the_season_s_best(self, summary):
+        assert self._check(summary) == [
             'the editorial calls 65 "week of the season", but the season\'s highest gameweek score is 72 pts, '
             "scored by Eli Ray in GW4 and Fay Lund in GW6",
         ]
@@ -9910,6 +9916,9 @@ class TestSeasonRecordClaimCheck:
         "Cy Hart's 21 is still the season low.",
         "The season low of 21 still stands.",
         "Eli Ray's 72 is still the week of the season.",
+        # After a comma, a figure is the superlative's only straight after it
+        # or after "with", "on", "at" or "of": another manager's is theirs.
+        "Eli Ray's 72 is still the week of the season, with Dee Ford's 65 this week next.",
         # Ranked or tied: not the record itself, and a tie is the tie check's.
         "Dee Ford's 65 was the second highest score of the season.",
         "Dee Ford's 65 was the joint-highest score of the season.",
