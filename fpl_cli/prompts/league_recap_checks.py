@@ -3060,19 +3060,27 @@ _BRIEF_PHRASE_RE = re.compile(
 # sentence's end, a bullet, a dash or an opening quote it may be a sentence's
 # first word ("Naming the forfeit is half the fun"), so it is left alone.
 _FORFEIT_LABEL_RE = re.compile(r"(?<!\w)Naming\s+the\s+forfeit(?!\w)")
-# The style paragraph's "a league place keeps a clause of its own" (#553).
-# "Clause" in football is a contract's, and a contract's is never "of its
-# own", so the phrase lifted whole is the brief wherever it stands.
-_BRIEF_OWN_CLAUSE_RE = re.compile(r"(?<!\w)clauses?\s+of\s+(?:its|their|his|her)\s+own(?!\w)", re.IGNORECASE)
-# The same instruction played on: "is now second in the table, a clause that
-# hurts less than the score" sets "a clause" beside the words before it,
-# calling them one. A contract's clause set beside them ("a £60m fee, a clause
-# in his contract", "his buy-back clause, a clause nobody expected") names its
-# contract, its deal or its kind of clause in the same sentence, so a sentence
-# that does is left alone.
-_BRIEF_CLAUSE_APPOSITIVE_RE = re.compile(r",\s*(a\s+clause)(?!\w)", re.IGNORECASE)
-_CONTRACT_RE = re.compile(
-    r"(?<!\w)(?:contracts?|deals?|(?:release|buy-?back|buy-?out|sell-?on|relegation|exit|get-?out)\s+clauses?)(?!\w)",
+# The style paragraph's "a league place keeps a clause of its own" (#553),
+# lifted whole ("third in the league, a clause of its own") or played on
+# ("second in the table, a clause that hurts less than the score"). Football's
+# clauses are a contract's, which a recap has no cause to call "of its own",
+# so the phrase lifted is the brief wherever it stands. A bare "a clause" is
+# the brief only where it is set after a comma beside the league place the
+# instruction is about, in its sentence: "Palace can recall him, a clause in
+# the loan" names no place, and passes.
+_BRIEF_CLAUSE_RE = re.compile(
+    r"(?P<comma>,\s*)?(?<!\w)(?P<echo>(?:a\s+)?clauses?(?P<own>\s+of\s+(?:its|their|his|her)\s+own)?)(?!\w)",
+    re.IGNORECASE,
+)
+_PLACE_ORDINAL = (
+    r"(?:\d+(?:st|nd|rd|th)|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh"
+    r"|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|last)"
+)
+# A league place: "third in the league", "top of the table", "fourth place",
+# "in last" (never "in first-half stoppage time").
+_LEAGUE_PLACE_RE = re.compile(
+    rf"(?<!\w)(?:(?:{_PLACE_ORDINAL}|top|bottom)\s+(?:place|(?:in|of|on)\s+the\s+(?:league|table|standings))"
+    rf"|in\s+{_PLACE_ORDINAL})(?![\w-])",
     re.IGNORECASE,
 )
 _BRIEF_QUOTE_MARK_TUPLE = tuple(_BRIEF_QUOTE_MARKS)
@@ -3100,11 +3108,15 @@ def _sentence_span(text: str, start: int, end: int) -> tuple[int, int]:
     return sentence_start, sentence_end
 
 
-def _clause_appositive(text: str, match: re.Match[str]) -> bool:
-    """Whether a ", a clause" calls the words before it a clause, rather
-    than setting a contract's clause beside them."""
-    sentence_start, sentence_end = _sentence_span(text, match.start(), match.end())
-    return _CONTRACT_RE.search(text, sentence_start, sentence_end) is None
+def _clause_echo(text: str, match: re.Match[str]) -> bool:
+    """Whether a "clause" is the style paragraph's: "of its own" lifted, or
+    ", a clause" set after a league place in its sentence."""
+    if match.group("own"):
+        return True
+    if not match.group("comma") or match.group("echo")[:1].lower() != "a":
+        return False
+    sentence_start, _ = _sentence_span(text, match.start(), match.end())
+    return _LEAGUE_PLACE_RE.search(text, sentence_start, match.start()) is not None
 
 
 def _sentence_quote(text: str, start: int, end: int) -> str:
@@ -3129,11 +3141,11 @@ def check_brief_echoes(summary: str) -> list[str]:
     prompt named as a section, the rules' phrases for wording and counting
     ("exact phrase", "at most once", "official wording"), the Fines
     section's "Naming the forfeit" label and the style paragraph's "a clause
-    of its own", lifted or played on (#553). It never judges whether a sentence
-    is about the instructions, so the brief in the editorial's own words
-    passes (#525); a phrase the league could use of its own week stays off
-    the list, since a false alarm here costs a retry and a warning above a
-    draft that broke nothing.
+    of its own", lifted or played on beside a league place (#553). It never
+    judges whether a sentence is about the instructions, so the brief in the
+    editorial's own words passes (#525); a phrase the league could use of its
+    own week stays off the list, since a false alarm here costs a retry and a
+    warning above a draft that broke nothing.
 
     Returns one line per echo, in the order the editorial reaches them, each
     quoting the words around it.
@@ -3143,21 +3155,11 @@ def check_brief_echoes(summary: str) -> list[str]:
             *(match.span() for match in _BRIEF_SECTION_RE.finditer(summary)),
             *(match.span() for match in _BRIEF_PHRASE_RE.finditer(summary)),
             *(m.span() for m in _FORFEIT_LABEL_RE.finditer(summary) if _forfeit_label(summary, m)),
-            *(match.span() for match in _BRIEF_OWN_CLAUSE_RE.finditer(summary)),
-            # Its comma is what makes it an echo, but the echo quoted is "a clause".
-            *(m.span(1) for m in _BRIEF_CLAUSE_APPOSITIVE_RE.finditer(summary) if _clause_appositive(summary, m)),
+            *(m.span("echo") for m in _BRIEF_CLAUSE_RE.finditer(summary) if _clause_echo(summary, m)),
         )
     )
-    # Two readings of one echo ("a clause" set beside a place, "clause of its
-    # own" lifted) overlap, and are one echo.
-    echoes: list[tuple[int, int]] = []
-    for start, end in found:
-        if echoes and start < echoes[-1][1]:
-            echoes[-1] = (echoes[-1][0], max(end, echoes[-1][1]))
-        else:
-            echoes.append((start, end))
     problems: list[str] = []
-    for start, end in echoes:
+    for start, end in found:
         echo = " ".join(_BRIEF_UNQUOTE_RE.sub("", _plain(summary[start:end])).split())
         problem = (
             f'the editorial reads its brief\'s own wording, "{echo}", out to the league '
