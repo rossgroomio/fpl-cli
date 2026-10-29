@@ -981,6 +981,16 @@ class RecapRecordTable(TypedDict):
     rows: list[RecapRecordRow]
 
 
+class RecapPersonalEqual(TypedDict):
+    """A manager's own season best or worst equalled this gameweek, as the
+    editorial's League History section states it (issue #496), kept for the
+    tie check, which reads it as the tie between that manager's two weeks."""
+
+    manager_name: str
+    highest: bool
+    points: int
+
+
 class RecapMonthTable(TypedDict):
     """One completed month's places as the editorial is shown that month
     (issue #425), kept for the tie check, which reads a month tie the
@@ -1144,6 +1154,9 @@ class LeagueRecapData(TypedDict):
     # (issue #496), the highs table then the lows. Populated only at the two
     # season milestones, beside the Season Counts set-piece.
     league_history_record_tables: NotRequired[list[RecapRecordTable]]
+    # The week's equalled personal records the editorial is shown (issue
+    # #496), kept with the tables above for the tie check.
+    personal_record_equals: NotRequired[list[RecapPersonalEqual]]
     league_history_coverage_lines: NotRequired[list[str]]
     # The season's highest and lowest gameweek score from the notes pack
     # (issue #494), kept beside the managers so the tie check can read a tie

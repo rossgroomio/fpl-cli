@@ -2066,6 +2066,59 @@ class TestSeasonRecordTies:
         assert "synthesis_unsupported_tie" in codes
 
 
+class TestPersonalRecordTies:
+    """PR #552 review: a personal-record line saying a manager equalled
+    their season best states that tie, so "her joint-highest score of the
+    season" quoted from it is no unsupported tie, though the league's season
+    record is someone else's alone. The same words for a best that was
+    beaten still are."""
+
+    _TIE = "Alice's 60 matched her season best, her joint-highest score of the season."
+
+    def _invoke(self, alice_gw10: int, *replies: str):
+        store = _store(fpl_format="classic", league_id=42)
+        for gw in range(1, 10):
+            store.append_rows(gw, [
+                make_history_row(
+                    season=SEASON, fpl_format="classic", league_id=42, gameweek=gw,
+                    manager_key=key, manager_name=name, transfer_cost=0, gross_points=points,
+                )
+                for key, name, points in ((1, "Alice", 60 if gw == 1 else 50), (2, "Bob", 80 if gw == 2 else 40))
+            ])
+        data = _recap_data(
+            gameweek=10,
+            managers=[
+                _manager(
+                    name="Alice", entry_id=1, gross_points=alice_gw10, overall_rank=1,
+                    previous_rank=1, total_points=600,
+                ),
+                _manager(
+                    name="Bob", entry_id=2, gross_points=30, overall_rank=2,
+                    previous_rank=2, total_points=500,
+                ),
+            ],
+            cohort=_cohort((1, "Alice", 1, alice_gw10, 600), (2, "Bob", 2, 30, 500)),
+        )
+        stub, provider = _queued_provider(*replies)
+        with provider:
+            result = _invoke_recap(data, ["--summarise", "--format", "json"], client=_fpl_client(10), gw=10)
+        assert result.exit_code == 0, result.stderr
+        codes = [w["code"] for w in json.loads(result.stdout)["metadata"]["warnings"]]
+        return stub, codes
+
+    def test_an_equalled_best_bears_out_a_joint_best_of_their_season(self):
+        stub, codes = self._invoke(60, self._TIE)
+
+        assert len(stub.prompts) == 1
+        assert "synthesis_unsupported_tie" not in codes
+
+    def test_a_beaten_best_does_not(self):
+        stub, codes = self._invoke(61, self._TIE, self._TIE)
+
+        assert len(stub.prompts) == 2
+        assert "synthesis_unsupported_tie" in codes
+
+
 class TestGameweekPlacingClaims:
     """#486: the editorial gave a manager their league position as their
     gameweek finish, "finished eighth on 31" for a manager seventh on the
@@ -4636,9 +4689,18 @@ class TestLeagueRecapJsonEnvelope:
         highs, lows = json.loads(result.stdout)["metadata"]["notes_pack"]["personal_record_tables"]
         assert (highs["highest"], lows["highest"]) == (True, False)
         assert highs["window"] == {"start_gameweek": 1, "end_gameweek": CHIP_SPLIT_GW}
+        # The gameweeks travel as fields, not only in the report's wording
+        # (PR #552 review).
+        assert highs["unrecorded"] == []
         assert highs["rows"] == [
-            {"rank": 1, "manager_key": 2, "manager_name": "Bob", "points": 70, "detail": "GW19"},
-            {"rank": 2, "manager_key": 1, "manager_name": "Alice", "points": 58, "detail": "GW18"},
+            {
+                "rank": 1, "manager_key": 2, "manager_name": "Bob", "points": 70,
+                "gameweeks": [19], "unrecorded": [], "detail": "GW19",
+            },
+            {
+                "rank": 2, "manager_key": 1, "manager_name": "Alice", "points": 58,
+                "gameweeks": [18], "unrecorded": [], "detail": "GW18",
+            },
         ]
         assert [(row["manager_name"], row["points"]) for row in lows["rows"]] == [("Alice", 20), ("Bob", 31)]
 

@@ -1413,11 +1413,12 @@ class TestPersonalRecordEntries:
         assert (best.surfaces, worst.surfaces) == (frozenset(), frozenset())
         assert (best.previous_points, best.previous_holders) == (None, ())
 
-    def test_a_joiners_span_and_gate_start_at_their_own_first_row(self):
-        """Counted per manager, so a mid-season joiner waits for their own
-        span, which starts where the joiner coverage line says their
-        recorded history does -- the gameweeks before it are not theirs to
-        have missed."""
+    def test_a_joiner_waits_for_their_own_scores_and_names_the_weeks_before_them(self):
+        """Counted per manager, so a mid-season joiner waits for ten scores
+        of their own. A classic league scores its members from its own
+        start whenever they joined, so the weeks before their first row are
+        scores the ledger does not hold, as the season records count them
+        (PR #552 review)."""
         weeks = _weekly({1: [80, 20] + [50] * 12})
         for gw in range(5, 15):
             weeks[gw][3] = 36 + gw
@@ -1428,12 +1429,29 @@ class TestPersonalRecordEntries:
 
         assert before.surfaces == frozenset()
         assert at_gate.surfaces == _SHOWN
-        assert at_gate.window == GameweekWindow(start_gameweek=5, end_gameweek=14)
-        assert at_gate.held_count == 0
+        assert at_gate.window == GameweekWindow(start_gameweek=1, end_gameweek=14)
+        assert at_gate.held_count == 4
         assert at_gate.text == (
             "Carol scored 50 points this gameweek, their highest gameweek score this season, "
-            "above their previous highest of 49 in GW13 (GW5-GW14)."
+            "above their previous highest of 49 in GW13 (GW1-GW14; their scores were not recorded in GW1-4)."
         )
+
+    def test_a_ledger_begun_mid_season_qualifies_the_line_as_the_season_record_does(self):
+        """PR #552 review: a draft ledger captured from GW8 holds nobody's
+        GW1-7 scores, and the season-record line says so. The personal line
+        has to as well, or "their best week of the season" goes out unchecked
+        against GW1-7."""
+        store = _scored_store({gw: {1: 30 + gw} for gw in range(8, 21)})
+
+        pack = build_notes_pack(store, 20)
+
+        best = _personal(pack, "Alice", highest=True)
+        assert best.surfaces == _SHOWN
+        assert best.text == (
+            "Alice scored 50 points this gameweek, their highest gameweek score this season, above "
+            "their previous highest of 49 in GW19 (GW1-GW20; their scores were not recorded in GW1-7)."
+        )
+        assert "not every score was recorded in GW1-7" in _record(pack, "highest_gameweek_score").text
 
     def test_an_unrecorded_score_qualifies_the_record_and_counts_nothing_towards_the_gate(self):
         """An unknown row proves no score (KTD12): it never holds the record,
@@ -1488,13 +1506,14 @@ class TestPersonalRecordEntries:
         assert (highs.highest, lows.highest) == (True, False)
         assert highs.window == lows.window == GameweekWindow(start_gameweek=1, end_gameweek=CHIP_SPLIT_GW)
         assert highs.rows == (
-            PersonalRecordRow(rank=1, manager_key=1, manager_name="Alice", points=70, detail="GW4"),
-            PersonalRecordRow(rank=2, manager_key=2, manager_name="Bob", points=66, detail="GW19"),
+            PersonalRecordRow(rank=1, manager_key=1, manager_name="Alice", points=70, gameweeks=(4,)),
+            PersonalRecordRow(rank=2, manager_key=2, manager_name="Bob", points=66, gameweeks=(19,)),
         )
         assert lows.rows == (
-            PersonalRecordRow(rank=1, manager_key=1, manager_name="Alice", points=30, detail="GW6"),
-            PersonalRecordRow(rank=2, manager_key=2, manager_name="Bob", points=38, detail="GW4"),
+            PersonalRecordRow(rank=1, manager_key=1, manager_name="Alice", points=30, gameweeks=(6,)),
+            PersonalRecordRow(rank=2, manager_key=2, manager_name="Bob", points=38, gameweeks=(4,)),
         )
+        assert highs.span == "GW1-GW19"
         assert [(e.manager_name, e.surfaces) for e in halfway.personal_record_entries if e.surfaces] == [
             ("Bob", _SHOWN),
         ]
@@ -1504,8 +1523,8 @@ class TestPersonalRecordEntries:
     def test_a_table_shares_a_place_where_records_tie_and_puts_the_worst_low_first(self):
         """Competition-ranked, as the standings are (1, 2, 2, 4), so a tie on
         a record is a shared place; the lows read from the lowest. A joiner's
-        row says where their own span starts, and a record scored more than
-        once names every gameweek."""
+        row names the weeks before their first row, and a record scored more
+        than once names every gameweek."""
         store = _scored_store({
             1: {1: 60, 2: 45},
             2: {1: 40, 2: 60},
@@ -1516,16 +1535,37 @@ class TestPersonalRecordEntries:
         highs, lows = build_notes_pack(store, 4, total_gameweeks=4, chip_split_gw=2).personal_record_tables
 
         assert [(row.rank, row.manager_name, row.points, row.detail) for row in highs.rows] == [
-            (1, "Carol", 70, "GW3; recorded from GW3"),
+            (1, "Carol", 70, "GW3; GW1-2 not recorded"),
             (2, "Alice", 60, "GW1 and GW3"),
             (2, "Bob", 60, "GW2"),
         ]
         assert [(row.rank, row.manager_name, row.points, row.detail) for row in lows.rows] == [
             (1, "Bob", 35, "GW3"),
-            (1, "Carol", 35, "GW4; recorded from GW3"),
+            (1, "Carol", 35, "GW4; GW1-2 not recorded"),
             (3, "Alice", 40, "GW2"),
         ]
+        assert (highs.rows[0].gameweeks, highs.rows[0].unrecorded) == ((3,), (1, 2))
         assert highs.window == GameweekWindow(start_gameweek=1, end_gameweek=4)
+
+    def test_a_manager_with_one_recorded_score_still_has_a_row(self):
+        """PR #552 review: the season-record line can name a manager whose
+        only recorded score is the season's lowest, so the tables that say
+        "each manager's" must hold them too. One score is still no record
+        for the week's own lines."""
+        store = _scored_store({1: {1: 60, 2: 45}, 2: {1: 40, 2: 60}, 3: {1: 60, 2: 35}, 4: {1: 50, 2: 55, 3: 5}})
+        for gw in (1, 2, 3):
+            store.append_rows(gw, [make_history_row(
+                fpl_format="draft", gameweek=gw, manager_key=3, manager_name="Carol", capture_status="unknown",
+            )])
+
+        pack = build_notes_pack(store, 4, total_gameweeks=4, chip_split_gw=2)
+
+        _, lows = pack.personal_record_tables
+        assert [(row.rank, row.manager_name, row.points, row.detail) for row in lows.rows][0] == (
+            1, "Carol", 5, "GW4; GW1-3 not recorded",
+        )
+        assert "by Carol this gameweek" in _record(pack, "lowest_gameweek_score").text
+        assert not any(e.manager_name == "Carol" for e in pack.personal_record_entries)
 
     def test_a_tables_row_names_the_managers_unrecorded_gameweeks(self):
         store = _scored_store({1: {1: 60, 2: 45}, 3: {1: 50, 2: 40}, 4: {1: 55, 2: 50}})
@@ -1542,15 +1582,17 @@ class TestPersonalRecordEntries:
             ("Alice", "GW1; GW2 not recorded"), ("Bob", "GW4"),
         ]
 
-    def test_a_league_ledger_begun_mid_season_states_its_span_once(self):
-        """A whole league adopting the ledger at GW3 is the partition
-        coverage line's to say: the table's span starts there, and no row
-        repeats it."""
+    def test_a_league_ledger_begun_mid_season_is_stated_once_for_the_table(self):
+        """A whole league adopting the ledger at GW3 holds nobody's GW1-2
+        scores: the table says so once, over the league's own span, and no
+        row repeats it."""
         store = _scored_store({3: {1: 60, 2: 45}, 4: {1: 50, 2: 55}})
 
         highs, _ = build_notes_pack(store, 4, total_gameweeks=4, chip_split_gw=2).personal_record_tables
 
-        assert highs.window == GameweekWindow(start_gameweek=3, end_gameweek=4)
+        assert highs.window == GameweekWindow(start_gameweek=1, end_gameweek=4)
+        assert highs.unrecorded == (1, 2)
+        assert highs.span == "GW1-GW4; not recorded for anyone in GW1-2"
         assert [row.detail for row in highs.rows] == ["GW3", "GW4"]
 
     def test_scores_are_gross_unless_the_league_ranks_net_of_hits(self):

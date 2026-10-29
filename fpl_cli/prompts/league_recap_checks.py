@@ -38,6 +38,8 @@ from fpl_cli.cli._league_recap_types import (
     RecapFineResult,
     RecapManagerEntry,
     RecapMonthTable,
+    RecapPersonalEqual,
+    RecapRecordTable,
     RecapSeasonRecord,
     contested_draft_claims,
     draft_transaction_chains,
@@ -1594,6 +1596,15 @@ _TIE_SEASON_RE = re.compile(r"(?<!\w)season\w*(?!\w)", re.IGNORECASE)
 # alone means the month the recapped gameweek closed; a month's name means
 # that month, matched as FPL capitalises it, so "may" is no May.
 _TIE_MONTH_RE = re.compile(r"(?<!\w)month\w*(?!\w)", re.IGNORECASE)
+# A tie said of a milestone's highs or lows table ("joint-second in the
+# season highs table", "joint-bottom of the lows") reads against that table,
+# which ranks every manager's own season best or worst (#496).
+_TIE_HIGHS_RE = re.compile(r"(?<!\w)(?:highs|bests)(?!\w)", re.IGNORECASE)
+_TIE_LOWS_RE = re.compile(r"(?<!\w)(?:lows|worsts)(?!\w)", re.IGNORECASE)
+# A tie owned by a manager straight before it ("her joint-highest score of
+# the season", "Fay Lund's joint-best week") is said of their own season, not
+# the league's (#496).
+_TIE_OWNED_BEFORE_RE = re.compile(r"(?:(?<!\w)(?:his|her|their)(?:\s+own)?|['’]s)\s+$", re.IGNORECASE)
 # The words that name the table or the season outright. "Spot", "place" and
 # "position" do not: a week has a top spot too ("shared the top spot on 55
 # points", #511).
@@ -1698,6 +1709,8 @@ def check_tie_claims(
     *,
     season_records: Mapping[str, RecapSeasonRecord] | None = None,
     month_tables: Sequence[RecapMonthTable] = (),
+    record_tables: Sequence[RecapRecordTable] = (),
+    personal_equals: Sequence[RecapPersonalEqual] = (),
 ) -> list[str]:
     """Every tie the editorial claims at a rank no two managers share (#359).
 
@@ -1740,6 +1753,18 @@ def check_tie_claims(
     has that month's table as one more reading, which holds where more than
     one manager shares the place; a tie said of a month the editorial was
     not shown gets no such reading. Like the record, it only ever adds one.
+
+    `record_tables` are the milestone recaps' highs and lows tables (#496),
+    every manager's own highest or lowest gameweek score this season with
+    their place. A tie whose words name one ("the season highs table") has
+    that table as another reading, which holds where more than one manager
+    shares the place and the tie is said of no other figure; the lows run
+    lowest first, so their lowest score is their top place.
+    `personal_equals` are the week's personal records that equalled a
+    manager's earlier best or worst: a highest or lowest a manager owns
+    straight before it, said of the season ("her joint-highest score of the
+    season"), has them as a reading, which holds for one the clause names,
+    or any where it names nobody. Both only ever add a reading.
     """
     if len(managers) < 2:
         return []
@@ -1810,6 +1835,55 @@ def check_tie_claims(
             f"not {join_and([points_label(figure) for figure in other])}"
         )
 
+    def record_tables_named(window: str) -> list[RecapRecordTable]:
+        return [
+            table for table in record_tables
+            if table["rows"] and (_TIE_HIGHS_RE if table["highest"] else _TIE_LOWS_RE).search(window)
+        ]
+
+    def record_table_fact(
+        word: str, rank: int | str, figures: Sequence[int], tables: Sequence[RecapRecordTable],
+    ) -> str | None:
+        failed: list[str] = []
+        for table in tables:
+            # The lows run lowest first: their lowest score is their top place.
+            position = rank
+            if not table["highest"] and word in ("lowest", "worst"):
+                position = "top"
+            elif not table["highest"] and word in ("highest", "best"):
+                position = "bottom"
+            target, holders = _rank_holders([(row["manager_name"], row["rank"]) for row in table["rows"]], position)
+            where = f"the season {'highs' if table['highest'] else 'lows'} table"
+            if not holders:
+                failed.append(f"nobody is {place_label(target)} in {where}")
+                continue
+            points = next(row["points"] for row in table["rows"] if row["manager_name"] == holders[0])
+            other = [figure for figure in figures if figure != points]
+            if len(holders) > 1 and not other:
+                return None
+            if len(holders) > 1:
+                failed.append(
+                    f"{place_label(target)} place in {where} is shared on {points_label(points)}, "
+                    f"not {join_and([points_label(figure) for figure in other])}",
+                )
+            else:
+                failed.append(f"{place_label(target)} place in {where} is {holders[0]}'s alone")
+        return "; ".join(failed)
+
+    def personal_fact(rank: str, figures: Sequence[int], named: set[str]) -> str | None:
+        highest = rank == "top"
+        if any(
+            equal["highest"] == highest
+            and (not named or equal["manager_name"] in named)
+            and all(figure == equal["points"] for figure in figures)
+            for equal in personal_equals
+        ):
+            return None
+        which = "best" if highest else "worst"
+        if named:
+            return f"{join_and(sorted(named))} did not equal their own season {which} this gameweek"
+        return f"no manager equalled their own season {which} this gameweek"
+
     aliases = _manager_aliases(names)
     player_points = _player_points(managers)
     problems: list[str] = []
@@ -1822,6 +1896,7 @@ def check_tie_claims(
         # "White", #379).
         found = names.find(clause)
         player_spans = [m.span() for m in found if m.group(0) in names.players]
+        named = {aliases[m.group(0)] for m in found if m.group(0) in aliases}
         for match in ties:
             word = match.group("rank").lower()
             rest = clause[match.end():]
@@ -1880,6 +1955,13 @@ def check_tie_claims(
                 readings = [gameweek_fact(rank), table_fact(rank)]
             if tables_named := months_named(window):
                 readings.append(month_fact(rank, tables_named))
+            if record_named := record_tables_named(window):
+                readings.append(record_table_fact(word, rank, figures, record_named))
+            if (
+                personal_equals and isinstance(rank, str) and _TIE_SEASON_RE.search(window)
+                and _TIE_OWNED_BEFORE_RE.search(clause, 0, match.start())
+            ):
+                readings.append(personal_fact(rank, figures, named))
             failed = [reading for reading in readings if reading is not None]
             if len(failed) < len(readings):
                 continue
@@ -3269,6 +3351,8 @@ def _ties(summary: str, data: LeagueRecapData, names: RecapNames) -> list[str]:
     return check_tie_claims(
         summary, data["managers"], names,
         season_records=records, month_tables=data.get("month_tables") or [],
+        record_tables=data.get("league_history_record_tables") or [],
+        personal_equals=data.get("personal_record_equals") or [],
     )
 
 
