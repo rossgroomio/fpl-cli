@@ -108,6 +108,7 @@ from fpl_cli.prompts.league_recap_checks import (
     RECAP_WARNING_KIND_NET_MISATTRIBUTION,
     RECAP_WARNING_NET_MISATTRIBUTION,
     RECAP_WARNING_PENALTY_REPEATED,
+    RECAP_WARNING_UNSUPPORTED_SEASON_RECORD,
     RECAP_WARNING_UNSUPPORTED_TIE,
     RECAP_WARNING_WRONG_PLACING,
     RecapNames,
@@ -122,6 +123,7 @@ from fpl_cli.prompts.league_recap_checks import (
     check_net_attributions,
     check_penalty_repetitions,
     check_recap_editorial,
+    check_season_record_claims,
     check_tie_claims,
     editorial_warning_message,
     get_recap_editorial_retry_prompt,
@@ -5859,6 +5861,25 @@ class TestCollectorLedgerContract:
         assert data["league_id"] == 77
         assert data["standings_truncated"] is False
 
+    @pytest.mark.parametrize("sent", [(1, 2, 3), (1, 3, 2)])
+    async def test_classic_managers_sharing_a_position_come_out_in_one_order(self, sent):
+        """#555: the API sends managers who share a position in no fixed
+        order, and two runs over one gameweek listed them differently."""
+        rows = {
+            1: {"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500, "rank": 1},
+            2: {"entry": 2, "player_name": "Bob", "event_total": 40, "total": 480, "rank": 2},
+            3: {"entry": 3, "player_name": "Cara", "event_total": 40, "total": 480, "rank": 2},
+        }
+        client = _FakeClassicClient(
+            _standings_response([rows[entry] for entry in sent]),
+            {entry: _picks_response(points=row["event_total"], total_points=row["total"]) for entry, row in rows.items()},
+        )
+        data = await collect_classic_recap_data(
+            client, {"fpl": {"classic_league_id": 77}}, gw=10,
+            live_stats={}, player_map={}, teams={}, is_live_gw=True,
+        )
+        assert [c["manager_key"] for c in data["standings_cohort"]] == [1, 2, 3]
+
     async def test_classic_truncated_standings_are_flagged(self):
         standings = [{"entry": 1, "player_name": "Alice", "event_total": 50, "total": 500}]
         response = _standings_response(standings)
@@ -6063,6 +6084,38 @@ class TestCollectorLedgerContract:
         assert sorted(c["manager_key"] for c in data["standings_cohort"]) == [10, 11]
         assert all(c["entry_id"] is None for c in data["standings_cohort"])
         assert data["league_id"] == 3
+
+    @pytest.mark.parametrize("sent", [(10, 11), (11, 10)])
+    async def test_draft_teams_sharing_a_position_come_out_in_one_order(self, sent):
+        """#555, draft: two teams level on a position in either order the API
+        sends them come out in league-entry order."""
+        draft_player = make_draft_player(id=900, code=555, web_name="Star", team=1, element_type=3)
+        main_player = make_player(id=5, code=555, web_name="Star", team_id=1)
+        rows = {
+            key: {"league_entry": key, "event_total": 5, "total": 5, "rank": 1} for key in (10, 11)
+        }
+        league_details = {
+            "league": {"name": "Draft League"},
+            "standings": [rows[key] for key in sent],
+            "league_entries": [
+                {"id": 10, "entry_id": None, "entry_name": "Ghost A"},
+                {"id": 11, "entry_id": None, "entry_name": "Ghost B"},
+            ],
+        }
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get_league_details = AsyncMock(return_value=league_details)
+        client.get_bootstrap_static = AsyncMock(return_value={"elements": [draft_player]})
+        client.get_league_transactions = AsyncMock(return_value={"transactions": []})
+        client.get_entry_picks = AsyncMock(return_value={"picks": [{"element": 900, "position": 1}], "subs": []})
+
+        with patch("fpl_cli.api.fpl_draft.FPLDraftClient", return_value=client):
+            data = await collect_draft_recap_data(
+                {"fpl": {"draft_league_id": 3}}, gw=15, live_stats={5: {"total_points": 5}},
+                players=[main_player], teams={}, is_live_gw=False,
+            )
+        assert [c["manager_key"] for c in data["standings_cohort"]] == [10, 11]
 
     async def test_draft_unmatched_player_carries_no_code(self):
         matched = make_draft_player(id=900, code=555, web_name="Star", team=1, element_type=3)
@@ -9788,6 +9841,111 @@ def _placings_table() -> list[RecapManagerEntry]:
     ]
 
 
+def _season_week() -> list[RecapManagerEntry]:
+    """A gameweek whose top score (65) and an own new low (30) are neither
+    the season's highest (72, scored twice) nor its lowest (21)."""
+    rows = [("Ann Moss", 30), ("Bea Gale", 27), ("Cy Hart", 46), ("Dee Ford", 65), ("Eli Ray", 41), ("Fay Lund", 52)]
+    return [_make_manager(name=name, entry_id=i, gw_points=pts) for i, (name, pts) in enumerate(rows, start=1)]
+
+
+_SEASON_RECORDS = {
+    "top": RecapSeasonRecord(points=72, scores=[("Eli Ray", 4), ("Fay Lund", 6)]),
+    "bottom": RecapSeasonRecord(points=21, scores=[("Cy Hart", 3)]),
+}
+
+
+class TestSeasonRecordClaimCheck:
+    """PR #552's A/B: with personal-record lines shown, an editorial gave a
+    manager's own new low the league's words, "set a new season low of 30",
+    when the season's lowest was 21. #495's "had the week of the season: 65
+    points" beside a season's best of 72 is the same claim made of the
+    week's winner."""
+
+    def _check(self, summary: str, records: dict[str, RecapSeasonRecord] | None = None) -> list[str]:
+        managers = _season_week()
+        return check_season_record_claims(
+            summary, managers, RecapNames.of(managers),
+            season_records=_SEASON_RECORDS if records is None else records,
+        )
+
+    def test_the_a_b_sentence_is_caught(self):
+        assert self._check("Ann Moss avoided last place and set a new season low of 30.") == [
+            'the editorial calls 30 "season low", but the season\'s lowest gameweek score is 21 pts, '
+            "scored by Cy Hart in GW3",
+        ]
+
+    def test_the_week_of_the_season_is_held_to_the_season_s_best(self):
+        assert self._check("Dee Ford had the week of the season: 65 points.") == [
+            'the editorial calls 65 "week of the season", but the season\'s highest gameweek score is 72 pts, '
+            "scored by Eli Ray in GW4 and Fay Lund in GW6",
+        ]
+
+    def test_a_record_scored_more_than_once_by_one_manager_names_their_weeks_once(self):
+        records = {"bottom": RecapSeasonRecord(points=21, scores=[("Cy Hart", 3), ("Cy Hart", 4), ("Cy Hart", 6)])}
+
+        problems = self._check("Ann Moss set a new season low of 30.", records)
+
+        assert problems[0].endswith("scored by Cy Hart in GW3-4, GW6")
+
+    @pytest.mark.parametrize("summary", [
+        "Ann Moss posted a season-low 30.",
+        "Ann Moss's 30 was a new season low.",
+        "Ann Moss's 30 was the lowest score of the season.",
+        "Dee Ford's 65, the season's best score, won the week.",
+        "Ann Moss sank to the league's season low with 30.",
+        "**Ann Moss Hits A Season Low Of 30**",
+    ])
+    def test_the_league_s_words_on_a_score_that_is_not_the_record_are_caught(self, summary):
+        assert len(self._check(summary)) == 1
+
+    @pytest.mark.parametrize("summary", [
+        # Owned, so the manager's own season, which the personal-record lines state.
+        "Ann Moss's 30 was his own season low.",
+        "Ann Moss's 30 was her lowest score of the season, below her previous lowest of 33 in GW5 and GW7.",
+        "Ann Moss set a new season low of 30 for herself.",
+        "Ann Moss's new season low of 30 stung.",
+        "A season-low 30 for Ann Moss.",
+        "Ann Moss's 30 was a personal season low.",
+        # The record's own figure.
+        "Cy Hart's 21 is still the season low.",
+        "The season low of 21 still stands.",
+        "Eli Ray's 72 is still the week of the season.",
+        # Ranked or tied: not the record itself, and a tie is the tie check's.
+        "Dee Ford's 65 was the second highest score of the season.",
+        "Dee Ford's 65 was the joint-highest score of the season.",
+        # Negated, or with no figure attached.
+        "Ann Moss's 30 was not a season low.",
+        "Ann Moss's 30 was nowhere near a season low.",
+        "Ann Moss set a new season low.",
+        "With 72 in GW4, Eli Ray still owns the week of the season.",
+        # Not the superlative ("a week of the season") or not a score.
+        "Dee Ford had a week of the season to remember with 65.",
+        "Ann Moss hit the season low 3 times.",
+        "Ann Moss left a season-high 30 points on the bench.",
+        "Salah's 30 was a season high.",
+        "A season-high 30 from Salah carried her.",
+        # A figure that is no score this gameweek cannot be judged.
+        "Ann Moss set a new season low of 34 last month.",
+    ])
+    def test_a_claim_this_data_cannot_settle_or_that_holds_is_left_alone(self, summary):
+        assert self._check(summary) == []
+
+    def test_no_season_record_means_nothing_to_hold_a_claim_to(self):
+        assert self._check("Ann Moss set a new season low of 30.", {}) == []
+        assert self._check("Ann Moss set a new season low of 30.", {"top": _SEASON_RECORDS["top"]}) == []
+
+    def test_the_registry_reads_the_records_off_the_recap_data(self):
+        data = _make_recap_data(managers=_season_week())
+        data["season_lowest_score"] = _SEASON_RECORDS["bottom"]
+
+        assert RECAP_WARNING_UNSUPPORTED_SEASON_RECORD in check_recap_editorial(
+            "Ann Moss avoided last place and set a new season low of 30.", data,
+        )
+        assert RECAP_WARNING_UNSUPPORTED_SEASON_RECORD not in check_recap_editorial(
+            "Ann Moss's 30 was her lowest of the season.", data,
+        )
+
+
 class TestGameweekPlacingCheck:
     """Issue #486: the editorial called a manager seventh on the week "eighth
     on 31", their league position (#483), and with the prompt's table
@@ -10731,6 +10889,7 @@ class TestEditorialChecks:
         assert sorted(codes) == sorted({
             RECAP_WARNING_CONTESTED_MISATTRIBUTION, RECAP_WARNING_NET_MISATTRIBUTION,
             RECAP_WARNING_KIND_NET_MISATTRIBUTION, RECAP_WARNING_UNSUPPORTED_TIE,
+            RECAP_WARNING_UNSUPPORTED_SEASON_RECORD,
             RECAP_WARNING_WRONG_PLACING, RECAP_WARNING_ESCAPE_MISATTRIBUTION, RECAP_WARNING_CONTESTED_ROLL_CALL,
             RECAP_WARNING_PENALTY_REPEATED, RECAP_WARNING_BRIEF_ECHOED, RECAP_WARNING_FINE_CLAIM_CONTRADICTED,
         })

@@ -414,7 +414,7 @@ async def collect_classic_recap_data(
             gw_points=e.get("event_total", 0),
             total_points=e.get("total", 0),
         )
-        for e in standings
+        for e in sorted(standings, key=lambda row: _table_order(row, "entry"))
     ]
 
     data = LeagueRecapData(
@@ -1082,6 +1082,18 @@ def shape_prior_seasons(past: Sequence[Any]) -> list[RecapPriorSeason]:
 # ---------------------------------------------------------------------------
 # Standings movement
 # ---------------------------------------------------------------------------
+
+
+def _table_order(row: Mapping[str, Any], id_key: str) -> tuple[float, int, int]:
+    """Where a league table row sits in the standings cohort: its position,
+    then its total, then the manager's id under `id_key`.
+
+    The API sends managers who share a position in no fixed order, so two
+    runs over the same gameweek listed them differently (#555); the id
+    settles it. A row with no position goes after those that have one.
+    """
+    rank = row.get("rank")
+    return (rank if isinstance(rank, int) else float("inf"), -(row.get("total") or 0), row.get(id_key) or 0)
 
 
 def _has_previous_gameweek(gw: int, start_event: int | None = None) -> bool:
@@ -3114,7 +3126,7 @@ async def collect_draft_recap_data(
                 gw_points=s.get("event_total", 0),
                 total_points=s.get("total", 0),
             )
-            for s in standings
+            for s in sorted(standings, key=lambda row: _table_order(row, "league_entry"))
         ]
         # The league's own last_rank already states where everyone stood, and
         # states it correctly for h2h scoring, which subtracting gameweek

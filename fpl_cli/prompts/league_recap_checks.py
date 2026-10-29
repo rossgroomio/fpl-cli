@@ -54,6 +54,7 @@ from fpl_cli.cli._league_recap_types import (
     recap_fines_roll_call,
 )
 from fpl_cli.prompts.league_recap import format_recap_fines_roll_call
+from fpl_cli.utils.gameweek import format_gameweek_list
 from fpl_cli.utils.ranking import competition_rank
 from fpl_cli.utils.text import ORDINAL_WORDS, join_and
 
@@ -63,6 +64,7 @@ RECAP_WARNING_CONTESTED_MISATTRIBUTION = "synthesis_contested_misattribution"
 RECAP_WARNING_NET_MISATTRIBUTION = "synthesis_net_misattribution"
 RECAP_WARNING_KIND_NET_MISATTRIBUTION = "synthesis_kind_net_misattribution"
 RECAP_WARNING_UNSUPPORTED_TIE = "synthesis_unsupported_tie"
+RECAP_WARNING_UNSUPPORTED_SEASON_RECORD = "synthesis_unsupported_season_record"
 RECAP_WARNING_WRONG_PLACING = "synthesis_wrong_gameweek_placing"
 RECAP_WARNING_ESCAPE_MISATTRIBUTION = "synthesis_escape_misattribution"
 RECAP_WARNING_CONTESTED_ROLL_CALL = "synthesis_contested_roll_call"
@@ -1978,6 +1980,197 @@ def check_tie_claims(
 
 
 # =============================================================================
+# Season records (#496)
+# =============================================================================
+
+# A score given the league's best or worst of the season: "a new season low
+# of 30", "a season-low 30", "the season's best score", "the lowest score of
+# the season", "the week of the season: 65 points". A plural ("season lows")
+# is the milestone tables' or several managers', so it is not one.
+_SEASON_RECORD_RE = re.compile(
+    r"(?<![\w-])(?:season[-\s]+(?:high|low|best|worst)"
+    r"|season['’]s\s+(?:highest|lowest|best|worst|high|low)"
+    r"|(?:highest|lowest|best|worst)(?:\s+(?:gameweek|score|week|return|tally)){0,2}"
+    r"\s+(?:of\s+(?:the|this)|this)\s+season"
+    r"|(?P<plain>(?:gameweek|week|score)\s+of\s+the\s+season))(?![\w-])",
+    re.IGNORECASE,
+)
+_SEASON_RECORD_LOW_RE = re.compile(r"low|worst", re.IGNORECASE)
+# "The week of the season" is a superlative only straight after "the": "a
+# week of the season" is any week, and "the third week of the season" one.
+_THE_BEFORE_RE = re.compile(r"(?<!\w)the\s+$", re.IGNORECASE)
+# A ranked or tied superlative is someone else's claim: "the second lowest
+# score of the season" ranks below the record, and "the joint-highest score
+# of the season" is the tie check's (`check_tie_claims`).
+_SEASON_RECORD_RANKED_BEFORE_RE = re.compile(
+    r"(?<!\w)(?:joint|jointly|equal|tied|shared|level|next|second|third|fourth|fifth|\d+(?:st|nd|rd|th))"
+    r"[-\s]+(?:the\s+)?$",
+    re.IGNORECASE,
+)
+# A record a manager owns is their own season's, which the personal-record
+# lines state: "his own season low", "her lowest score of the season", "Bob's
+# new season high", "a personal season best". A week's or the league's is not
+# a person's, so "the league's season low" is still the league's.
+_SEASON_RECORD_OWNER_BEFORE_RE = re.compile(
+    r"(?:(?<!\w)(?:his|her|their|personal)|(?<!\w)(?P<word>[^\W\d_][\w-]*)['’]s)"
+    r"(?:\s+(?:own|new|personal|latest|fresh|first))*\s+$",
+    re.IGNORECASE,
+)
+_NOT_AN_OWNER = frozenset({"week", "gameweek", "league", "season", "month", "table", "round", "weekend", "year"})
+# ... or one owned after it, the figure it was said of between: "a new season
+# low for him", "a season-low 30 for Bob".
+_SEASON_RECORD_FOR_RE = re.compile(r"(?:\s*-?\s*(?:pts?|points?))?\s+for\s+", re.IGNORECASE)
+_SEASON_RECORD_PRONOUN_RE = re.compile(r"(?:him|her|them|himself|herself|themselves)(?!\w)", re.IGNORECASE)
+# The figure the superlative is said of, attached to it: straight before it,
+# joined by a copula, a comma or a colon ("Bob's 30 was a new season low",
+# "30, a season low"), or straight after it ("a new season low of 30", "a
+# season-low 30", "the week of the season: 65 points").
+_SEASON_RECORD_FIGURE_BEFORE_RE = re.compile(
+    r"(?<![\w.£+−–-])(?P<figure>\d+)(?:\s*(?:pts?|points?))?"
+    r"(?:\s*[,:–—]|\s+(?:was|is|were|are|as|makes?|made|marks?|marked|stands?|stood|becomes?|became))"
+    r"(?:\s+(?:also|now|still|officially))?(?:\s+(?:the|a|an|another|new|fresh))*\s+$",
+    re.IGNORECASE,
+)
+_SEASON_RECORD_FIGURE_AFTER_RE = re.compile(
+    r"(?:[\s-]+(?:gameweek\s+)?(?:scores?|week|return|tally|total))?(?:\s+so\s+far)?"
+    r"(?:\s*[,(:–—]\s*|\s+(?:of|at|on|with|was|is)\s+|\s+)(?P<figure>\d+)(?![\w.%])",
+    re.IGNORECASE,
+)
+# A figure that counts something else: "the season high 3 times", "a
+# season-low 2 transfers", "21-25".
+_SEASON_RECORD_NOT_A_SCORE_AFTER_RE = re.compile(
+    r"\s*(?:[-–]\s*\d|(?:weeks?|gameweeks?|games?|times?|rounds?|goals?|assists?|days?|months?|years?"
+    r"|players?|managers?|transfers?|moves?|fines?)(?!\w))",
+    re.IGNORECASE,
+)
+# What the superlative is about, read up to the clause's next break: a
+# captain, a bench or a transfer has no season record in the data.
+_SEASON_RECORD_SUBJECT_BREAK_RE = re.compile(r"[,;(–—]")
+_SEASON_RECORD_SUBJECT_WORDS_BEFORE = 3
+_SEASON_RECORD_SUBJECT_WORDS_AFTER = 6
+_SEASON_RECORD_CREDIT_RE = re.compile(
+    r"(?:\s*-?\s*(?:pts?|points?))?\s+(?:from|by|for|courtesy\s+of|thanks\s+to)\s+", re.IGNORECASE,
+)
+# Read by the sentence, not the clause: a colon ("the week of the season: 65
+# points") hands the superlative its figure rather than ending it.
+_SEASON_RECORD_SENTENCE_BREAK_RE = re.compile(r"[.!?;](?=\s|$)|\n")
+
+
+def _season_record_figures(sentence: str, start: int, end: int) -> tuple[list[int], int]:
+    """The figures attached to the superlative at `start`-`end`
+    (`_SEASON_RECORD_FIGURE_BEFORE_RE`, `_SEASON_RECORD_FIGURE_AFTER_RE`), never
+    a gameweek's own number, a gap or a count, and where the superlative and
+    any figure after it end."""
+    figures: list[int] = []
+    before = _SEASON_RECORD_FIGURE_BEFORE_RE.search(sentence, 0, start)
+    if before and not _GAMEWEEK_NUMBER_BEFORE_RE.search(sentence, 0, before.start("figure")):
+        figures.append(int(before.group("figure")))
+    after = _SEASON_RECORD_FIGURE_AFTER_RE.match(sentence, end)
+    if after and not (
+        _NOT_A_SCORE_AFTER_RE.match(sentence, after.end("figure"))
+        or _SEASON_RECORD_NOT_A_SCORE_AFTER_RE.match(sentence, after.end("figure"))
+    ):
+        figures.append(int(after.group("figure")))
+        return figures, after.end()
+    return figures, end
+
+
+def check_season_record_claims(
+    summary: str,
+    managers: Sequence[RecapManagerEntry],
+    names: RecapNames,
+    *,
+    season_records: Mapping[str, RecapSeasonRecord],
+) -> list[str]:
+    """Every gameweek score the editorial calls the league's best or worst of
+    the season where the season record says otherwise (#496).
+
+    In the GW8 A/B, with the personal-record lines shown, an editorial gave a
+    manager's own new low the league's words: "set a new season low of 30",
+    when the season's lowest was 21. #495's "had the week of the season: 65
+    points", beside a season's best of 72, was the same claim made of the
+    week's winner. Both are judged against `season_records`, the season's
+    highest ("top") and lowest ("bottom") gameweek score as the League
+    History section states them: a figure that is neither is caught.
+
+    Only a claim this data can settle is read, so a miss is likelier than a
+    false alarm. The superlative is the league's, not owned by a manager
+    before or after it ("his own season low", "her lowest score of the
+    season", "a new season low for him"), not ranked or tied ("the second
+    lowest", "the joint-highest", the tie check's), not negated, and not
+    about a captain, a bench, a transfer or a player ("Salah's 20 was a
+    season high"). Its figure is attached to it (`_season_record_figures`)
+    and is one of this gameweek's scores, gross or as the standings count
+    them, so a superlative said of no figure, or of another week's score, is
+    left alone. Returns one line per claim, in the order the editorial makes
+    them.
+    """
+    if not season_records:
+        return []
+    scores = {m["gw_points"] for m in managers} | {m.get("gross_points", m["gw_points"]) for m in managers}
+    aliases = _manager_aliases(names)
+    problems: list[str] = []
+    for sentence in (_plain(part) for part in _SEASON_RECORD_SENTENCE_BREAK_RE.split(summary) if part.strip()):
+        found = names.find(sentence)
+        for match in _SEASON_RECORD_RE.finditer(sentence):
+            start, end = match.span()
+            low = bool(_SEASON_RECORD_LOW_RE.search(match.group(0)))
+            record = season_records.get("bottom" if low else "top")
+            if record is None or (match.group("plain") and not _THE_BEFORE_RE.search(sentence, 0, start)):
+                continue
+            if _SEASON_RECORD_RANKED_BEFORE_RE.search(sentence, 0, start):
+                continue
+            owner = _SEASON_RECORD_OWNER_BEFORE_RE.search(sentence, 0, start)
+            if owner and (owner.group("word") or "").lower() not in _NOT_AN_OWNER:
+                continue
+            before = _words_before(sentence, start, _TIE_NEGATION_WORDS)
+            if _NEGATION_RE.search(before) or "no longer" in before.lower():
+                continue
+            figures, stop = _season_record_figures(sentence, start, end)
+            if owned_for := _SEASON_RECORD_FOR_RE.match(sentence, stop):
+                at = owned_for.end()
+                if _SEASON_RECORD_PRONOUN_RE.match(sentence, at) or any(
+                    m.start() == at and m.group(0) in aliases for m in found
+                ):
+                    continue
+            # What it is about: the few words before it, and after it up to
+            # the clause's next break.
+            brk = _SEASON_RECORD_SUBJECT_BREAK_RE.search(sentence, stop)
+            hi = min(
+                brk.start() if brk else len(sentence),
+                _window_end(sentence, end, _SEASON_RECORD_SUBJECT_WORDS_AFTER),
+            )
+            lo = _window_start(sentence, start, _SEASON_RECORD_SUBJECT_WORDS_BEFORE)
+            if _TIE_OTHER_SUBJECT_RE.search(sentence[lo:start] + " " + sentence[end:hi]):
+                continue
+            # A player named nearest before it ("Salah's 20 was a season
+            # high"), or credited with its figure after it ("a season-high 20
+            # from Salah"), is who it is about.
+            earlier = [m for m in found if m.end() <= start]
+            if earlier and earlier[-1].group(0) not in aliases:
+                continue
+            if (credit := _SEASON_RECORD_CREDIT_RE.match(sentence, stop)) and any(
+                m.start() == credit.end() and m.group(0) not in aliases for m in found
+            ):
+                continue
+            for figure in figures:
+                if figure == record["points"] or figure not in scores:
+                    continue
+                which = "lowest" if low else "highest"
+                weeks: dict[str, list[int]] = {}
+                for name, week in record["scores"]:
+                    weeks.setdefault(name, []).append(week)
+                holders = join_and([f"{name} in {format_gameweek_list(gws)}" for name, gws in weeks.items()])
+                problem = (
+                    f'the editorial calls {figure} "{match.group(0)}", but the season\'s {which} gameweek '
+                    f"score is {points_label(record['points'])}, scored by {holders}"
+                )
+                if problem not in problems:
+                    problems.append(problem)
+    return problems
+
+
+# =============================================================================
 # Gameweek placings (#486)
 # =============================================================================
 
@@ -3342,18 +3535,28 @@ def _contested_roll_calls(summary: str, data: LeagueRecapData, names: RecapNames
     return check_contested_roll_calls(summary, contested_draft_claims(data["managers"]), names)
 
 
-def _ties(summary: str, data: LeagueRecapData, names: RecapNames) -> list[str]:
+def _season_records(data: LeagueRecapData) -> dict[str, RecapSeasonRecord]:
+    """The season's highest ("top") and lowest ("bottom") gameweek score as
+    the League History section states them (#494), where the data has them."""
     records: dict[str, RecapSeasonRecord] = {}
     if (highest := data.get("season_highest_score")) is not None:
         records["top"] = highest
     if (lowest := data.get("season_lowest_score")) is not None:
         records["bottom"] = lowest
+    return records
+
+
+def _ties(summary: str, data: LeagueRecapData, names: RecapNames) -> list[str]:
     return check_tie_claims(
         summary, data["managers"], names,
-        season_records=records, month_tables=data.get("month_tables") or [],
+        season_records=_season_records(data), month_tables=data.get("month_tables") or [],
         record_tables=data.get("league_history_record_tables") or [],
         personal_equals=data.get("personal_record_equals") or [],
     )
+
+
+def _season_record_claims(summary: str, data: LeagueRecapData, names: RecapNames) -> list[str]:
+    return check_season_record_claims(summary, data["managers"], names, season_records=_season_records(data))
 
 
 EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
@@ -3397,6 +3600,17 @@ EDITORIAL_CHECKS: tuple[EditorialCheck, ...] = (
             "where a League History season-record line says it was scored more than once."
         ),
         run=_ties,
+    ),
+    EditorialCheck(
+        code=RECAP_WARNING_UNSUPPORTED_SEASON_RECORD,
+        lead="The editorial calls a score the season's highest or lowest that the season record does not name",
+        retry_instruction=(
+            'Call a gameweek score "the week of the season", a season high or low, or the season\'s best or '
+            "worst only where a League History season-record line names that score; a manager's own best or "
+            'worst week stays theirs ("their lowest of the season", "a new low for them this season"), never '
+            "the league's."
+        ),
+        run=_season_record_claims,
     ),
     EditorialCheck(
         code=RECAP_WARNING_WRONG_PLACING,
