@@ -2340,13 +2340,14 @@ _FIGURE_BEFORE_PLACING_RE = re.compile(
 # A score's own rank on the week, stated straight after the figure and set
 # off from it by a comma, bracket or dash or by "which was" and the like:
 # "52, which was 4th best on the week", "27 points, the week's lowest", "52,
-# only seventh on the week". Where it is the score's true rank, a placing
-# the clause gives that manager is the table's (#518).
+# only seventh on the week", "a 46 that tied for second-best of the week".
+# Where it is the score's true rank, a placing the clause gives that manager
+# is the table's (#518).
 _WEEK_RANK_LEAD = r"(?:which|that|it|was|is|ranked|ranks|came|comes)"
 _WEEK_RANK_AFTER_SCORE_RE = re.compile(
     rf"(?:\s*(?:pts?|points?))?(?:\s*(?:[,(–—]|\s-)|(?=\s+{_WEEK_RANK_LEAD}\s))\s*(?:(?:which|that|it)\s+)?"
     r"(?:(?:was|is|ranked|ranks|came|comes)\s+)?(?:(?:only|just|merely)\s+)?(?:(?:the|a)\s+)?"
-    rf"(?P<owner>{_PLACING_WEEK}['’]s\s+)?(?:(?:joint|equal)[-\s]+)?"
+    rf"(?P<owner>{_PLACING_WEEK}['’]s\s+)?(?:(?:joint|equal|tied)[-\s]+(?:for\s+)?)?"
     rf"(?P<rank>highest|lowest|best|worst|{_RANK_WORDS})(?P<best>[-\s]+(?:best|highest))?(?![\w-])"
     rf"(?(owner)|(?:[-\s]+(?:score|return|tally))?\s+{_PLACING_WEEK_AFTER_RE.pattern})",
     re.IGNORECASE,

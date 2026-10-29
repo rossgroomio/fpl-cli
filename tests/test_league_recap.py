@@ -10374,6 +10374,7 @@ class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
         # A week cue in a clause on the manager's own score gives its week rank.
         "Manager A took top spot with a 46 that ranked second on the week.",
         "Manager A takes first place with a 46 that was only the joint-second best score of the week.",
+        "Manager A takes top spot after a 46 that tied for second-best of the week.",
         # A season total, and "the week's" owning a noun of its own.
         "Manager A takes top spot on 423 for the week's quietest promotion.",
         "Manager A takes top spot on 46 for the week's quietest promotion.",
