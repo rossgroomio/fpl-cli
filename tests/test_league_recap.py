@@ -10340,6 +10340,10 @@ class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
         "Manager A takes first on a modest 46.",
         "Manager A has taken first with 46.",
         "Manager A's 46 leaves him on top.",
+        # PR #559 review: a copula is the table's, "was" as much as "is", and
+        # "landed" takes a place as "took" does.
+        "Manager E was last on 30.",
+        "Manager A landed top spot on 46.",
         "Manager B fell to a share of second on 27.",
         # A move to a share of a place lands on it, as one to the place does.
         "Manager B fell to a share of second on the week.",
@@ -10358,6 +10362,8 @@ class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
         ("Manager B left second, with 27.", "Manager B"),
         ("Manager E could only manage first on 30.", "Manager E"),
         ("Manager E scored 30 for 1st place.", "Manager E"),
+        # PR #559 review: "wound up" finishes as "ended up" does.
+        ("Manager E wound up 6th with 30.", "Manager E"),
     ])
     def test_a_finish_or_the_week_beside_the_score_is_still_caught(self, summary, placed):
         problems = self._check(summary)
@@ -10371,6 +10377,8 @@ class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
         # A season total, and "the week's" owning a noun of its own.
         "Manager A takes top spot on 423 for the week's quietest promotion.",
         "Manager A takes top spot on 46 for the week's quietest promotion.",
+        # PR #559 review: before the placing too, with no comma to cut it off.
+        "Following the week's quietest promotion Manager A took top spot on 46.",
         # A time phrase dates a table place.
         "Manager B was top at the start of the week and ended it with the lowest score.",
         # "Cleared" escapes the bottom as "clear" does.
@@ -10383,6 +10391,13 @@ class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
         "Manager A took top spot with a 46 for the week.",
         "Manager B was top of the week on 27.",
         "Manager E was last in the week's scores.",
+        # PR #559 review: any form of a word for the week's ranking, one word
+        # at most between, after the placing or before it.
+        "Manager E finished first in the week's ranking.",
+        "Manager E finished last in the week's lowest scoring.",
+        "Manager E finished first in the week's points.",
+        "Manager E finished first in the week's results.",
+        "The week's rankings had Manager E first.",
     ])
     def test_the_week_still_scopes_a_placing_where_it_is_one(self, summary):
         assert len(self._check(summary)) == 1
