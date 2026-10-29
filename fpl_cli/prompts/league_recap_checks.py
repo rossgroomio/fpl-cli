@@ -3065,11 +3065,12 @@ _FORFEIT_LABEL_RE = re.compile(r"(?<!\w)Naming\s+the\s+forfeit(?!\w)")
 # ("second in the table, a clause that hurts less than the score"). Football's
 # clauses are a contract's, which a recap has no cause to call "of its own",
 # so the phrase lifted is the brief wherever it stands. A bare "a clause" is
-# the brief only where it is set after a comma beside the league place the
-# instruction is about, in its sentence: "Palace can recall him, a clause in
-# the loan" names no place, and passes.
+# the brief only where it is set after a comma, or a comma and "which is"
+# ("third in the league, which is a clause he'd like to revisit", #557's
+# A/B), beside the league place the instruction is about, in its sentence:
+# "Palace can recall him, a clause in the loan" names no place, and passes.
 _BRIEF_CLAUSE_RE = re.compile(
-    r"(?P<comma>,\s*)?(?<!\w)(?P<echo>(?:a\s+)?clauses?(?P<own>\s+of\s+(?:its|their|his|her)\s+own)?)(?!\w)",
+    r"(?P<comma>,\s*(?:(?:which|that)\s+(?:is|was)\s+)?)?(?<!\w)(?P<echo>(?:a\s+)?clauses?(?P<own>\s+of\s+(?:its|their|his|her)\s+own)?)(?!\w)",
     re.IGNORECASE,
 )
 _PLACE_ORDINAL = (

@@ -12795,6 +12795,9 @@ class TestBriefEchoes:
             "Manager A is second in the table, a clause that is no big deal.",
             "Top of the table, a clause he has earned twice now.",
             "Manager B finished the week in last, a clause nobody wanted.",
+            # #557's A/B: a shipped draft joined the place to it with "which is".
+            "He sits third in the league, which is a clause he'd like to revisit.",
+            "Manager A was top of the table, that is a clause of sorts.",
         ):
             found = check_brief_echoes(summary)
             assert [problem.split('"')[1] for problem in found] == ["a clause"], summary
