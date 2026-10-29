@@ -10236,16 +10236,17 @@ class TestPlacingBesideAStatedWeekRank:
         assert self._check(summary) == []
 
     @pytest.mark.parametrize(("summary", "placed"), [
-        # #483's shape, with no week rank stated, still gives the code...
-        ("Manager A has taken first with 52.", "Manager A"),
+        # #483's shape, with no week rank stated, still gives the code (a
+        # taking verb, "has taken first with 52", is the table's since #558)...
+        ("Manager A finished first with 52.", "Manager A"),
         ("Manager B had a shocker. He arrived as leader and left second, with 27 points.", "Manager B"),
         # ...and so does a week rank said of someone else's score...
-        ("Manager A has taken first with 52, and Manager C's 70 was the week's best.", "Manager A"),
+        ("Manager B left second, with 27 points, and Manager C's 70 was the week's best.", "Manager B"),
         # ...a finishing verb into a placing the score is attached to, the
         # #483 shape however true the week rank beside it (PR #521 review)...
         ("Manager B finished fifth on 27, the week's lowest.", "Manager B"),
         # ...and a rank word with nothing setting it off from the score.
-        ("Manager A has taken first with 52 the week's fourth.", "Manager A"),
+        ("Manager B left second with 27 the week's lowest.", "Manager B"),
     ])
     def test_a_placing_beside_the_score_alone_is_still_caught(self, summary, placed):
         problems = self._check(summary)
@@ -10259,13 +10260,14 @@ class TestPlacingBesideAStatedWeekRank:
         assert len(check_gameweek_placings("Hal Penn finished eighth on 31.", managers, RecapNames.of(managers))) == 1
 
     @pytest.mark.parametrize("summary", [
-        "Manager A has taken first with 52, which was 3rd best on the week.",
+        "Manager B left second with 27, which was 3rd best on the week.",
         "Manager B had a shocker. He arrived as leader and left second, with 27 points, the week's highest.",
-        "Manager A has taken first with 52, the week's second-lowest.",
+        "Manager B left second on 27, the week's second-lowest.",
+        "Manager A takes first with 52, which was 3rd best on the week.",
     ])
     def test_a_week_rank_the_score_does_not_hold_lets_nothing_off(self, summary):
-        """A wrong week rank says nothing about the placing beside it, so the
-        #483 reading stands."""
+        """A wrong week rank never lets the placing beside it off, and since
+        #558 makes it the week's whatever the verb."""
         assert len(self._check(summary)) == 1
 
     def test_a_bare_ordinal_is_the_gameweek_rank_alone(self):
@@ -10274,9 +10276,9 @@ class TestPlacingBesideAStatedWeekRank:
         70, 52 is third among them but fourth on the week."""
         managers = _week_rank_table()
         managers[3]["gw_points"] = 70
-        problems = self._check("Manager A has taken first with 52, only third on the week.", managers)
+        problems = self._check("Manager A left first with 52, only third on the week.", managers)
         assert any('"first" beside their gameweek score' in problem for problem in problems)
-        assert self._check("Manager A has taken first with 52, the third-best on the week.", managers) == []
+        assert self._check("Manager A left first with 52, the third-best on the week.", managers) == []
 
     @pytest.mark.xfail(
         strict=True,
@@ -10299,6 +10301,128 @@ class TestPlacingBesideAStatedWeekRank:
         managers = _week_rank_table()
         managers[0]["gw_points"] = 65
         assert self._check(summary, managers) == []
+
+
+def _leader_change_table() -> list[RecapManagerEntry]:
+    """Issue #558's corpus week, in league order: Manager A takes over at the
+    top on 46, level second on the week with Manager D, from Manager B, whose
+    27 was the week's lowest; Manager C's 52 won the week, and Manager E's 30
+    cleared the bottom by 3."""
+    rows = [
+        ("Manager A", 46, 423), ("Manager B", 27, 420), ("Manager C", 52, 400), ("Manager D", 46, 380),
+        ("Manager E", 30, 360), ("Manager F", 40, 340),
+    ]
+    return [
+        _make_manager(
+            name=name, entry_id=pos, gw_points=pts, overall_rank=pos, previous_rank=pos, total_points=total,
+        )
+        for pos, (name, pts, total) in enumerate(rows, start=1)
+    ]
+
+
+class TestPlacingBesideAScoreNeedsAFinishOrTheWeek:
+    """Issue #558: the #483 rule flagged any league place set beside the
+    manager's own gameweek score, and in the saved drafts nearly every flag
+    was a true table claim in a leader-change week ("Manager A takes top spot
+    on 46"). A place beside the score is now the week's only when a finishing
+    verb leads into it or the week is named straight after it or its score;
+    a taking, moving or standing verb leaves it the table's."""
+
+    def _check(self, summary: str) -> list[str]:
+        managers = _leader_change_table()
+        return check_gameweek_placings(summary, managers, RecapNames.of(managers))
+
+    @pytest.mark.parametrize("summary", [
+        "Manager A takes top spot on 46.",
+        "Manager A took first place with 46.",
+        "Manager B is now second after scoring 27.",
+        "Manager A goes top on 46.",
+        "Manager A went top on 46.",
+        "Manager A takes first on a modest 46.",
+        "Manager A has taken first with 46.",
+        "Manager A's 46 leaves him on top.",
+        # PR #559 review: a copula is the table's, "was" as much as "is", and
+        # "landed" takes a place as "took" does.
+        "Manager E was last on 30.",
+        "Manager A landed top spot on 46.",
+        # "It" as a finishing verb's object counts only beside an attached
+        # score: a saved draft's start and end of the week in the table.
+        "Manager E had a quiet week. He started it top, scored 30, and finished it second.",
+        "Manager B fell to a share of second on 27.",
+        # A move to a share of a place lands on it, as one to the place does.
+        "Manager B fell to a share of second on the week.",
+    ])
+    def test_a_taking_or_standing_verb_leaves_the_place_in_the_table(self, summary):
+        assert self._check(summary) == []
+
+    @pytest.mark.parametrize(("summary", "placed"), [
+        ("Manager E finished 6th in the week on 30.", "Manager E"),
+        ("Manager A went top on 46 for the week.", "Manager A"),
+        ("Manager A is first, on 46 for the week.", "Manager A"),
+        ("Manager B finished it second, on 27.", "Manager B"),
+        ("Manager B ended the week second, on 27.", "Manager B"),
+        # The cost of reading "left it" as a finish: here "it" is the table.
+        ("Manager B led the table coming in and left it second, with 27.", "Manager B"),
+        ("Manager B left second, with 27.", "Manager B"),
+        ("Manager E could only manage first on 30.", "Manager E"),
+        ("Manager E scored 30 for 1st place.", "Manager E"),
+        # PR #559 review: "wound up" finishes as "ended up" does.
+        ("Manager E wound up 6th with 30.", "Manager E"),
+        # PR #559 replay: a week rank the score does not hold makes the
+        # sentence wrong on the week, whatever the verb.
+        ("Manager A takes top spot with a 46 that was the week's best.", "Manager A"),
+        ("Manager A takes top spot with a 46, the highest score of the week.", "Manager A"),
+    ])
+    def test_a_finish_or_the_week_beside_the_score_is_still_caught(self, summary, placed):
+        problems = self._check(summary)
+        assert len(problems) == 1
+        assert problems[0].startswith(f"the editorial places {placed} ")
+
+    @pytest.mark.parametrize("summary", [
+        # A week cue in a clause on the manager's own score gives its week rank.
+        "Manager A took top spot with a 46 that ranked second on the week.",
+        "Manager A takes first place with a 46 that was only the joint-second best score of the week.",
+        "Manager A takes top spot after a 46 that tied for second-best of the week.",
+        # PR #559 replay: "good for" or "enough for" before the rank.
+        "Manager A takes top spot with a 46 that was good for joint second on the week.",
+        "Manager A takes top spot with a 46 that was enough for joint second on the week.",
+        "Manager A takes top spot with a 46 that was good for joint second of the week.",
+        "Manager A takes top spot with a 46, good enough for second on the week.",
+        "Manager A takes top spot with a 46 that was the week's second-best.",
+        # A season total, and "the week's" owning a noun of its own.
+        "Manager A takes top spot on 423 for the week's quietest promotion.",
+        "Manager A takes top spot on 46 for the week's quietest promotion.",
+        # PR #559 review: before the placing too, with no comma to cut it off.
+        "Following the week's quietest promotion Manager A took top spot on 46.",
+        # A time phrase dates a table place.
+        "Manager B was top at the start of the week and ended it with the lowest score.",
+        # "Cleared" escapes the bottom as "clear" does.
+        "Manager E had a quiet week. His 30 still cleared the bottom of the week by 3 points.",
+    ])
+    def test_the_drafts_misreads_pass_when_true(self, summary):
+        assert self._check(summary) == []
+
+    @pytest.mark.parametrize("summary", [
+        "Manager A took top spot with a 46 for the week.",
+        "Manager A takes top spot with 46 for the week.",
+        "Manager B was top of the week on 27.",
+        "Manager E was last in the week's scores.",
+        # PR #559 review: any form of a word for the week's ranking, one word
+        # at most between, after the placing or before it.
+        "Manager E finished first in the week's ranking.",
+        "Manager E finished last in the week's lowest scoring.",
+        "Manager E finished first in the week's points.",
+        "Manager E finished first in the week's results.",
+        "The week's rankings had Manager E first.",
+    ])
+    def test_the_week_still_scopes_a_placing_where_it_is_one(self, summary):
+        assert len(self._check(summary)) == 1
+
+    def test_a_week_rank_the_score_does_not_hold_lets_the_placing_off_nothing(self):
+        problems = self._check("Manager A took top spot with a 46 that ranked third on the week.")
+        assert [problem.split(" for the week")[0] for problem in problems] == [
+            'the editorial places Manager A "top spot"', 'the editorial places Manager A "third"',
+        ]
 
 
 def _passing_mention_table() -> list[RecapManagerEntry]:

@@ -2213,20 +2213,34 @@ _PLACING_STRETCH_BREAK_RE = re.compile(
 # ("this week's third-best") makes it the week's. "This week" alone only
 # dates it ("still top this week" may be the table), a plural is a span
 # ("two gameweeks on top"), and a numbered one ("in GW5 too") may be another
-# week than the one recapped.
+# week than the one recapped. "The week's" is a scope only owning the
+# placing itself ("this week's third-best") or a word for the week's
+# ranking, one word at most between ("last in the week's scores", "first in
+# the week's ranking", "the week's lowest scoring"); owning anything else it
+# names something of the week's ("on 423 for the week's quietest
+# promotion", "following the week's quietest promotion"), and after the
+# start or end of the week it dates a placing ("top at the start of the
+# week"), #558.
 _PLACING_WEEK = r"(?:the|this)\s+(?:(?:game)?week|gw)"
+_WEEK_RANKING = (
+    r"['’]s\s+(?:[\w-]+\s+)?(?:scores?|scoring|charts?|rankings?|leaderboards?|points|results?|returns|tallies"
+    r"|order)(?!\w)"
+)
 _PLACING_WEEK_AFTER_RE = re.compile(
-    rf"(?<!\w)(?:on|for|in|of)\s+{_PLACING_WEEK}(?:['’]s)?(?![\w'’-])(?!\s+(?:before|after|prior))",
+    r"(?<!\w)(?<!\bstart\s)(?<!\bbeginning\s)(?<!\bend\s)(?<!\bclose\s)(?<!\boutset\s)"
+    rf"(?:on|for|in|of)\s+{_PLACING_WEEK}(?:{_WEEK_RANKING}|(?![\w'’-]))(?!\s+(?:before|after|prior))",
     re.IGNORECASE,
 )
-_PLACING_WEEK_BEFORE_RE = re.compile(rf"(?<!\w){_PLACING_WEEK}['’]s(?!\w)", re.IGNORECASE)
+_PLACING_WEEK_BEFORE_RE = re.compile(
+    rf"(?<!\w){_PLACING_WEEK}(?:{_WEEK_RANKING}|['’]s\s*$)", re.IGNORECASE,
+)
 # Any word for the table or a season, for holding a place in it, or for a
 # span longer than the week makes a placing the league's or something else's
 # -- "went into this gameweek sat top", "kept top spot this week", "her
 # second-best score this campaign", "the second-best of his career" -- so it
 # is left alone. So is a placing a move lands on, counts from or leaves ("up
-# to 4th", "from 9th to 5th", "into 7th", "second from the bottom", "slipped
-# out of last place on the week", #499).
+# to 4th", "from 9th to 5th", "into 7th", "fell to a share of second",
+# "second from the bottom", "slipped out of last place on the week", #499).
 _HOLDING_WORDS = r"stay\w*|sits?|sitting|sat|kept|keeps?|keeping|holds?|held|holding"
 _PLACING_TABLE_RE = re.compile(
     r"(?<!\w)(?:table|league|standings|overall|season\w*|totals?|summit|ladder"
@@ -2234,7 +2248,9 @@ _PLACING_TABLE_RE = re.compile(
     r"|career|years?|campaign|months?|run|ever|all-time|history|record|since|weeks|gameweeks)(?!\w)",
     re.IGNORECASE,
 )
-_PLACING_MOVE_RE = re.compile(r"(?<!\w)(?:to|into|from|out\s+of)\s+(?:the\s+)?$", re.IGNORECASE)
+_PLACING_MOVE_RE = re.compile(
+    r"(?<!\w)(?:to|into|from|out\s+of)\s+(?:a\s+share\s+of\s+)?(?:the\s+)?$", re.IGNORECASE,
+)
 # A move up or down the table does the same ("slipped two places, 3rd in a
 # week when 45 got you up two places"), unless the week is named straight
 # after the placing: "rocketed up five places to snatch second on the week"
@@ -2247,13 +2263,14 @@ _PLACING_MOVE_WORDS_RE = re.compile(
 )
 # Words before a placing, in its own stretch, that say it did not happen,
 # nearly did, or belongs to someone the manager beat or escaped: "would have
-# been second", "a point off top", "one better than last", and "avoided last
-# place on the week" -- the prompt's own words for the manager one score
-# above the lowest (#487). "Could" hedges only with "have": "could only
-# manage eighth" is a finish, and so is "no better than eighth".
+# been second", "a point off top", "one better than last", "cleared the
+# bottom of the week", and "avoided last place on the week" -- the prompt's
+# own words for the manager one score above the lowest (#487). "Could"
+# hedges only with "have": "could only manage eighth" is a finish, and so is
+# "no better than eighth".
 _PLACING_HEDGE_RE = re.compile(
     r"(?<!\w)(?:would|might|should|if|unless|near|nearly|almost|close|within|off|outside|short"
-    r"|avoid\w*|escap\w*|dodg\w*|evad\w*|miss\w*|surviv\w*|spar\w*|clear|above|ahead|beat\w*|outscor\w*"
+    r"|avoid\w*|escap\w*|dodg\w*|evad\w*|miss\w*|surviv\w*|spar\w*|clear(?:s|ed|ing)?|above|ahead|beat\w*|outscor\w*"
     r"|over|instead|rather|could(?=(?:\s+\w+)?\s+have(?!\w))"
     r"|(?<!no better )(?<!nothing better )(?<!no higher )than)(?!\w)|could['’]ve|['’]d(?!\w)",
     re.IGNORECASE,
@@ -2279,11 +2296,28 @@ _PLACING_OTHER_PERSON_RE = re.compile(
 # beat only the manager who came last" puts nobody's placing on Bob.
 _RELATIVE_RE = re.compile(r"(?<!\w)(?:who|whom|whose|which)(?!\w)", re.IGNORECASE)
 # A finishing verb straight before a placing makes it the manager's finish
-# ("finished eighth", "came in last", "good for eighth"), which the clause's
-# own gameweek score makes the week's ("scored 31 and finished eighth").
-_FINISH_BEFORE_RE = re.compile(
-    r"(?<!\w)(?:finish(?:ed|es|ing)?|came|comes?|coming|placed|end(?:ed|s|ing)?(?:\s+up)?|good\s+for"
-    r"|enough\s+for)\s+(?:in\s+)?$",
+# ("finished eighth", "came in last", "wound up sixth", "good for eighth"),
+# which the clause's own gameweek score makes the week's ("scored 31 and
+# finished eighth").
+_FINISH_VERBS = (
+    r"finish(?:ed|es|ing)?|came|comes?|coming|placed|end(?:ed|s|ing)?(?:\s+up)?|(?:wound|winds?|winding)\s+up"
+    r"|good\s+for|enough\s+for"
+)
+_FINISH_BEFORE_RE = re.compile(rf"(?<!\w)(?:{_FINISH_VERBS})\s+(?:in\s+)?$", re.IGNORECASE)
+# What makes a placing with the manager's own gameweek score attached their
+# finish on the week (#558): those verbs, "left" ("left it second, with 30")
+# and "managed" ("could only manage eighth on 31"), any of them with "it" or
+# the week as its object ("finished it second, on 30", "ended the week
+# second, on 27"). Any other verb leaves it the table's: "takes top spot on
+# 46", "went top on 46", "is now second", "was second on 46", and "landed
+# top spot on 46", which takes a place as "took" does. Finishing wording is
+# a short list and taking wording is not, so the list names the finishes.
+# The two extra words and the object are kept to an attached score, so
+# "left second on 27, the week's lowest" still gives way to the week rank
+# stated beside it (#518), and "He started it top, scored 30, and finished
+# it second" is the table's.
+_FINISH_LEAD_RE = re.compile(
+    rf"(?<!\w)(?:{_FINISH_VERBS}|left|manag(?:e|es|ed|ing))(?:\s+(?:it|{_PLACING_WEEK}))?\s+(?:in\s+)?$",
     re.IGNORECASE,
 )
 # A figure where it stands: never signed, a decimal, part of a word ("GW31")
@@ -2308,13 +2342,16 @@ _FIGURE_BEFORE_PLACING_RE = re.compile(
 # A score's own rank on the week, stated straight after the figure and set
 # off from it by a comma, bracket or dash or by "which was" and the like:
 # "52, which was 4th best on the week", "27 points, the week's lowest", "52,
-# only seventh on the week". Where it is the score's true rank, a placing
-# the clause gives that manager is the table's (#518).
+# only seventh on the week", "a 46 that tied for second-best of the week",
+# "a 46 that was good for joint second on the week".
+# Where it is the score's true rank, a placing the clause gives that manager
+# is the table's (#518).
 _WEEK_RANK_LEAD = r"(?:which|that|it|was|is|ranked|ranks|came|comes)"
 _WEEK_RANK_AFTER_SCORE_RE = re.compile(
     rf"(?:\s*(?:pts?|points?))?(?:\s*(?:[,(–—]|\s-)|(?=\s+{_WEEK_RANK_LEAD}\s))\s*(?:(?:which|that|it)\s+)?"
-    r"(?:(?:was|is|ranked|ranks|came|comes)\s+)?(?:(?:only|just|merely)\s+)?(?:(?:the|a)\s+)?"
-    rf"(?P<owner>{_PLACING_WEEK}['’]s\s+)?(?:(?:joint|equal)[-\s]+)?"
+    r"(?:(?:was|is|ranked|ranks|came|comes)\s+)?(?:(?:only|just|merely)\s+)?"
+    r"(?:(?:good(?:\s+enough)?|enough)\s+for\s+)?(?:(?:the|a)\s+)?"
+    rf"(?P<owner>{_PLACING_WEEK}['’]s\s+)?(?:(?:joint|equal|tied)[-\s]+(?:for\s+)?)?"
     rf"(?P<rank>highest|lowest|best|worst|{_RANK_WORDS})(?P<best>[-\s]+(?:best|highest))?(?![\w-])"
     rf"(?(owner)|(?:[-\s]+(?:score|return|tally))?\s+{_PLACING_WEEK_AFTER_RE.pattern})",
     re.IGNORECASE,
@@ -2424,28 +2461,40 @@ def check_gameweek_placings(
     for the week", "a second-place finish in the week"), never one that
     counts ("his third win", "last week", "second and third"). It is read as
     the week's when its own stretch of the clause says so -- the week named
-    as its scope after it ("on the week", "in the gameweek") or its owner
-    before it ("this week's third-best") -- or when the manager's gameweek
-    score is attached to it ("eighth on 31", "35 for 6th place") or a
-    finishing verb leads into it in a clause that gives that score and names
-    nobody else ("scored 31 and finished eighth"): the #483 shape, which the
-    prompt forbids whatever the placing was meant as. A score clause that
-    also gives the manager's season total, or the score's own rank on the
-    week ("first with 52, which was 4th best on the week", #518), is about
-    the table, unless a finishing verb leads into a placing that score is
-    attached to ("finished fifth on 27, the week's lowest"). A stretch with any word for the table, a season, holding a place or a span longer than
-    the week ("in the league", "kept top spot", "this campaign") is left
+    as its scope after it ("on the week", "in the gameweek"), its owner
+    before it ("this week's third-best") or straight after the manager's
+    gameweek score attached to it ("is first, on 46 for the week") -- or
+    when that score is attached to it and a finishing verb leads into it
+    ("finished eighth on 31", "left it second, with 30", "35 for 6th place"),
+    or a finishing verb leads into it in a clause that gives that score and
+    names nobody else ("scored 31 and finished eighth"): the #483 shape. A
+    score attached with any other verb is the table's ("takes top spot on
+    46", "went top on 46", #558), though the prompt still forbids it. A
+    clause that also gives the manager's season total, or the score's own
+    rank on the week ("first with 52, which was 4th best on the week", #518,
+    or "took top spot with a 46 that ranked second on the week", #558), is
+    about the table, unless the week is the placing's scope as above or a
+    finishing verb leads into a placing that score is attached to ("finished
+    fifth on 27, the week's lowest"); one the score does not hold makes a
+    placing it is attached to the week's whatever the verb ("takes top spot
+    with a 46 that was the week's best" of a 46 that came second). "The
+    week's" owning a noun is no scope
+    unless the noun ranks the week ("last in the week's scores"), nor is the
+    week after its start or end ("top at the start of the week"). A stretch
+    with any word for the table, a season, holding a place or a span longer
+    than the week ("in the league", "kept top spot", "this campaign") is left
     alone, unless the word comes before the placing and its score and the
     week straight after it ("sits 5th on 39 for the week"). So is a placing a move lands
-    on, counts from or leaves ("up to 4th", "second from the bottom", "climbed
-    out of last place") and one beside
+    on, counts from or leaves ("up to 4th", "to a share of second", "second
+    from the bottom", "climbed out of last place") and one beside
     a move up or down the table, unless the week is named straight after it
     ("rocketed up five places to snatch second on the week"). So is a
     placing that is hedged, negated or escaped ("would have been second",
-    "avoided last place on the week"), though a negation on a verb of its
-    own does not reach past a finishing verb ("didn't escape, finishing
-    15th"), and one said near a player, another subject in its own stretch
-    or another person ("his captain", "her rival", "the manager who came
+    "avoided last place on the week", "cleared the bottom of the week"),
+    though a negation on a verb of its own does not reach past a finishing
+    verb ("didn't escape, finishing 15th"), and one said near a player,
+    another subject in its own stretch or another person ("his captain",
+    "her rival", "the manager who came
     last"), and one in a "respectively" list. Whose it is comes from `_claim_subject()`. "Last" and "bottom"
     hold for every manager on the week's lowest score and "top" for every one
     on its highest; a numbered placing is the manager's gameweek rank, level
@@ -2499,18 +2548,20 @@ def check_gameweek_placings(
         claimed = _ORDINAL_NUMBERS.get(word) or int(word[:-2])
         return ranks[name] == claimed or (best and scores.index(score) + 1 == claimed)
 
-    def states_week_rank(text: str, name: str) -> bool:
-        """Whether `text` follows `name`'s gameweek score with its true rank
-        on the week (`_WEEK_RANK_AFTER_SCORE_RE`). A rank the score does not
-        hold says nothing about the placing beside it."""
+    def stated_week_ranks(text: str, name: str) -> list[bool]:
+        """Each rank on the week `text` states straight after `name`'s
+        gameweek score (`_WEEK_RANK_AFTER_SCORE_RE`), as whether the score
+        holds it. A true one puts the placing beside it in the table (#518);
+        a false one makes the sentence wrong on the week (#558)."""
         score = by_name[name]["gw_points"]
         if not is_score(score, by_name[name]):
-            return False
+            return []
+        ranks = []
         for figure in _FIGURE_RE.finditer(text):
             stated = _WEEK_RANK_AFTER_SCORE_RE.match(text, figure.end()) if int(figure.group(0)) == score else None
-            if stated and holds(name, stated.group("rank").lower(), best=bool(stated.group("best"))):
-                return True
-        return False
+            if stated:
+                ranks.append(holds(name, stated.group("rank").lower(), best=bool(stated.group("best"))))
+        return ranks
 
     aliases = _manager_aliases(names)
     problems: list[str] = []
@@ -2528,8 +2579,11 @@ def check_gameweek_placings(
                 continue
             lo, hi = _claim_stretch(text, start, end)
             before, after = text[lo:start], text[end:hi]
-            figure_after = _FIGURE_AFTER_PLACING_RE.match(text, end, hi)
-            week_after_score = bool(figure_after and _PLACING_WEEK_AFTER_SCORE_RE.match(text, figure_after.end(), hi))
+            # The figure attached straight after the placing, read past a
+            # comma ("is first, on 46"), and the week named straight after it.
+            follows = _FIGURE_AFTER_PLACING_RE.match(text, end)
+            week_after_score = bool(follows and _PLACING_WEEK_AFTER_SCORE_RE.match(text, follows.end()))
+            finished = bool(_FINISH_BEFORE_RE.search(before))
             if (
                 (_PLACING_TABLE_RE.search(before) and not week_after_score)
                 or _PLACING_TABLE_RE.search(after)
@@ -2544,7 +2598,7 @@ def check_gameweek_placings(
             # tie check reads one, across the words before it in the clause
             # (`_claim_negated()`).
             if _PLACING_HEDGE_RE.search(_words_before(before, len(before), _PLACING_HEDGE_WORDS)) or _claim_negated(
-                text, start, lo, bool(_FINISH_BEFORE_RE.search(before)),
+                text, start, lo, finished,
             ):
                 continue
             subject = _claim_subject(clause, start, lo)
@@ -2561,27 +2615,48 @@ def check_gameweek_placings(
             if relatives and (name_end == 0 or text[name_end:relatives[-1].start()].strip(" ,")):
                 continue
             manager = by_name[name]
-            if scoped or _PLACING_WEEK_AFTER_RE.search(after) or _PLACING_WEEK_BEFORE_RE.search(before):
+            # Or the figure that buys it, straight before ("scored 35 for 6th
+            # place").
+            buys = None if follows else _FIGURE_BEFORE_PLACING_RE.search(text[:start])
+            attached = follows or buys
+            attached_score = bool(
+                attached and is_score(int(attached.group("figure")), manager)
+                and not _NOT_A_SCORE_AFTER_RE.match(text, attached.end("figure"))
+            )
+            # The week named straight after the placing, as its owner before
+            # it, or straight after the score attached to it ("is first, on
+            # 46 for the week") is the placing's scope.
+            if (
+                scoped
+                or _PLACING_WEEK_BEFORE_RE.search(before)
+                or (attached_score and week_after_score)
+            ):
                 reading = "for the week"
             else:
                 total = manager.get("total_points")
                 if total is not None and not totals_are_scores and _states(text, total):
                     continue
-                attached = _FIGURE_AFTER_PLACING_RE.match(text, end) or _FIGURE_BEFORE_PLACING_RE.search(text[:start])
-                attached_score = bool(
-                    attached and is_score(int(attached.group("figure")), manager)
-                    and not _NOT_A_SCORE_AFTER_RE.match(text, attached.end("figure"))
-                )
                 # So is one that states the score's own rank on the week,
-                # unless a finishing verb leads into a placing the score is
-                # attached to: "finished fifth on 27, the week's lowest" is
-                # still #483's shape.
-                if states_week_rank(text, name) and not (attached_score and _FINISH_BEFORE_RE.search(before)):
+                # even where that statement names the week further on in the
+                # placing's stretch ("took top spot with a 46 that ranked
+                # second on the week", #558), unless a finishing verb leads
+                # into a placing the score is attached to: "finished fifth on
+                # 27, the week's lowest" is still #483's shape.
+                week_ranks = stated_week_ranks(text, name)
+                if any(week_ranks) and not (attached_score and finished):
                     continue
-                if attached_score:
+                if _PLACING_WEEK_AFTER_RE.search(after):
+                    reading = "for the week"
+                # A score attached to the placing makes it the week's only
+                # where a finishing verb leads into it, the score buys it
+                # ("scored 35 for 6th place") or the clause gives the score a
+                # week rank it does not hold ("takes top spot with a 46 that
+                # was the week's best" of a 46 that came second); "takes top
+                # spot on 46" is the table's (#558).
+                elif attached_score and (buys or week_ranks or _FINISH_LEAD_RE.search(before)):
                     reading = "beside their gameweek score"
                 elif (
-                    _FINISH_BEFORE_RE.search(before)
+                    finished
                     and {who for *_, who in clause.named} <= {name}
                     and not (_PLACING_TABLE_RE.search(text) or _PLACING_MOVE_WORDS_RE.search(text))
                     and is_score(manager["gw_points"], manager)
