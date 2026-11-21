@@ -1183,6 +1183,15 @@ class TestUnderstatStatusAnswers:
         assert "moved or gone" in row["detail"]
 
     @respx.mock
+    def test_an_html_page_is_broken(self, monkeypatch):
+        # The runtime path falls back on this (#562); the probe still says so.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes(understat_response=Response(200, text="<html>error</html>"))
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "broken"
+        assert "did not return JSON" in row["detail"]
+
+    @respx.mock
     def test_a_network_failure_is_still_unchecked(self, monkeypatch):
         monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
         _register_routes()

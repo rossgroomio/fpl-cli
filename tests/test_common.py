@@ -193,6 +193,28 @@ class TestFetchUnderstatLookup:
         assert len(logged) == 1
         assert "unavailable" in logged[0]
 
+    async def test_non_json_league_data_returns_empty(self):
+        """Understat's HTML error page falls back to FPL xGI, not a crash (#562)."""
+        import httpx
+        import respx
+
+        from fpl_cli.api.understat import UnderstatClient
+
+        players = [{"player_name": "Salah", "position": "MID", "minutes": 1800}]
+        logged = []
+
+        with respx.mock:
+            respx.get(url__regex=r"https://understat\.com/getLeagueData/.*").mock(
+                return_value=httpx.Response(200, text="<html>error</html>")
+            )
+            async with UnderstatClient() as client:
+                result = await fetch_understat_lookup(
+                    players, lambda p: "Liverpool", log=logged.append, client=client
+                )
+
+        assert result == {}
+        assert logged == ["Understat data unavailable, using FPL-only metrics"]
+
     async def test_accepts_shared_client(self):
         mock_us_player = {"name": "Salah", "team": "Liverpool"}
         players = [{"player_name": "Salah", "position": "MID", "minutes": 1800}]

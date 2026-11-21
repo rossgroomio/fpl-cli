@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+import respx
 
 from fpl_cli.api.understat import (
     TEAM_NAME_MAP,
@@ -1890,3 +1891,34 @@ class TestParsePlayerWithoutNpxg:
     def test_a_zero_npxg_is_a_measured_zero(self, mock_player_data):
         result = self._parse({**mock_player_data, "npxG": "0"})
         assert result["npxG_per_90"] == 0.0
+
+
+class TestNonJsonResponse:
+    """A 200 HTML error page is an outage, not a crash (#562)."""
+
+    HTML = "<html><body>Something went wrong</body></html>"
+
+    @respx.mock
+    async def test_league_data_raises_an_httpx_error(self):
+        respx.get(url__regex=r"https://understat\.com/getLeagueData/.*").mock(
+            return_value=httpx.Response(200, text=self.HTML)
+        )
+        async with UnderstatClient() as client:
+            with pytest.raises(httpx.DecodingError, match="getLeagueData"):
+                await client.get_league_players()
+
+    @respx.mock
+    async def test_player_data_reads_as_none(self):
+        respx.get("https://understat.com/getPlayerData/1").mock(
+            return_value=httpx.Response(200, text=self.HTML)
+        )
+        async with UnderstatClient() as client:
+            assert await client.get_player(1) is None
+
+    @respx.mock
+    async def test_team_data_reads_as_none(self):
+        respx.get(url__regex=r"https://understat\.com/getTeamData/.*").mock(
+            return_value=httpx.Response(200, text=self.HTML)
+        )
+        async with UnderstatClient() as client:
+            assert await client.get_team("Arsenal", season="2026") is None

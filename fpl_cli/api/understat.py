@@ -229,6 +229,15 @@ class UnderstatClient:
 
         Returns:
             Parsed JSON response, with Understat's HTML escaping undone.
+
+        Raises:
+            httpx.HTTPStatusError: Understat answered with an error status.
+            httpx.DecodingError: Understat answered 200 with a body that is
+                not JSON, as its HTML error page does during an outage
+                (#562). Raised as an httpx error rather than the bare
+                `json.JSONDecodeError` so every caller's existing
+                Understat-unavailable fallback catches it, and the scoring
+                commands run on FPL xGI instead of failing outright.
         """
         headers = {
             "X-Requested-With": "XMLHttpRequest",
@@ -237,7 +246,14 @@ class UnderstatClient:
         }
         response = await self._http.get(f"/{endpoint}", headers=headers)
         response.raise_for_status()
-        return decode_entities(response.json())
+        try:
+            payload = response.json()
+        except ValueError as exc:  # json.JSONDecodeError, or an undecodable charset
+            raise httpx.DecodingError(
+                f"Understat's {endpoint} endpoint did not return JSON",
+                request=response.request,
+            ) from exc
+        return decode_entities(payload)
 
     async def _get_html(self, endpoint: str) -> str:
         """Fetch HTML from Understat.

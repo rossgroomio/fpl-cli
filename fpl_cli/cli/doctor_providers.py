@@ -1179,9 +1179,10 @@ async def _understat_checks(
                     "every player until it recovers; broken if it persists",
                 )
             ]
-        except httpx.HTTPError as exc:
-            return [CheckResult(league_name, CheckStatus.UNCHECKED, _unreachable(exc))]
-        except json.JSONDecodeError:
+        except httpx.DecodingError:
+            # The client raises a non-JSON body as an httpx error so the
+            # scoring commands fall back on it (#562); here it is the
+            # provider answering in the wrong shape, not the network failing.
             return [
                 CheckResult(
                     league_name,
@@ -1189,6 +1190,8 @@ async def _understat_checks(
                     "league endpoint did not return JSON — the endpoint shape may have changed",
                 )
             ]
+        except httpx.HTTPError as exc:
+            return [CheckResult(league_name, CheckStatus.UNCHECKED, _unreachable(exc))]
 
     results: list[CheckResult] = []
     if not players:
