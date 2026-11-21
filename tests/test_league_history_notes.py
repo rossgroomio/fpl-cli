@@ -819,11 +819,29 @@ class TestSeasonCountEntries:
         assert alice.text.startswith(
             "Alice: 5 gameweeks without a green arrow in a row, 5 this season",
         )
+        # GW1 opened the league, so nothing went unjudged (issue #561).
+        assert "not judged" not in alice.text
         # Bob's drought is identical, but the condition carries no
         # ride-alongs -- only the managers who fired it themselves show.
         bob = self._count_entry(pack, "Bob", "green_arrow_drought")
         assert bob.occurrences == 5
         assert bob.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+
+    def test_a_league_started_mid_season_does_not_hold_its_opening_gameweek(self):
+        """Issue #561: the opening gameweek is the league's own first scored
+        one, threaded through from the recap, not a hardcoded GW1."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in range(5, 11):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=3, manager_name="Zoe", league_position=1),
+                make_history_row(gameweek=gw, manager_key=1, manager_name="Alice", league_position=2),
+            ])
+
+        pack = build_notes_pack(store, 10, league_start_gameweek=5)
+        alice = self._count_entry(pack, "Alice", "green_arrow_drought")
+
+        assert alice.occurrences == 5
+        assert "not judged" not in alice.text
 
     def test_a_permanently_stuck_manager_stops_firing_past_the_last_milestone(self):
         """The run milestones are capped at 5 and 10 rather than every

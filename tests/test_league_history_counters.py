@@ -157,7 +157,7 @@ class TestConditionRegistry:
         predicate fires rather than rendered as an unnamed clause."""
         unlabelled = ConditionDefinition(
             key="unlabelled", formats=frozenset({"classic"}), min_run=2, needs=(),
-            predicate=lambda row, previous_row, cohort: RunAction.INAPPLICABLE,
+            predicate=lambda row, previous_row, cohort, opening: RunAction.INAPPLICABLE,
             count_label_one="thing", count_label_many="things",
             count_policy=CountSurfacePolicy(), inapplicable_label=None,
         )
@@ -564,7 +564,7 @@ class TestPositionConditions:
         projection = rebuild_counters_through(store, 3)
         view = manager_condition_views(projection, 1)["green_arrow_drought"]
 
-        assert view.length == 2  # GW1 has no previous row -> hold; GW2, GW3 extend
+        assert view.length == 2  # GW1 opens the league -> inapplicable; GW2, GW3 extend
         assert view.start_gameweek == 2
 
     def test_green_arrow_drought_resets_when_position_improves(self):
@@ -592,10 +592,10 @@ class TestPositionConditions:
 
         assert view.length == 0
         assert view.occurrences == 0
-        # Only GW1, with no previous gameweek to compare against, is
-        # unjudged. GW2-4 are judged: the positions are known, and they
-        # left nothing to climb (issue #358).
-        assert view.held_total == 1
+        # Nothing is unjudged: GW1 opens the league, with no earlier
+        # position to climb from (issue #561), and GW2-4 began at first
+        # place, leaving nothing to climb (issue #358).
+        assert view.held_total == 0
 
     def test_climbing_to_first_still_breaks_a_drought(self):
         """Gated on where the gameweek *began*, not where it ended: gating
@@ -626,7 +626,7 @@ class TestPositionConditions:
         view = manager_condition_views(rebuild_counters_through(store, 3), 1)["green_arrow_drought"]
 
         assert view.occurrences == 0
-        assert view.held_total == 1  # GW1 alone: no previous gameweek
+        assert view.held_total == 0  # GW1 opens the league; GW2-3 began on top
 
     def test_a_drought_resumes_normally_once_off_the_top(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
@@ -641,15 +641,60 @@ class TestPositionConditions:
         assert view.length == 2
         assert view.start_gameweek == 4
 
-    def test_green_arrow_drought_holds_on_the_first_ever_gameweek(self):
+    def test_green_arrow_drought_does_not_hold_the_leagues_opening_gameweek(self):
+        """Issue #561: the league's first gameweek has no predecessor by
+        construction, so no green arrow was possible and nothing is missing.
+        Holding it put "1 gameweek not judged either way" on every count line
+        for the rest of a season recorded completely from its start."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
-        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=5)])
+        for gw in (1, 2, 3):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=5)])
 
-        projection = rebuild_counters_through(store, 1)
-        view = manager_condition_views(projection, 1)["green_arrow_drought"]
+        view = manager_condition_views(rebuild_counters_through(store, 3), 1)["green_arrow_drought"]
 
-        assert view.length == 0
-        assert view.held_in_run == 0
+        assert view.held_total == 0
+        assert view.occurrences == 2  # GW2 and GW3 failed to improve on 5th
+        assert view.first_evaluated_gameweek == 1  # the span still starts at the opening
+
+    def test_green_arrow_drought_still_holds_a_missing_mid_season_gameweek(self):
+        """Past the opening gameweek a missing previous row is a genuine gap:
+        GW3 cannot say whether the manager climbed from a GW2 nobody captured."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 3, 4):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=5)])
+
+        view = manager_condition_views(rebuild_counters_through(store, 4), 1)["green_arrow_drought"]
+
+        assert view.held_total == 1  # GW3 alone
+        assert view.occurrences == 1  # GW4
+
+    def test_a_league_started_mid_season_opens_on_its_own_first_gameweek(self):
+        """A league created after the season began scores from its own
+        `start_event`: that gameweek is the opening one, not GW1."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (5, 6, 7):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=5)])
+
+        view = manager_condition_views(
+            rebuild_counters_through(store, 7, league_start_gameweek=5), 1,
+        )["green_arrow_drought"]
+
+        assert view.held_total == 0
+        assert view.occurrences == 2
+        assert view.first_evaluated_gameweek == 5
+
+    def test_the_incremental_path_treats_the_opening_gameweek_the_same(self):
+        """`compute_counters_through` advancing one gameweek at a time must
+        agree with a full rebuild about the opening gameweek."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (5, 6, 7):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=5)])
+            compute_counters_through(store, gw, league_start_gameweek=5)
+
+        incremental = compute_counters_through(store, 7, league_start_gameweek=5)
+
+        assert incremental == rebuild_counters_through(store, 7, league_start_gameweek=5)
+        assert manager_condition_views(incremental, 1)["green_arrow_drought"].held_total == 0
 
     def test_green_arrow_drought_holds_when_the_previous_row_is_unknown(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)

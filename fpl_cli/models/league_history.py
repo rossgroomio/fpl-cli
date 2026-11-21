@@ -481,7 +481,11 @@ def resolve_rows(rows: list[LeagueHistoryRow]) -> dict[int, LeagueHistoryRow]:
 # waiver moves, a captain with no fixture, a fully tied cohort, a drought
 # gameweek begun at first place -- moved off `held_in_run`/`held_total` onto it, so a
 # streak no longer reports a complete gameweek as "not recorded" (issue #358).
-LEAGUE_HISTORY_COUNTERS_VERSION = 5
+# 6: green_arrow_drought's league-opening gameweek, which has no predecessor
+# by construction, moved off `held_total` (inapplicable instead), so a league
+# recorded from its start no longer reports "1 gameweek not judged either
+# way" on every green-arrow count line (issue #561).
+LEAGUE_HISTORY_COUNTERS_VERSION = 6
 
 
 class ConditionRunState(BaseModel):
