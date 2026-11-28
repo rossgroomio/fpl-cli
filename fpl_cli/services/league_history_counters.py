@@ -84,8 +84,13 @@ class RunAction(str, Enum):
     INAPPLICABLE = "inapplicable"
 
 
+# (row, previous_row, cohort, debut) -> RunAction. `debut` is True on the
+# manager's first gameweek in the league -- the league's own first scored
+# gameweek, or a later joiner's first -- where a missing `previous_row` is not
+# a gap in the record but the absence of any earlier gameweek of theirs to
+# have recorded (issue #561). `_fold_gameweek` decides it.
 ConditionPredicate = Callable[
-    [LeagueHistoryRow, "LeagueHistoryRow | None", "list[LeagueHistoryRow]"], RunAction,
+    [LeagueHistoryRow, "LeagueHistoryRow | None", "list[LeagueHistoryRow]", bool], RunAction,
 ]
 
 
@@ -241,7 +246,7 @@ class ConditionDefinition:
 # ---------------------------------------------------------------------------
 #
 # Every predicate has the same signature so they can sit uniformly in the
-# registry: (row, previous_row, cohort) -> RunAction. `row.capture_status ==
+# registry: (row, previous_row, cohort, debut) -> RunAction. `row.capture_status ==
 # UNKNOWN` is never checked here -- that is R19's job, enforced once in
 # `_evaluate` before any predicate runs -- so a predicate is free to read
 # whatever headline numbers an unknown row happens to carry when that row
@@ -250,8 +255,9 @@ class ConditionDefinition:
 
 def _weeks_on_top(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
+    debut: bool,
 ) -> RunAction:
-    del previous_row, cohort
+    del previous_row, cohort, debut
     if row.league_position is None:
         return RunAction.HOLD
     return RunAction.EXTEND if row.league_position == 1 else RunAction.RESET
@@ -259,8 +265,9 @@ def _weeks_on_top(
 
 def _bottom_half_run(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
+    debut: bool,
 ) -> RunAction:
-    del previous_row
+    del previous_row, debut
     if row.league_position is None or not cohort:
         return RunAction.HOLD
     half = math.ceil(len(cohort) / 2)
@@ -307,8 +314,9 @@ def _level_cohort_action(cohort: list[LeagueHistoryRow], known_points: list[int]
 
 def _gw_win_streak(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
+    debut: bool,
 ) -> RunAction:
-    del previous_row
+    del previous_row, debut
     row_points = _net_gw_points(row)
     if row_points is None:
         return RunAction.HOLD
@@ -323,8 +331,9 @@ def _gw_win_streak(
 
 def _gw_loss_streak(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
+    debut: bool,
 ) -> RunAction:
-    del previous_row
+    del previous_row, debut
     row_points = _net_gw_points(row)
     if row_points is None:
         return RunAction.HOLD
@@ -339,14 +348,30 @@ def _gw_loss_streak(
 
 def _green_arrow_drought(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
+    debut: bool,
 ) -> RunAction:
     del cohort
+    # A missing position holds even on a debut: the record has a row it
+    # cannot read, which is a gap, whatever came before it.
     if row.league_position is None:
         return RunAction.HOLD
+    # A manager's first gameweek in the league -- the league's opening one,
+    # or a joiner's first -- has no predecessor by construction: there was no
+    # earlier position of theirs to climb from, so no green arrow was possible
+    # and nothing is missing from the record. Inapplicable, not a hold -- a
+    # hold here would land in `held_total` and put "1 gameweek not judged
+    # either way" on every count line for the rest of the season, in a league
+    # recorded completely (issue #561). A debut is the first gameweek folded
+    # for that manager (`_fold_gameweek` folds nothing before the league's
+    # start), so no run can be open across it and `inapplicable_label` never
+    # has to name it.
+    if debut:
+        return RunAction.INAPPLICABLE
     # The previous *gameweek's* row, not `row.previous_league_position` (an
     # upstream API field with no hold semantics of its own): if we don't
     # know what happened to this manager last gameweek -- no row, or an
-    # unknown one -- we cannot say whether their position improved.
+    # unknown one -- we cannot say whether their position improved. Past a
+    # manager's debut a missing row is a genuine gap.
     if previous_row is None or previous_row.capture_status is CaptureStatus.UNKNOWN:
         return RunAction.HOLD
     if previous_row.league_position is None:
@@ -372,8 +397,9 @@ def _green_arrow_drought(
 
 def _captain_blank_run(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
+    debut: bool,
 ) -> RunAction:
-    del previous_row, cohort
+    del previous_row, cohort, debut
     if row.captain is None:
         return RunAction.HOLD
     # R20: the captain's own had_fixture flag gates this condition. Only
@@ -389,8 +415,9 @@ def _captain_blank_run(
 
 def _hit_run(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
+    debut: bool,
 ) -> RunAction:
-    del previous_row, cohort
+    del previous_row, cohort, debut
     # A genuine hold: every captured classic row records the gameweek's
     # cost, a no-transfer gameweek included (as 0, which resets), so None
     # only ever means the capture did not reach it.
@@ -419,8 +446,9 @@ def _net_transaction_total(row: LeagueHistoryRow) -> int | None:
 
 def _waiver_win_run(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
+    debut: bool,
 ) -> RunAction:
-    del previous_row, cohort
+    del previous_row, cohort, debut
     net_total = _net_transaction_total(row)
     if net_total is None:
         return RunAction.INAPPLICABLE
@@ -429,8 +457,9 @@ def _waiver_win_run(
 
 def _waiver_burn_run(
     row: LeagueHistoryRow, previous_row: LeagueHistoryRow | None, cohort: list[LeagueHistoryRow],
+    debut: bool,
 ) -> RunAction:
-    del previous_row, cohort
+    del previous_row, cohort, debut
     net_total = _net_transaction_total(row)
     if net_total is None:
         return RunAction.INAPPLICABLE
@@ -539,6 +568,8 @@ def _evaluate(
     row: LeagueHistoryRow,
     previous_row: LeagueHistoryRow | None,
     cohort: list[LeagueHistoryRow],
+    *,
+    debut: bool = False,
 ) -> RunAction:
     """Evaluate one condition for one manager's row, enforcing R19 centrally.
 
@@ -551,7 +582,7 @@ def _evaluate(
     """
     if row.capture_status is CaptureStatus.UNKNOWN:
         return RunAction.HOLD
-    action = definition.predicate(row, previous_row, cohort)
+    action = definition.predicate(row, previous_row, cohort, debut)
     if action is RunAction.INAPPLICABLE and definition.inapplicable_label is None:
         # A registry defect, not a data problem: raised rather than folded so
         # it surfaces as a traceback the first time the predicate fires,
@@ -646,6 +677,8 @@ def _fold_gameweek(
     resolved_rows: dict[int, LeagueHistoryRow],
     previous_rows: dict[int, LeagueHistoryRow],
     fpl_format: LeagueFormat,
+    *,
+    league_start_gameweek: int,
 ) -> dict[int, dict[str, ConditionRunState]]:
     """Fold one gameweek's resolved rows into per-manager run state.
 
@@ -656,8 +689,24 @@ def _fold_gameweek(
     manager with no row at all for this gameweek is out of scope for it,
     and their existing state, if any, carries forward completely
     untouched, not even counted towards a hold.
+
+    `league_start_gameweek` is the league's own first scored gameweek. A
+    gameweek before it is not the league's and folds nothing, so a stray
+    earlier row can never open a run the opening gameweek would then sit
+    inside. Each row is told whether it is the manager's *debut* -- their
+    first gameweek in the league, with no earlier one of theirs to compare
+    against by construction -- so a predicate can tell that apart from a
+    later gameweek whose previous row is merely missing (issue #561). A debut
+    is every row in the opening gameweek, and a later row for a manager
+    never folded before when the previous gameweek *was* captured without
+    them: they joined. A manager first seen after an uncaptured gameweek is
+    not a debut, because the gap may hold their earlier rows -- a ledger
+    begun mid-season starts with a genuine hold for everyone.
     """
+    if gameweek < league_start_gameweek:
+        return runs
     conditions = conditions_for_format(fpl_format)
+    opening = gameweek == league_start_gameweek
     cohort = list(resolved_rows.values())
     updated: dict[int, dict[str, ConditionRunState]] = {
         manager_key: dict(states) for manager_key, states in runs.items()
@@ -665,10 +714,12 @@ def _fold_gameweek(
 
     for manager_key, row in resolved_rows.items():
         previous_row = previous_rows.get(manager_key)
+        joined = bool(previous_rows) and previous_row is None and manager_key not in runs
+        debut = opening or joined
         manager_states = dict(updated.get(manager_key, {}))
         for condition in conditions:
             current_state = manager_states.get(condition.key, ConditionRunState())
-            action = _evaluate(condition, row, previous_row, cohort)
+            action = _evaluate(condition, row, previous_row, cohort, debut=debut)
             manager_states[condition.key] = _next_state(current_state, gameweek, action)
         updated[manager_key] = manager_states
 
@@ -769,9 +820,9 @@ def _save_projection(projection: LeagueHistoryCountersProjection) -> None:
 
 
 def rebuild_counters_through(
-    store: LeagueHistoryStore, through_gameweek: int,
+    store: LeagueHistoryStore, through_gameweek: int, *, league_start_gameweek: int,
 ) -> LeagueHistoryCountersProjection:
-    """Recompute the full projection from the ledger, gameweek 1..through_gameweek.
+    """Recompute the full projection from the ledger, league start..through_gameweek.
 
     Pure: never reads or writes the persisted cache. This is both the
     fallback a stale, missing, or version-mismatched cache rebuilds through
@@ -784,10 +835,17 @@ def rebuild_counters_through(
     captured at all) must not be silently skipped over when computing the
     *next* captured gameweek's previous-row comparison, or a two-week gap
     would read as an ordinary one-week transition.
+
+    `league_start_gameweek` is the league's own first scored gameweek (GW1,
+    or the `start_event` of a league created mid-season). The walk begins
+    there, every row in it is a debut with no predecessor to compare against
+    by construction, and any row before it is ignored. Required, with no
+    default: a wrong start is folded into the persisted cache by
+    `compute_counters_through` and nothing in the stamp would catch it.
     """
     runs: dict[int, dict[str, ConditionRunState]] = {}
     previous_rows: dict[int, LeagueHistoryRow] = {}
-    for gameweek in range(1, through_gameweek + 1):
+    for gameweek in range(league_start_gameweek, through_gameweek + 1):
         try:
             resolved = store.resolved_gameweek(gameweek)
         except LeagueHistoryError as exc:
@@ -802,7 +860,10 @@ def rebuild_counters_through(
                 context="treated as uncaptured while rebuilding the counters projection",
             )
             resolved = {}
-        runs = _fold_gameweek(runs, gameweek, resolved, previous_rows, store.fpl_format)
+        runs = _fold_gameweek(
+            runs, gameweek, resolved, previous_rows, store.fpl_format,
+            league_start_gameweek=league_start_gameweek,
+        )
         previous_rows = resolved
 
     return LeagueHistoryCountersProjection(
@@ -815,7 +876,7 @@ def rebuild_counters_through(
 
 
 def compute_counters_through(
-    store: LeagueHistoryStore, through_gameweek: int,
+    store: LeagueHistoryStore, through_gameweek: int, *, league_start_gameweek: int,
 ) -> LeagueHistoryCountersProjection:
     """Counters for this partition after folding in `through_gameweek`.
 
@@ -840,6 +901,12 @@ def compute_counters_through(
     every `build_notes_pack`, before this function is ever reached -- so
     by the time either shortcut runs, a relevant repair has already
     forced `existing` to `None` here rather than being missed silently.
+
+    `league_start_gameweek` is the league's own first scored gameweek, as
+    `rebuild_counters_through` takes it. It is required because the cache
+    stamp does not record it: a wrong start would be persisted and every
+    later incremental advance would trust it, so the caller must always
+    state it (the recap resolves it with `league_first_gameweek`).
     """
     existing = _load_projection(store)
 
@@ -862,10 +929,15 @@ def compute_counters_through(
                 return None
 
         resolved = _read(through_gameweek)
-        previous_resolved = _read(through_gameweek - 1) if through_gameweek > 1 else {}
+        # Nothing before the league's start is its own, so the opening
+        # gameweek compares against nothing, exactly as a rebuild walks it.
+        previous_resolved = (
+            _read(through_gameweek - 1) if through_gameweek > league_start_gameweek else {}
+        )
         if resolved is not None and previous_resolved is not None:
             runs = _fold_gameweek(
                 existing.runs, through_gameweek, resolved, previous_resolved, store.fpl_format,
+                league_start_gameweek=league_start_gameweek,
             )
             projection = LeagueHistoryCountersProjection(
                 season=store.season,
@@ -877,7 +949,9 @@ def compute_counters_through(
             _save_projection(projection)
             return projection
 
-    projection = rebuild_counters_through(store, through_gameweek)
+    projection = rebuild_counters_through(
+        store, through_gameweek, league_start_gameweek=league_start_gameweek,
+    )
     _save_projection(projection)
     return projection
 

@@ -3329,7 +3329,7 @@ class TestBackfillCountersInvalidation:
         cached = LeagueHistoryCountersProjection.model_validate_json(
             counters_file(SEASON, "classic", 42).read_text(encoding="utf-8"),
         )
-        expected = rebuild_counters_through(_store(), 2)
+        expected = rebuild_counters_through(_store(), 2, league_start_gameweek=1)
         assert cached.runs == expected.runs
 
         view = manager_condition_views(cached, 1)["weeks_on_top"]

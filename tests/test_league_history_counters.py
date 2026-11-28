@@ -157,7 +157,7 @@ class TestConditionRegistry:
         predicate fires rather than rendered as an unnamed clause."""
         unlabelled = ConditionDefinition(
             key="unlabelled", formats=frozenset({"classic"}), min_run=2, needs=(),
-            predicate=lambda row, previous_row, cohort: RunAction.INAPPLICABLE,
+            predicate=lambda row, previous_row, cohort, debut: RunAction.INAPPLICABLE,
             count_label_one="thing", count_label_many="things",
             count_policy=CountSurfacePolicy(), inapplicable_label=None,
         )
@@ -191,7 +191,7 @@ class TestCaptainBlankRun:
         for gw in (1, 2, 3):
             store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, captain=_captain(1))])
 
-        projection = rebuild_counters_through(store, 3)
+        projection = rebuild_counters_through(store, 3, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["captain_blank_run"]
 
         assert view.length == 3
@@ -209,7 +209,7 @@ class TestCaptainBlankRun:
         store.append_rows(7, [make_history_row(gameweek=7, manager_key=1, capture_status="unknown")])
         store.append_rows(8, [make_history_row(gameweek=8, manager_key=1, captain=_captain(1))])
 
-        projection = rebuild_counters_through(store, 8)
+        projection = rebuild_counters_through(store, 8, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["captain_blank_run"]
 
         assert view.length == 2
@@ -224,14 +224,14 @@ class TestCaptainBlankRun:
         store.append_rows(6, [make_history_row(gameweek=6, manager_key=1, captain=_captain(1))])
         store.append_rows(7, [make_history_row(gameweek=7, manager_key=1, capture_status="unknown")])
         store.append_rows(8, [make_history_row(gameweek=8, manager_key=1, captain=_captain(1))])
-        before = manager_condition_views(rebuild_counters_through(store, 8), 1)["captain_blank_run"]
+        before = manager_condition_views(rebuild_counters_through(store, 8, league_start_gameweek=1), 1)["captain_blank_run"]
         assert (before.length, before.held_in_run) == (2, 1)
 
         store.append_rows(7, [
             make_history_row(gameweek=7, manager_key=1, captain=_captain(1), captured_at=LATER),
         ])
 
-        after = manager_condition_views(rebuild_counters_through(store, 8), 1)["captain_blank_run"]
+        after = manager_condition_views(rebuild_counters_through(store, 8, league_start_gameweek=1), 1)["captain_blank_run"]
         assert (after.length, after.held_in_run) == (3, 0)
 
     def test_captain_with_no_fixture_neither_extends_nor_resets(self):
@@ -245,7 +245,7 @@ class TestCaptainBlankRun:
         ])
         store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, captain=_captain(1))])
 
-        projection = rebuild_counters_through(store, 3)
+        projection = rebuild_counters_through(store, 3, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["captain_blank_run"]
 
         assert view.length == 2
@@ -262,7 +262,7 @@ class TestCaptainBlankRun:
             make_history_row(gameweek=2, manager_key=1, captain=_captain(1, had_fixture=None)),
         ])
 
-        projection = rebuild_counters_through(store, 2)
+        projection = rebuild_counters_through(store, 2, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["captain_blank_run"]
 
         assert view.length == 1
@@ -274,7 +274,7 @@ class TestCaptainBlankRun:
             make_history_row(gameweek=1, manager_key=1, tier="coarse", league_position=1, captain=None),
         ])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
         views = manager_condition_views(projection, 1)
 
         assert views["captain_blank_run"].length == 0
@@ -291,7 +291,7 @@ class TestCaptainBlankRun:
             ])
         store.append_rows(10, [make_history_row(gameweek=10, manager_key=1, captain=_captain(1))])
 
-        projection = rebuild_counters_through(store, 10)
+        projection = rebuild_counters_through(store, 10, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["captain_blank_run"]
 
         assert view.length == 2
@@ -310,7 +310,7 @@ class TestCaptainBlankRun:
             make_history_row(gameweek=2, manager_key=1, captain=_captain(BLANK_POINTS_THRESHOLD + 1)),
         ])
 
-        projection = rebuild_counters_through(store, 2)
+        projection = rebuild_counters_through(store, 2, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["captain_blank_run"]
 
         # Exactly-at-threshold extends (GW1); one point above resets (GW2).
@@ -332,7 +332,7 @@ class TestGwRankStreaks:
                 make_history_row(gameweek=gw, manager_key=3, gross_points=40),
             ])
 
-        projection = rebuild_counters_through(store, 2)
+        projection = rebuild_counters_through(store, 2, league_start_gameweek=1)
 
         assert manager_condition_views(projection, 1)["gw_win_streak"].length == 2
         assert manager_condition_views(projection, 3)["gw_loss_streak"].length == 2
@@ -354,7 +354,7 @@ class TestGwRankStreaks:
                 make_history_row(gameweek=gw, manager_key=3, gross_points=40),
             ])
 
-        projection = rebuild_counters_through(store, 2)
+        projection = rebuild_counters_through(store, 2, league_start_gameweek=1)
 
         assert manager_condition_views(projection, 1)["gw_win_streak"].length == 2
         assert manager_condition_views(projection, 2)["gw_win_streak"].length == 2
@@ -378,7 +378,7 @@ class TestGwRankStreaks:
                 make_history_row(gameweek=gw, manager_key=2, gross_points=50),
             ])
 
-        projection = rebuild_counters_through(store, 4)
+        projection = rebuild_counters_through(store, 4, league_start_gameweek=1)
 
         # GW1 opens a win streak for manager 1 and a loss streak for
         # manager 2; GW2-4 tie every week and must not reset either.
@@ -400,7 +400,7 @@ class TestGwRankStreaks:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, gross_points=60)])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
 
         assert manager_condition_views(projection, 1)["gw_win_streak"].length == 0
         assert manager_condition_views(projection, 1)["gw_loss_streak"].length == 0
@@ -423,7 +423,7 @@ class TestGwRankStreaks:
             make_history_row(gameweek=2, manager_key=3, gross_points=None),
         ])
 
-        projection = rebuild_counters_through(store, 2)
+        projection = rebuild_counters_through(store, 2, league_start_gameweek=1)
 
         win_view = manager_condition_views(projection, 1)["gw_win_streak"]
         loss_view = manager_condition_views(projection, 2)["gw_loss_streak"]
@@ -441,7 +441,7 @@ class TestGwRankStreaks:
             make_history_row(gameweek=1, manager_key=3, gross_points=40),
         ])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
 
         assert manager_condition_views(projection, 1)["gw_win_streak"].length == 1
         assert manager_condition_views(projection, 2)["gw_win_streak"].length == 1
@@ -454,7 +454,7 @@ class TestGwRankStreaks:
             make_history_row(gameweek=1, manager_key=3, gross_points=40),
         ])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
 
         assert manager_condition_views(projection, 1)["gw_win_streak"].length == 1
         assert manager_condition_views(projection, 2)["gw_win_streak"].length == 1
@@ -476,7 +476,7 @@ class TestGwRankStreaks:
                 make_history_row(gameweek=gw, manager_key=4, gross_points=40),
             ])
 
-        projection = rebuild_counters_through(store, 2)
+        projection = rebuild_counters_through(store, 2, league_start_gameweek=1)
 
         unknown_view = manager_condition_views(projection, 3)["gw_loss_streak"]
         assert unknown_view.length == 0
@@ -497,7 +497,7 @@ class TestGwRankStreaks:
     def test_missing_gross_points_holds(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, gross_points=None)])
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["gw_win_streak"]
         assert view.length == 0
         assert view.held_in_run == 0
@@ -515,7 +515,7 @@ class TestPositionConditions:
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
         store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=2)])
 
-        projection = rebuild_counters_through(store, 3)
+        projection = rebuild_counters_through(store, 3, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["weeks_on_top"]
 
         assert view.length == 0  # reset by GW3
@@ -524,7 +524,7 @@ class TestPositionConditions:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["weeks_on_top"]  # min_run == 2
 
         assert view.length == 1
@@ -537,7 +537,7 @@ class TestPositionConditions:
             make_history_row(gameweek=1, manager_key=key, league_position=key) for key in (1, 2, 3, 4)
         ])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
 
         assert manager_condition_views(projection, 2)["bottom_half_run"].length == 0
         assert manager_condition_views(projection, 3)["bottom_half_run"].length == 1
@@ -550,7 +550,7 @@ class TestPositionConditions:
             for key in (1, 2, 3, 4, 5)
         ])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
 
         assert manager_condition_views(projection, 3)["bottom_half_run"].length == 0
         assert manager_condition_views(projection, 4)["bottom_half_run"].length == 1
@@ -561,10 +561,10 @@ class TestPositionConditions:
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=5)])
         store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=7)])
 
-        projection = rebuild_counters_through(store, 3)
+        projection = rebuild_counters_through(store, 3, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["green_arrow_drought"]
 
-        assert view.length == 2  # GW1 has no previous row -> hold; GW2, GW3 extend
+        assert view.length == 2  # GW1 opens the league -> inapplicable; GW2, GW3 extend
         assert view.start_gameweek == 2
 
     def test_green_arrow_drought_resets_when_position_improves(self):
@@ -573,7 +573,7 @@ class TestPositionConditions:
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=5)])
         store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=2)])
 
-        projection = rebuild_counters_through(store, 3)
+        projection = rebuild_counters_through(store, 3, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["green_arrow_drought"]
 
         assert view.length == 0
@@ -588,14 +588,14 @@ class TestPositionConditions:
         for gw in (1, 2, 3, 4):
             store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
 
-        view = manager_condition_views(rebuild_counters_through(store, 4), 1)["green_arrow_drought"]
+        view = manager_condition_views(rebuild_counters_through(store, 4, league_start_gameweek=1), 1)["green_arrow_drought"]
 
         assert view.length == 0
         assert view.occurrences == 0
-        # Only GW1, with no previous gameweek to compare against, is
-        # unjudged. GW2-4 are judged: the positions are known, and they
-        # left nothing to climb (issue #358).
-        assert view.held_total == 1
+        # Nothing is unjudged: GW1 opens the league, with no earlier
+        # position to climb from (issue #561), and GW2-4 began at first
+        # place, leaving nothing to climb (issue #358).
+        assert view.held_total == 0
 
     def test_climbing_to_first_still_breaks_a_drought(self):
         """Gated on where the gameweek *began*, not where it ended: gating
@@ -607,8 +607,8 @@ class TestPositionConditions:
                 gameweek=gw, manager_key=1, league_position=position,
             )])
 
-        third = manager_condition_views(rebuild_counters_through(store, 3), 1)["green_arrow_drought"]
-        fourth = manager_condition_views(rebuild_counters_through(store, 4), 1)["green_arrow_drought"]
+        third = manager_condition_views(rebuild_counters_through(store, 3, league_start_gameweek=1), 1)["green_arrow_drought"]
+        fourth = manager_condition_views(rebuild_counters_through(store, 4, league_start_gameweek=1), 1)["green_arrow_drought"]
 
         assert third.length == 2  # GW2 and GW3 failed to improve on 4th
         assert fourth.length == 0  # climbing to the summit resets it
@@ -623,10 +623,10 @@ class TestPositionConditions:
                 gameweek=gw, manager_key=1, league_position=position,
             )])
 
-        view = manager_condition_views(rebuild_counters_through(store, 3), 1)["green_arrow_drought"]
+        view = manager_condition_views(rebuild_counters_through(store, 3, league_start_gameweek=1), 1)["green_arrow_drought"]
 
         assert view.occurrences == 0
-        assert view.held_total == 1  # GW1 alone: no previous gameweek
+        assert view.held_total == 0  # GW1 opens the league; GW2-3 began on top
 
     def test_a_drought_resumes_normally_once_off_the_top(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
@@ -635,21 +635,132 @@ class TestPositionConditions:
                 gameweek=gw, manager_key=1, league_position=position,
             )])
 
-        view = manager_condition_views(rebuild_counters_through(store, 5), 1)["green_arrow_drought"]
+        view = manager_condition_views(rebuild_counters_through(store, 5, league_start_gameweek=1), 1)["green_arrow_drought"]
 
         # GW4 and GW5 both began outside the top and failed to improve.
         assert view.length == 2
         assert view.start_gameweek == 4
 
-    def test_green_arrow_drought_holds_on_the_first_ever_gameweek(self):
+    def test_green_arrow_drought_does_not_hold_the_leagues_opening_gameweek(self):
+        """Issue #561: the league's first gameweek has no predecessor by
+        construction, so no green arrow was possible and nothing is missing.
+        Holding it put "1 gameweek not judged either way" on every count line
+        for the rest of a season recorded completely from its start."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
-        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=5)])
+        for gw in (1, 2, 3):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=5)])
 
-        projection = rebuild_counters_through(store, 1)
-        view = manager_condition_views(projection, 1)["green_arrow_drought"]
+        view = manager_condition_views(rebuild_counters_through(store, 3, league_start_gameweek=1), 1)["green_arrow_drought"]
 
-        assert view.length == 0
-        assert view.held_in_run == 0
+        assert view.held_total == 0
+        assert view.occurrences == 2  # GW2 and GW3 failed to improve on 5th
+        assert view.first_evaluated_gameweek == 1  # the span still starts at the opening
+
+    def test_green_arrow_drought_still_holds_a_missing_mid_season_gameweek(self):
+        """Past the opening gameweek a missing previous row is a genuine gap:
+        GW3 cannot say whether the manager climbed from a GW2 nobody captured."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (1, 3, 4):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=5)])
+
+        view = manager_condition_views(rebuild_counters_through(store, 4, league_start_gameweek=1), 1)["green_arrow_drought"]
+
+        assert view.held_total == 1  # GW3 alone
+        assert view.occurrences == 1  # GW4
+
+    def test_a_league_started_mid_season_opens_on_its_own_first_gameweek(self):
+        """A league created after the season began scores from its own
+        `start_event`: that gameweek is the opening one, not GW1."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (5, 6, 7):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=5)])
+
+        view = manager_condition_views(
+            rebuild_counters_through(store, 7, league_start_gameweek=5), 1,
+        )["green_arrow_drought"]
+
+        assert view.held_total == 0
+        assert view.occurrences == 2
+        assert view.first_evaluated_gameweek == 5
+
+    def test_a_joiners_first_gameweek_is_not_held(self):
+        """A manager who first appears after the opening gameweek, when the
+        gameweek before was captured without them, joined then: their first
+        gameweek has no earlier position of theirs to climb from either, so
+        it is a debut rather than a gap (issue #561 review)."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in range(1, 6):
+            rows = [make_history_row(gameweek=gw, manager_key=1, league_position=1)]
+            if gw >= 3:
+                rows.append(make_history_row(gameweek=gw, manager_key=2, league_position=2))
+            store.append_rows(gw, rows)
+
+        view = manager_condition_views(
+            rebuild_counters_through(store, 5, league_start_gameweek=1), 2,
+        )["green_arrow_drought"]
+
+        assert view.held_total == 0
+        assert view.occurrences == 2  # GW4 and GW5 failed to improve on 2nd
+        assert view.first_evaluated_gameweek == 3
+
+    def test_a_manager_first_seen_after_an_uncaptured_gameweek_still_holds(self):
+        """A ledger begun mid-season has nothing before its first capture, so
+        a manager first seen there may well have earlier rows nobody recorded:
+        that is a gap, not a debut, and it keeps its hold."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (4, 5, 6):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=5)])
+
+        view = manager_condition_views(
+            rebuild_counters_through(store, 6, league_start_gameweek=1), 1,
+        )["green_arrow_drought"]
+
+        assert view.held_total == 1  # GW4 alone
+        assert view.occurrences == 2
+
+    def test_the_opening_gameweek_with_no_position_still_holds(self):
+        """A debut excuses the missing *previous* row, not a missing position
+        on the row itself: that is a gap in the record whenever it falls."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=None)])
+        store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=5)])
+
+        view = manager_condition_views(
+            rebuild_counters_through(store, 2, league_start_gameweek=1), 1,
+        )["green_arrow_drought"]
+
+        # GW1 is unreadable, and GW2 compares against that row's missing
+        # position, so it cannot be ruled either.
+        assert view.held_total == 2
+        assert view.occurrences == 0
+
+    def test_rows_before_the_league_start_are_not_folded(self):
+        """A stray row before the league's start is not the league's: it must
+        not open a run the opening gameweek would then sit inside, nor count
+        towards anything."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (3, 4, 5, 6):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=5)])
+
+        rebuilt = rebuild_counters_through(store, 6, league_start_gameweek=5)
+        view = manager_condition_views(rebuilt, 1)["green_arrow_drought"]
+
+        assert (view.occurrences, view.held_total, view.inapplicable_in_run) == (1, 0, 0)
+        assert view.first_evaluated_gameweek == 5
+        assert compute_counters_through(store, 6, league_start_gameweek=5) == rebuilt
+
+    def test_the_incremental_path_treats_the_opening_gameweek_the_same(self):
+        """`compute_counters_through` advancing one gameweek at a time must
+        agree with a full rebuild about the opening gameweek."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in (5, 6, 7):
+            store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=5)])
+            compute_counters_through(store, gw, league_start_gameweek=5)
+
+        incremental = compute_counters_through(store, 7, league_start_gameweek=5)
+
+        assert incremental == rebuild_counters_through(store, 7, league_start_gameweek=5)
+        assert manager_condition_views(incremental, 1)["green_arrow_drought"].held_total == 0
 
     def test_green_arrow_drought_holds_when_the_previous_row_is_unknown(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
@@ -657,7 +768,7 @@ class TestPositionConditions:
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, capture_status="unknown")])
         store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=5)])
 
-        projection = rebuild_counters_through(store, 3)
+        projection = rebuild_counters_through(store, 3, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["green_arrow_drought"]
 
         # GW1: no previous row -> hold. GW2: unknown row -> R19 holds its own
@@ -685,7 +796,7 @@ class TestConditionsAreIndependent:
                 make_history_row(gameweek=gw, manager_key=3, league_position=3, gross_points=60),
             ])
 
-        projection = rebuild_counters_through(store, 2)
+        projection = rebuild_counters_through(store, 2, league_start_gameweek=1)
         top_manager = manager_condition_views(projection, 1)
         bottom_manager = manager_condition_views(projection, 2)
 
@@ -708,7 +819,7 @@ class TestHitRun:
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, transfer_cost=4)])
         store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, transfer_cost=0)])
 
-        projection = rebuild_counters_through(store, 3)
+        projection = rebuild_counters_through(store, 3, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["hit_run"]
 
         assert view.length == 0
@@ -719,7 +830,7 @@ class TestHitRun:
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, transfer_cost=None)])
         store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, transfer_cost=4)])
 
-        projection = rebuild_counters_through(store, 3)
+        projection = rebuild_counters_through(store, 3, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["hit_run"]
 
         assert view.length == 2
@@ -738,7 +849,7 @@ class TestWaiverConditions:
             make_history_row(gameweek=1, manager_key=1, fpl_format="draft", transactions=[]),
         ])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
         views = manager_condition_views(projection, 1)
 
         assert views["waiver_win_run"].length == 0
@@ -762,7 +873,7 @@ class TestWaiverConditions:
             )],
         )])
 
-        projection = rebuild_counters_through(store, 2)
+        projection = rebuild_counters_through(store, 2, league_start_gameweek=1)
         views = manager_condition_views(projection, 1)
 
         assert views["waiver_win_run"].length == 1
@@ -789,7 +900,7 @@ class TestWaiverConditions:
             gameweek=4, manager_key=1, fpl_format="draft", capture_status="unknown",
         )])
 
-        view = manager_condition_views(rebuild_counters_through(store, 4), 1)["waiver_win_run"]
+        view = manager_condition_views(rebuild_counters_through(store, 4, league_start_gameweek=1), 1)["waiver_win_run"]
 
         assert view.length == 2
         assert view.inapplicable_in_run == 1  # GW2: no completed moves
@@ -808,7 +919,7 @@ class TestWaiverConditions:
             transactions=[_transaction(-5), _transaction(1)],  # net -4
         )])
 
-        projection = rebuild_counters_through(store, 2)
+        projection = rebuild_counters_through(store, 2, league_start_gameweek=1)
         views = manager_condition_views(projection, 1)
 
         assert views["waiver_win_run"].length == 0  # GW1 extended then GW2 reset
@@ -824,11 +935,11 @@ class TestAdvanceAndRebuild:
     def test_advances_incrementally_when_the_gameweek_is_stamp_plus_one(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
-        first = compute_counters_through(store, 1)
+        first = compute_counters_through(store, 1, league_start_gameweek=1)
         assert first.computed_through_gameweek == 1
 
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
-        second = compute_counters_through(store, 2)
+        second = compute_counters_through(store, 2, league_start_gameweek=1)
 
         assert second.computed_through_gameweek == 2
         assert manager_condition_views(second, 1)["weeks_on_top"].length == 2
@@ -838,7 +949,7 @@ class TestAdvanceAndRebuild:
 
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
-        svc.compute_counters_through(store, 1)
+        svc.compute_counters_through(store, 1, league_start_gameweek=1)
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
 
         def _boom(*_args, **_kwargs):
@@ -846,14 +957,14 @@ class TestAdvanceAndRebuild:
 
         monkeypatch.setattr(svc, "rebuild_counters_through", _boom)
 
-        projection = svc.compute_counters_through(store, 2)
+        projection = svc.compute_counters_through(store, 2, league_start_gameweek=1)
         assert projection.computed_through_gameweek == 2
 
     def test_exact_match_returns_the_cached_projection_without_recomputing(self, monkeypatch):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
-        first = compute_counters_through(store, 2)
+        first = compute_counters_through(store, 2, league_start_gameweek=1)
         assert manager_condition_views(first, 1)["weeks_on_top"].length == 2
 
         def _boom(*_args, **_kwargs):
@@ -863,7 +974,7 @@ class TestAdvanceAndRebuild:
 
         # Re-running for the same, already-stamped gameweek -- e.g. checking
         # console output, then re-running with --summarise -- must be free.
-        second = compute_counters_through(store, 2)
+        second = compute_counters_through(store, 2, league_start_gameweek=1)
         assert second.computed_through_gameweek == 2
         assert second.runs == first.runs
 
@@ -872,11 +983,11 @@ class TestAdvanceAndRebuild:
         for gw in range(1, 7):
             store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
 
-        stamped_at_three = compute_counters_through(store, 3)
+        stamped_at_three = compute_counters_through(store, 3, league_start_gameweek=1)
         assert stamped_at_three.computed_through_gameweek == 3
 
-        jumped = compute_counters_through(store, 6)  # stamp(3) != 6 - 1 -> must rebuild
-        expected = rebuild_counters_through(store, 6)
+        jumped = compute_counters_through(store, 6, league_start_gameweek=1)  # stamp(3) != 6 - 1 -> must rebuild
+        expected = rebuild_counters_through(store, 6, league_start_gameweek=1)
 
         assert jumped.computed_through_gameweek == 6
         assert jumped.runs == expected.runs
@@ -894,7 +1005,7 @@ class TestAdvanceAndRebuild:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         for gw in (1, 2, 3):
             store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
-        first = compute_counters_through(store, 3)
+        first = compute_counters_through(store, 3, league_start_gameweek=1)
         assert manager_condition_views(first, 1)["weeks_on_top"].length == 3
 
         # Repair GW2: this manager was actually mid-table that gameweek.
@@ -906,7 +1017,7 @@ class TestAdvanceAndRebuild:
         # that repairs and re-asks must invalidate first, exactly as it
         # would for a stamp+1 repair.
         invalidate_if_repaired(store, {2})
-        repaired = compute_counters_through(store, 3)
+        repaired = compute_counters_through(store, 3, league_start_gameweek=1)
         view = manager_condition_views(repaired, 1)["weeks_on_top"]
 
         assert view.length == 1
@@ -923,13 +1034,13 @@ class TestAdvanceAndRebuild:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         for gw in (1, 2, 3):
             store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
-        compute_counters_through(store, 3)
+        compute_counters_through(store, 3, league_start_gameweek=1)
 
         store.append_rows(2, [
             make_history_row(gameweek=2, manager_key=1, league_position=5, captured_at=LATER),
         ])
 
-        stale = compute_counters_through(store, 3)  # no invalidate_if_repaired call
+        stale = compute_counters_through(store, 3, league_start_gameweek=1)  # no invalidate_if_repaired call
         view = manager_condition_views(stale, 1)["weeks_on_top"]
         assert view.length == 3  # the pre-repair count, not the corrected 1
 
@@ -950,7 +1061,7 @@ class TestAdvanceAndRebuild:
 
         # (2) The counters cache advances through GW1 while it is still
         # unknown: weeks_on_top holds (R19), so no run has opened.
-        stamped = compute_counters_through(store, 1)
+        stamped = compute_counters_through(store, 1, league_start_gameweek=1)
         assert stamped.computed_through_gameweek == 1
         assert manager_condition_views(stamped, 1)["weeks_on_top"].length == 0
 
@@ -964,12 +1075,12 @@ class TestAdvanceAndRebuild:
         # advance.
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
         invalidate_if_repaired(store, {1})
-        fixed = compute_counters_through(store, 2)
+        fixed = compute_counters_through(store, 2, league_start_gameweek=1)
 
         # (5) Matches a full rebuild's ground truth: both gameweeks extend the
         # run, which started at GW1 now that GW1 is known to qualify -- not
         # the stale fast path's length=1/start=2.
-        ground_truth = rebuild_counters_through(store, 2)
+        ground_truth = rebuild_counters_through(store, 2, league_start_gameweek=1)
         assert fixed.runs == ground_truth.runs
         view = manager_condition_views(fixed, 1)["weeks_on_top"]
         assert (view.length, view.start_gameweek) == (2, 1)
@@ -981,7 +1092,7 @@ class TestAdvanceAndRebuild:
         left alone rather than discarded for nothing."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
-        compute_counters_through(store, 1)  # stamp == 1
+        compute_counters_through(store, 1, league_start_gameweek=1)  # stamp == 1
 
         invalidate_if_repaired(store, {2})  # 2 > stamp(1) -- nothing to force
 
@@ -1008,13 +1119,13 @@ class TestAdvanceAndRebuild:
         already on disk."""
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
-        compute_counters_through(store, 1)  # stamp == 1, matches through_gameweek(2) - 1
+        compute_counters_through(store, 1, league_start_gameweek=1)  # stamp == 1, matches through_gameweek(2) - 1
 
         store.gameweek_file(2).write_text("not json{{{\n", encoding="utf-8")
 
-        projection = compute_counters_through(store, 2)  # must not raise
+        projection = compute_counters_through(store, 2, league_start_gameweek=1)  # must not raise
 
-        assert projection.runs == rebuild_counters_through(store, 2).runs
+        assert projection.runs == rebuild_counters_through(store, 2, league_start_gameweek=1).runs
 
     def test_version_mismatched_projection_is_rebuilt_rather_than_served(self):
         import json
@@ -1023,7 +1134,7 @@ class TestAdvanceAndRebuild:
 
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
-        compute_counters_through(store, 1)
+        compute_counters_through(store, 1, league_start_gameweek=1)
 
         path = counters_file("2026-27", "classic", 1)
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1033,7 +1144,7 @@ class TestAdvanceAndRebuild:
         assert svc._load_projection(store) is None  # exercising the fail-open path directly
 
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
-        projection = compute_counters_through(store, 2)
+        projection = compute_counters_through(store, 2, league_start_gameweek=1)
 
         assert manager_condition_views(projection, 1)["weeks_on_top"].length == 2
 
@@ -1041,7 +1152,7 @@ class TestAdvanceAndRebuild:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
 
-        projection = compute_counters_through(store, 1)  # no prior cache exists at all
+        projection = compute_counters_through(store, 1, league_start_gameweek=1)  # no prior cache exists at all
 
         assert projection.computed_through_gameweek == 1
         assert manager_condition_views(projection, 1)["weeks_on_top"].length == 1
@@ -1049,13 +1160,13 @@ class TestAdvanceAndRebuild:
     def test_unreadable_projection_file_rebuilds_silently(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
-        compute_counters_through(store, 1)
+        compute_counters_through(store, 1, league_start_gameweek=1)
 
         path = counters_file("2026-27", "classic", 1)
         path.write_text("not json{{{", encoding="utf-8")
 
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=1)])
-        projection = compute_counters_through(store, 2)  # must not raise
+        projection = compute_counters_through(store, 2, league_start_gameweek=1)  # must not raise
 
         assert manager_condition_views(projection, 1)["weeks_on_top"].length == 2
 
@@ -1065,7 +1176,7 @@ class TestAdvanceAndRebuild:
         store.gameweek_file(2).write_text("not json{{{\n", encoding="utf-8")
         store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=1)])
 
-        projection = rebuild_counters_through(store, 3)  # must not raise
+        projection = rebuild_counters_through(store, 3, league_start_gameweek=1)  # must not raise
         view = manager_condition_views(projection, 1)["weeks_on_top"]
 
         assert view.length == 2
@@ -1085,14 +1196,14 @@ class TestPartitioning:
             old_store.append_rows(gw, [
                 make_history_row(season="2026-27", gameweek=gw, manager_key=1, league_position=1),
             ])
-        old_projection = compute_counters_through(old_store, 3)
+        old_projection = compute_counters_through(old_store, 3, league_start_gameweek=1)
         assert manager_condition_views(old_projection, 1)["weeks_on_top"].length == 3
 
         new_store = LeagueHistoryStore("2027-28", "classic", 1)
         new_store.append_rows(1, [
             make_history_row(season="2027-28", gameweek=1, manager_key=1, league_position=1),
         ])
-        new_projection = compute_counters_through(new_store, 1)
+        new_projection = compute_counters_through(new_store, 1, league_start_gameweek=1)
 
         # If counters leaked across the boundary this would read 4, not 1.
         assert manager_condition_views(new_projection, 1)["weeks_on_top"].length == 1
@@ -1102,7 +1213,7 @@ class TestPartitioning:
         store.append_rows(1, [
             make_history_row(gameweek=1, manager_key=1, fpl_format="draft", league_position=1),
         ])
-        views = manager_condition_views(compute_counters_through(store, 1), 1)
+        views = manager_condition_views(compute_counters_through(store, 1, league_start_gameweek=1), 1)
 
         assert "captain_blank_run" not in views
         assert "hit_run" not in views
@@ -1112,7 +1223,7 @@ class TestPartitioning:
     def test_draft_only_conditions_are_absent_from_a_classic_partition(self):
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
-        views = manager_condition_views(compute_counters_through(store, 1), 1)
+        views = manager_condition_views(compute_counters_through(store, 1, league_start_gameweek=1), 1)
 
         assert "waiver_win_run" not in views
         assert "waiver_burn_run" not in views
@@ -1196,7 +1307,7 @@ class TestPublicViews:
             make_history_row(gameweek=1, manager_key=2, league_position=2),
         ])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
         views = all_condition_views(projection)
 
         assert sorted(views) == [1, 2]
@@ -1207,7 +1318,7 @@ class TestPublicViews:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
         views = manager_condition_views(projection, 1)
 
         # hit_run never extended for this manager -- still present, at zero.
@@ -1219,7 +1330,7 @@ class TestPublicViews:
         store = LeagueHistoryStore("2026-27", "classic", 1)
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
 
-        projection = rebuild_counters_through(store, 1)
+        projection = rebuild_counters_through(store, 1, league_start_gameweek=1)
         views = manager_condition_views(projection, 999)
 
         assert len(views) == len(conditions_for_format("classic"))
@@ -1233,14 +1344,14 @@ class TestPublicViews:
         for gw in (1, 2, 3, 4, 5):
             store.append_rows(gw, [make_history_row(gameweek=gw, manager_key=1, league_position=1)])
 
-        projection = rebuild_counters_through(store, 5)
+        projection = rebuild_counters_through(store, 5, league_start_gameweek=1)
         view = manager_condition_views(projection, 1)["weeks_on_top"]  # min_run == 2
 
         assert view.length == 5
         assert view.excess == 3
         assert view.is_reportable is True
 
-        below_minimum = manager_condition_views(rebuild_counters_through(store, 1), 1)["weeks_on_top"]
+        below_minimum = manager_condition_views(rebuild_counters_through(store, 1, league_start_gameweek=1), 1)["weeks_on_top"]
         assert below_minimum.excess == -1
         assert below_minimum.is_reportable is False
 
@@ -1388,7 +1499,7 @@ class TestSeasonOccurrenceCounts:
                 league_position=1 if gw in top_gameweeks else 2,
             )])
 
-        view = manager_condition_views(rebuild_counters_through(store, 19), 1)["weeks_on_top"]
+        view = manager_condition_views(rebuild_counters_through(store, 19, league_start_gameweek=1), 1)["weeks_on_top"]
 
         assert view.occurrences == 4
         assert view.length == 1
@@ -1400,7 +1511,7 @@ class TestSeasonOccurrenceCounts:
         store.append_rows(1, [make_history_row(gameweek=1, manager_key=1, league_position=1)])
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, league_position=2)])
 
-        view = manager_condition_views(rebuild_counters_through(store, 2), 1)["weeks_on_top"]
+        view = manager_condition_views(rebuild_counters_through(store, 2, league_start_gameweek=1), 1)["weeks_on_top"]
 
         assert view.length == 0
         assert view.start_gameweek is None
@@ -1418,7 +1529,7 @@ class TestSeasonOccurrenceCounts:
         store.append_rows(2, [make_history_row(gameweek=2, manager_key=1, capture_status="unknown")])
         store.append_rows(3, [make_history_row(gameweek=3, manager_key=1, league_position=1)])
 
-        view = manager_condition_views(rebuild_counters_through(store, 3), 1)["weeks_on_top"]
+        view = manager_condition_views(rebuild_counters_through(store, 3, league_start_gameweek=1), 1)["weeks_on_top"]
 
         assert view.occurrences == 2
         assert view.held_total == 1
@@ -1435,7 +1546,7 @@ class TestSeasonOccurrenceCounts:
             gameweek=1, manager_key=1, capture_status="unknown",
         )])
 
-        view = manager_condition_views(rebuild_counters_through(store, 1), 1)["weeks_on_top"]
+        view = manager_condition_views(rebuild_counters_through(store, 1, league_start_gameweek=1), 1)["weeks_on_top"]
 
         assert view.occurrences == 0
         assert view.held_total == 1
@@ -1457,7 +1568,7 @@ class TestSeasonOccurrenceCounts:
                 ),
             ])
 
-        views = manager_condition_views(rebuild_counters_through(store, 4), 2)
+        views = manager_condition_views(rebuild_counters_through(store, 4, league_start_gameweek=1), 2)
 
         assert views["weeks_on_top"].first_evaluated_gameweek == 3
         # A gameweek the manager is wholly absent from is neither judged nor
@@ -1476,9 +1587,9 @@ class TestSeasonOccurrenceCounts:
             )])
 
         for gw in (1, 2, 3):
-            advanced = compute_counters_through(store, gw)
+            advanced = compute_counters_through(store, gw, league_start_gameweek=1)
 
-        assert advanced.runs == rebuild_counters_through(store, 3).runs
+        assert advanced.runs == rebuild_counters_through(store, 3, league_start_gameweek=1).runs
         view = manager_condition_views(advanced, 1)["weeks_on_top"]
         assert view.occurrences == 2
         assert view.length == 1
@@ -1502,7 +1613,7 @@ class TestMultiIterationLoops:
                 for key in (1, 2, 3)
             ])
 
-        projection = rebuild_counters_through(store, 3)
+        projection = rebuild_counters_through(store, 3, league_start_gameweek=1)
 
         assert manager_condition_views(projection, 1)["weeks_on_top"].length == 3
         for key in (2, 3):

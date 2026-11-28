@@ -1622,10 +1622,10 @@ def build_notes_pack(
 
     if phase is SeasonPhase.FINALE:
         read_gameweeks = [gw for gw in captured_gameweeks if gw <= gameweek]
-        projection = rebuild_counters_through(store, gameweek)
+        projection = rebuild_counters_through(store, gameweek, league_start_gameweek=league_start_gameweek)
     else:
         read_gameweeks = list(range(max(1, gameweek - TRAILING_WINDOW_GAMEWEEKS + 1), gameweek + 1))
-        projection = compute_counters_through(store, gameweek)
+        projection = compute_counters_through(store, gameweek, league_start_gameweek=league_start_gameweek)
 
     rows_by_gameweek: dict[int, dict[int, LeagueHistoryRow]] = {}
     for gw in read_gameweeks:
