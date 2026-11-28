@@ -1189,7 +1189,21 @@ class TestUnderstatStatusAnswers:
         _register_routes(understat_response=Response(200, text="<html>error</html>"))
         row = self._row(_run(["--format", "json"]))
         assert row["status"] == "broken"
-        assert "did not return JSON" in row["detail"]
+        assert "did not return a JSON object" in row["detail"]
+
+    @respx.mock
+    def test_a_transport_decode_failure_is_still_unchecked(self, monkeypatch):
+        # httpx raises its own DecodingError on a truncated gzip stream: the
+        # network misbehaving, not the endpoint moving.
+        monkeypatch.delenv("FOOTBALL_DATA_API_KEY", raising=False)
+        _register_routes()
+        respx.get(UNDERSTAT_URL).mock(
+            side_effect=httpx.DecodingError(
+                "truncated gzip", request=httpx.Request("GET", UNDERSTAT_URL)
+            )
+        )
+        row = self._row(_run(["--format", "json"]))
+        assert row["status"] == "unchecked"
 
     @respx.mock
     def test_a_network_failure_is_still_unchecked(self, monkeypatch):

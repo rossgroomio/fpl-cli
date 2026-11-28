@@ -11,6 +11,7 @@ from fpl_cli.api.understat import (
     TEAM_NAME_MAP,
     UNDERSTAT_TEAM_UNMATCHED,
     UnderstatClient,
+    UnderstatNotJSONError,
     _normalise,
     decode_entities,
     match_fpl_to_understat,
@@ -1904,21 +1905,55 @@ class TestNonJsonResponse:
             return_value=httpx.Response(200, text=self.HTML)
         )
         async with UnderstatClient() as client:
-            with pytest.raises(httpx.DecodingError, match="getLeagueData"):
+            with pytest.raises(UnderstatNotJSONError, match="getLeagueData"):
                 await client.get_league_players()
 
     @respx.mock
-    async def test_player_data_reads_as_none(self):
+    @pytest.mark.parametrize("body", ["null", "[]", '"maintenance"'], ids=["null", "list", "string"])
+    async def test_json_that_is_not_an_object_raises_the_same_error(self, body):
+        # Valid JSON of the wrong shape would otherwise crash at `.get()`
+        # with an AttributeError no caller catches.
+        respx.get(url__regex=r"https://understat\.com/getLeagueData/.*").mock(
+            return_value=httpx.Response(200, text=body)
+        )
+        async with UnderstatClient() as client:
+            with pytest.raises(UnderstatNotJSONError, match="not an object"):
+                await client.get_league_players()
+
+    @respx.mock
+    async def test_an_empty_object_still_reads_as_no_players(self, caplog):
+        respx.get(url__regex=r"https://understat\.com/getLeagueData/.*").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        async with UnderstatClient() as client:
+            with caplog.at_level(logging.WARNING):
+                assert await client.get_league_players() == []
+        assert "contains no players" in caplog.text
+
+    @respx.mock
+    async def test_player_data_reads_as_none(self, caplog):
         respx.get("https://understat.com/getPlayerData/1").mock(
             return_value=httpx.Response(200, text=self.HTML)
+        )
+        async with UnderstatClient() as client:
+            with caplog.at_level(logging.WARNING):
+                assert await client.get_player(1) is None
+        assert "getPlayerData/1" in caplog.text
+
+    @respx.mock
+    async def test_a_null_player_body_reads_as_none(self):
+        respx.get("https://understat.com/getPlayerData/1").mock(
+            return_value=httpx.Response(200, text="null")
         )
         async with UnderstatClient() as client:
             assert await client.get_player(1) is None
 
     @respx.mock
-    async def test_team_data_reads_as_none(self):
+    async def test_team_data_reads_as_none(self, caplog):
         respx.get(url__regex=r"https://understat\.com/getTeamData/.*").mock(
             return_value=httpx.Response(200, text=self.HTML)
         )
         async with UnderstatClient() as client:
-            assert await client.get_team("Arsenal", season="2026") is None
+            with caplog.at_level(logging.WARNING):
+                assert await client.get_team("Arsenal", season="2026") is None
+        assert "no Understat xG for Arsenal" in caplog.text
