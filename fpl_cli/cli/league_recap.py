@@ -580,8 +580,10 @@ def league_recap_command(
             if notes_pack is not None:
                 if NoteSurface.REPORT in notes_pack.season_phase_entry.surfaces:
                     collected_data["league_history_phase_text"] = notes_pack.season_phase_entry.text
+                # A streak or count enough of the league shares is one grouped
+                # line after the named ones, not a line per manager (issue #563).
                 collected_data["league_history_streak_lines"] = [
-                    entry.text for entry in notes_pack.entries if NoteSurface.REPORT in entry.surfaces
+                    entry.text for entry in notes_pack.streaks_for(NoteSurface.REPORT)
                 ]
                 # The report's Season Counts section follows each
                 # condition's own CountSurfacePolicy in the registry
@@ -594,9 +596,7 @@ def league_recap_command(
                 # rhythm as the printed fines table. The whole set reaches
                 # `--format json` regardless.
                 collected_data["league_history_season_count_lines"] = [
-                    entry.text
-                    for entry in notes_pack.season_count_entries
-                    if NoteSurface.REPORT in entry.surfaces
+                    entry.text for entry in notes_pack.season_counts_for(NoteSurface.REPORT)
                 ]
                 # The milestone report's highs and lows tables (issue #496),
                 # beside the Season Counts set-piece: every manager's own
@@ -1217,6 +1217,7 @@ def _serialize_notes_pack_entry(entry: NotesPackEntry) -> dict[str, Any]:
             {"manager_key": h.manager_key, "manager_name": h.manager_name, "gameweek": h.gameweek}
             for h in entry.previous_holders
         ],
+        "group_manager_keys": list(entry.group_manager_keys),
     }
 
 
@@ -1238,6 +1239,11 @@ def _serialize_notes_pack(pack: NotesPack) -> dict[str, Any]:
         "season_count_entries": [
             _serialize_notes_pack_entry(entry) for entry in pack.season_count_entries
         ],
+        # The grouped lines the report and editorial show in place of a
+        # streak or count enough of the league shares (issue #563). Each
+        # manager's own entry stays above, with no surfaces.
+        "streak_groups": [_serialize_notes_pack_entry(entry) for entry in pack.streak_groups],
+        "season_count_groups": [_serialize_notes_pack_entry(entry) for entry in pack.season_count_groups],
         "season_record_entries": [
             _serialize_notes_pack_entry(entry) for entry in pack.season_record_entries
         ],
@@ -1508,11 +1514,17 @@ def _render_console_highlights(
 
     # Streaks (R12, KTD8): only the leaders, so the console stays a
     # highlights view -- the report carries the full report-surfaced set.
+    # A grouped line (issue #563) always keeps its place: it is one line
+    # standing for a large share of the league, so the named leaders fill
+    # the slots it leaves, and it never drops off behind five of them.
     if notes_pack is not None:
-        console_entries = [e for e in notes_pack.entries if NoteSurface.CONSOLE in e.surfaces]
-        if console_entries:
+        console_entries = notes_pack.streaks_for(NoteSurface.CONSOLE)
+        groups = [entry for entry in console_entries if entry.group_manager_keys]
+        named = [entry for entry in console_entries if not entry.group_manager_keys]
+        shown = [*named[:max(_CONSOLE_STREAK_LIMIT - len(groups), 0)], *groups][:_CONSOLE_STREAK_LIMIT]
+        if shown:
             console.print("\n[bold]Streaks:[/bold]")
-            for entry in console_entries[:_CONSOLE_STREAK_LIMIT]:
+            for entry in shown:
                 console.print(f"  {entry.text}")
 
 

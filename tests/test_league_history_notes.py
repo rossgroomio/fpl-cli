@@ -17,6 +17,7 @@ from fpl_cli.models.league_history import (
 from fpl_cli.season import CHIP_SPLIT_GW
 from fpl_cli.services.league_history import LeagueHistoryStore
 from fpl_cli.services.league_history_notes import (
+    GROUPED_LINE_MIN_MANAGERS,
     PERSONAL_RECORD_MIN_GAMEWEEKS,
     GameweekWindow,
     NoteKind,
@@ -24,10 +25,12 @@ from fpl_cli.services.league_history_notes import (
     PersonalRecordRow,
     RecordHolder,
     SeasonPhase,
+    _season_count_group_text,
     _season_count_text,
     _streak_text,
     build_notes_pack,
     derive_season_phase,
+    grouped_line_threshold,
     is_season_milestone,
 )
 from tests.conftest import make_history_row
@@ -1073,6 +1076,320 @@ class TestSeasonCountEntries:
         pack = build_notes_pack(store, 2)
 
         assert not any(e.manager_name == "Alice" for e in pack.season_count_entries)
+
+
+# ---------------------------------------------------------------------------
+# Grouped lines (issue #563)
+# ---------------------------------------------------------------------------
+
+
+def _blanks_league(
+    managers: int,
+    through: int,
+    blanks: dict[int, set[int]],
+    *,
+    unrecorded: dict[int, set[int]] | None = None,
+    absent: dict[int, set[int]] | None = None,
+) -> LeagueHistoryStore:
+    """A classic league of `managers` (M01, M02, ...) through GW`through`.
+
+    Each manager's captain blanks in the gameweeks `blanks` names for them
+    and scores well in every other, except a gameweek `unrecorded` names,
+    which records no captain at all and so holds, and one `absent` names,
+    where the manager has no row at all. No row carries a position or a
+    score, so every other condition holds and only the captain-blank streak
+    and count say anything.
+    """
+    unrecorded = unrecorded or {}
+    absent = absent or {}
+    store = LeagueHistoryStore("2026-27", "classic", 1)
+    for gw in range(1, through + 1):
+        store.append_rows(gw, [
+            make_history_row(
+                gameweek=gw, manager_key=key, manager_name=f"M{key:02d}",
+                captain=(
+                    None if gw in unrecorded.get(key, set())
+                    else _captain(1 if gw in blanks.get(key, set()) else 12)
+                ),
+            )
+            for key in range(1, managers + 1)
+            if gw not in absent.get(key, set())
+        ])
+    return store
+
+
+def _report_lines(entries) -> list[str]:
+    return [entry.text for entry in entries]
+
+
+class TestGroupedLines:
+    """Issue #563: a streak or count enough of the league shares is one
+    line, not one per manager -- and a manager who stands apart keeps
+    theirs."""
+
+    @pytest.mark.parametrize(("cohort", "threshold"), [(4, 5), (15, 5), (16, 6), (19, 7), (30, 10)])
+    def test_the_threshold_is_a_third_of_the_league_and_never_below_the_floor(self, cohort, threshold):
+        assert GROUPED_LINE_MIN_MANAGERS == 5
+        assert grouped_line_threshold(cohort) == threshold
+
+    def test_a_shared_streak_is_one_line_beside_the_run_that_stands_apart(self):
+        """The issue's league: a template captain blanks GW9 and GW10, so
+        sixteen of nineteen managers open the same run together. One of
+        them was already blanking in GW8, and that 3 is the story."""
+        blanks = {key: {9, 10} for key in range(1, 17)}
+        blanks[17] = {8, 9, 10}
+        pack = build_notes_pack(_blanks_league(19, 10, blanks), 10)
+
+        assert _report_lines(pack.streaks_for(NoteSurface.REPORT)) == [
+            "M17: 3 captain blanks in a row (GW8-GW10).",
+            "16 of 19 managers: 2 captain blanks in a row (GW9-GW10).",
+        ]
+        [group] = pack.streak_groups
+        assert group.kind is NoteKind.STREAK_GROUP
+        assert group.manager_key is None
+        assert group.group_manager_keys == tuple(range(1, 17))
+        assert group.window == GameweekWindow(start_gameweek=9, end_gameweek=10)
+        assert (group.length, group.excess) == (2, 0)
+        assert group.surfaces == frozenset({NoteSurface.CONSOLE, NoteSurface.REPORT, NoteSurface.PROMPT})
+        assert group.text_for(NoteSurface.PROMPT) == (
+            "16 of 19 managers each have 2 captain blanks in a row (GW9-GW10)."
+        )
+
+    def test_each_grouped_manager_keeps_their_own_entry_with_no_surfaces(self):
+        """`--format json` carries every manager's fact: grouping changes
+        where a line renders, never which facts the pack holds."""
+        blanks = {key: {9, 10} for key in range(1, 17)}
+        pack = build_notes_pack(_blanks_league(19, 10, blanks), 10)
+
+        member = next(e for e in pack.entries if e.manager_name == "M01")
+        assert member.text == "M01: 2 captain blanks in a row (GW9-GW10)."
+        assert member.surfaces == frozenset()
+        assert len(pack.entries) == 16
+        assert pack.streaks_for(NoteSurface.CONSOLE) == pack.streak_groups
+
+    def test_shared_counts_name_who_fired_and_group_the_ride_alongs(self):
+        """The issue's Season Counts: two managers reach their fifth captain
+        blank, and fifteen more blanking the same week ride along on 3 or
+        4. The two who fired are why the condition surfaced at all."""
+        blanks = {key: {3, 5, 10} for key in range(1, 9)}  # 3 each
+        blanks.update({key: {3, 5, 7, 10} for key in range(9, 16)})  # 4 each
+        blanks.update({key: {2, 4, 6, 8, 10} for key in (16, 17)})  # 5 each
+        pack = build_notes_pack(_blanks_league(19, 10, blanks), 10)
+
+        assert _report_lines(pack.season_counts_for(NoteSurface.REPORT)) == [
+            "M16: 5 captain blanks this season (GW1-GW10), the latest this gameweek.",
+            "M17: 5 captain blanks this season (GW1-GW10), the latest this gameweek.",
+            "15 of 19 managers: 3 or 4 captain blanks this season (GW1-GW10), the latest this gameweek.",
+        ]
+        [group] = pack.season_count_groups
+        assert group.kind is NoteKind.SEASON_COUNT_GROUP
+        assert group.group_manager_keys == tuple(sorted(range(1, 16), key=lambda key: (-len(blanks[key]), key)))
+        assert group.occurrences is None
+        assert group.surfaces == frozenset({NoteSurface.REPORT, NoteSurface.PROMPT})
+        assert group.text_for(NoteSurface.PROMPT) == (
+            "15 of 19 managers each have 3 or 4 captain blanks this season, the latest this gameweek (GW1-GW10)."
+        )
+        assert sum(1 for e in pack.season_count_entries if e.condition_key == "captain_blank_run") == 17
+
+    @pytest.mark.parametrize(("managers", "sharing", "grouped"), [
+        (19, 4, False),
+        (19, 6, False),
+        (19, 7, True),
+        (6, 4, False),
+        (6, 5, True),
+    ])
+    def test_a_streak_only_a_few_managers_share_renders_as_it_does_now(self, managers, sharing, grouped):
+        blanks = {key: {9, 10} for key in range(1, sharing + 1)}
+        pack = build_notes_pack(_blanks_league(managers, 10, blanks), 10)
+        lines = _report_lines(pack.streaks_for(NoteSurface.REPORT))
+
+        if grouped:
+            assert lines == [f"{sharing} of {managers} managers: 2 captain blanks in a row (GW9-GW10)."]
+        else:
+            assert lines == [f"M{key:02d}: 2 captain blanks in a row (GW9-GW10)." for key in range(1, sharing + 1)]
+            assert pack.streak_groups == []
+
+    def test_a_run_crossing_an_unrecorded_gameweek_stands_apart_from_the_pack(self):
+        """Lines that differ in anything but the name are different facts:
+        a run of 2 across a gameweek with no captain recorded is "in the
+        last 3", not "in a row", and keeps its own line."""
+        blanks = {key: {9, 10} for key in range(1, 11)}
+        blanks[11] = {8, 10}
+        pack = build_notes_pack(_blanks_league(19, 10, blanks, unrecorded={11: {9}}), 10)
+
+        assert _report_lines(pack.streaks_for(NoteSurface.REPORT)) == [
+            "M11: 2 captain blanks in the last 3 (GW8-GW10), with 1 not recorded.",
+            "10 of 19 managers: 2 captain blanks in a row (GW9-GW10).",
+        ]
+
+    def test_a_grouped_run_crossing_an_unrecorded_gameweek_says_each_of_them(self):
+        """Review of #563: "with 1 not recorded" after a count of managers
+        read as one gameweek across the group. A run that crossed an
+        unknown row and one that crossed a gameweek its manager was absent
+        from read alike, so they share the line."""
+        blanks = {key: {8, 10} for key in range(1, 9)}
+        store = _blanks_league(
+            19, 10, blanks,
+            unrecorded={key: {9} for key in range(1, 5)},
+            absent={key: {9} for key in range(5, 9)},
+        )
+        pack = build_notes_pack(store, 10)
+
+        assert _report_lines(pack.streaks_for(NoteSurface.REPORT)) == [
+            "8 of 19 managers: 2 captain blanks in the last 3 (GW8-GW10), each with 1 not recorded.",
+        ]
+        [group] = pack.streak_groups
+        assert group.held_count == 1
+        assert group.text_for(NoteSurface.PROMPT) == (
+            "8 of 19 managers each have 2 captain blanks in the last 3 (GW8-GW10). "
+            "Of the rest, 1 was not recorded, for each of them."
+        )
+
+    def test_a_grouped_draft_run_names_its_gameweek_with_nothing_to_judge(self):
+        """The trailing clause names an inapplicable gameweek in the
+        condition's own words, for each manager in the group."""
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        for gw in range(1, 5):
+            store.append_rows(gw, [
+                make_history_row(
+                    fpl_format="draft", gameweek=gw, manager_key=key, manager_name=f"M{key:02d}",
+                    transactions=[] if gw == 3 else [_transaction(5)],
+                )
+                for key in range(1, 7)
+            ])
+        pack = build_notes_pack(store, 4)
+
+        assert _report_lines(pack.streaks_for(NoteSurface.REPORT)) == [
+            "All 6 managers: 3 waiver hauls in the last 4 (GW1-GW4), each with no completed moves in 1.",
+        ]
+        assert pack.streak_groups[0].text_for(NoteSurface.PROMPT) == (
+            "All 6 managers each have 3 waiver hauls in the last 4 (GW1-GW4). "
+            "Of the rest, 1 had no completed moves, for each of them."
+        )
+
+    def test_the_whole_league_sharing_a_line_reads_as_all_of_it(self):
+        pack = build_notes_pack(_blanks_league(6, 10, {key: {9, 10} for key in range(1, 7)}), 10)
+
+        assert _report_lines(pack.streaks_for(NoteSurface.REPORT)) == [
+            "All 6 managers: 2 captain blanks in a row (GW9-GW10).",
+        ]
+
+    def test_a_run_below_its_minimum_never_joins_a_group(self):
+        """A single blank is below the streak's minimum, so a league-wide
+        one-off blank says nothing on any surface, grouped or not."""
+        pack = build_notes_pack(_blanks_league(19, 10, {key: {10} for key in range(1, 20)}), 10)
+
+        assert pack.streaks_for(NoteSurface.REPORT) == []
+        assert pack.streak_groups == []
+
+    def test_a_ride_along_group_states_the_unjudged_gameweeks_its_managers_share(self):
+        """Every manager in a grouped line shares its span and unjudged
+        count, so the qualifier is stated once for each of them. One whose
+        unjudged count differs keeps their own line with their own."""
+        blanks = {key: {3, 5, 10} for key in range(1, 9)}
+        blanks.update({key: {3, 5, 7, 10} for key in range(9, 16)})
+        blanks.update({key: {2, 4, 6, 8, 10} for key in (16, 17)})
+        unrecorded = {key: {1} for key in range(1, 20)}
+        unrecorded[1] = {1, 2}
+        pack = build_notes_pack(_blanks_league(19, 10, blanks, unrecorded=unrecorded), 10)
+
+        lines = _report_lines(pack.season_counts_for(NoteSurface.REPORT))
+        assert lines == [
+            "M16: 5 captain blanks this season (GW1-GW10), the latest this gameweek, "
+            "with 1 gameweek not judged either way.",
+            "M17: 5 captain blanks this season (GW1-GW10), the latest this gameweek, "
+            "with 1 gameweek not judged either way.",
+            "M01: 3 captain blanks this season (GW1-GW10), the latest this gameweek, "
+            "with 2 gameweeks not judged either way.",
+            "14 of 19 managers: 3 or 4 captain blanks this season (GW1-GW10), the latest this gameweek, "
+            "each with 1 gameweek not judged either way.",
+        ]
+        assert pack.season_count_groups[0].text_for(NoteSurface.PROMPT) == (
+            "14 of 19 managers each have 3 or 4 captain blanks this season, the latest this gameweek "
+            "(GW1-GW10; 1 gameweek could not be judged for each)."
+        )
+
+    def test_managers_who_fired_on_the_same_total_group_apart_from_the_ride_alongs(self):
+        blanks = {key: {2, 4, 6, 8, 10} for key in range(1, 8)}  # 5 each, firing
+        blanks.update({key: {3, 5, 10} for key in range(8, 12)})  # 3 each
+        blanks.update({key: {3, 5, 7, 10} for key in range(12, 16)})  # 4 each
+        pack = build_notes_pack(_blanks_league(19, 10, blanks), 10)
+
+        assert _report_lines(pack.season_counts_for(NoteSurface.REPORT)) == [
+            "7 of 19 managers: 5 captain blanks this season (GW1-GW10), the latest this gameweek.",
+            "8 of 19 managers: 3 or 4 captain blanks this season (GW1-GW10), the latest this gameweek.",
+        ]
+        fired = pack.season_count_groups[0]
+        assert (fired.occurrences, fired.group_manager_keys) == (5, tuple(range(1, 8)))
+        assert fired.text_for(NoteSurface.PROMPT) == (
+            "7 of 19 managers each have 5 captain blanks this season, the latest this gameweek (GW1-GW10)."
+        )
+
+    def test_managers_on_the_same_total_group_whatever_their_runs(self):
+        """Review of #563: a plain count's line never states the run, so
+        eight managers on exactly 5 read alike, four ending on a run of 2
+        and four on a run of 1, and are one line rather than eight."""
+        blanks = {key: {2, 4, 6, 9, 10} for key in range(1, 5)}
+        blanks.update({key: {2, 4, 6, 8, 10} for key in range(5, 9)})
+        pack = build_notes_pack(_blanks_league(19, 10, blanks), 10)
+
+        assert _report_lines(pack.season_counts_for(NoteSurface.REPORT)) == [
+            "8 of 19 managers: 5 captain blanks this season (GW1-GW10), the latest this gameweek.",
+        ]
+        [group] = pack.season_count_groups
+        assert (group.occurrences, group.length) == (5, 0)
+
+    def test_a_shared_drought_groups_on_the_run_it_fired_on(self):
+        """A count framed on its run groups too, on the run and the total
+        it states: a table that never moved leaves eighteen managers five
+        gameweeks without a green arrow at once. The leader holds, with
+        nowhere to climb."""
+        store = LeagueHistoryStore("2026-27", "classic", 1)
+        for gw in range(1, 7):
+            store.append_rows(gw, [
+                make_history_row(gameweek=gw, manager_key=key, manager_name=f"M{key:02d}", league_position=key)
+                for key in range(1, 20)
+            ])
+        pack = build_notes_pack(store, 6)
+
+        [group] = [g for g in pack.season_count_groups if g.condition_key == "green_arrow_drought"]
+        assert group.text == (
+            "18 of 19 managers: 5 gameweeks without a green arrow in a row, 5 this season (GW1-GW6)."
+        )
+        assert group.text_for(NoteSurface.PROMPT) == (
+            "18 of 19 managers each have 5 gameweeks without a green arrow in a row, and 5 this season (GW1-GW6)."
+        )
+        assert group.length == 5
+
+    def test_the_milestone_season_counts_stay_exhaustive_while_streaks_group(self):
+        """The GW19 and finale Season Counts set-piece names every manager
+        on purpose, so it never groups. A streak is no set-piece, and groups
+        there as on any other week."""
+        blanks = {key: {18, 19} for key in range(1, 17)}
+        pack = build_notes_pack(_blanks_league(19, 19, blanks), 19)
+
+        assert _report_lines(pack.streaks_for(NoteSurface.REPORT)) == [
+            "16 of 19 managers: 2 captain blanks in a row (GW18-GW19).",
+        ]
+        assert pack.season_count_groups == []
+        assert len(pack.season_counts_for(NoteSurface.REPORT)) == 16
+
+    @pytest.mark.parametrize(("totals", "figure"), [
+        ([3, 3], "3 captain blanks"),
+        ([4, 3, 3], "3 or 4 captain blanks"),
+        ([3, 7, 4], "3 to 7 captain blanks"),
+    ])
+    def test_a_ride_along_group_states_the_range_of_its_totals(self, totals, figure):
+        window = GameweekWindow(start_gameweek=1, end_gameweek=10)
+        text = _season_count_group_text("5 of 19 managers", "captain blank", "captain blanks", totals, 0, window)
+
+        assert text == f"5 of 19 managers: {figure} this season (GW1-GW10), the latest this gameweek."
+
+    def test_a_ride_along_group_all_on_one_reads_as_their_first(self):
+        window = GameweekWindow(start_gameweek=1, end_gameweek=10)
+        text = _season_count_group_text("5 of 19 managers", "captain blank", "captain blanks", [1, 1], 0, window)
+
+        assert text == "5 of 19 managers: 1 captain blank this season (GW1-GW10), the first this gameweek."
 
 
 # ---------------------------------------------------------------------------

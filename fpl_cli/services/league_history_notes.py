@@ -45,8 +45,10 @@ optimise for, appropriate for something that happens once a season.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass, field, replace
 from enum import Enum
+from fractions import Fraction
 from functools import partial
 from pathlib import Path
 
@@ -98,6 +100,36 @@ TRAILING_WINDOW_GAMEWEEKS: int = 6
 # about two managers in N a week at their Nth gameweek, best and worst
 # together.
 PERSONAL_RECORD_MIN_GAMEWEEKS: int = 10
+
+# When enough of the league shares one Streaks or Season Counts line, those
+# managers collapse into a single grouped line (issue #563): "16 of 19
+# managers: 2 captain blanks in a row (GW9-GW10)." Every surfacing rule is
+# judged one manager at a time, so a template captain blanking two weeks
+# running put the same streak on 16 managers' lines at once, and 15 more
+# rode along into Season Counts -- 35 lines saying one thing. A third of the
+# league rather than half, because the other flood the issue names, the
+# bottom half near a milestone, is under half the league by definition: one
+# manager reaching it can carry up to eight peers in a league of nineteen,
+# and half would never group them. The floor keeps a small league's lines as
+# they are, names and all: five near-identical lines is where a reader
+# starts skimming, and fewer is a few managers, not the league.
+GROUPED_LINE_MIN_MANAGERS: int = 5
+GROUPED_LINE_LEAGUE_SHARE: Fraction = Fraction(1, 3)
+
+
+def grouped_line_threshold(cohort_size: int) -> int:
+    """How many managers must share one line before they are grouped
+    (issue #563): a third of this gameweek's league, and never fewer than
+    `GROUPED_LINE_MIN_MANAGERS`."""
+    return max(GROUPED_LINE_MIN_MANAGERS, math.ceil(cohort_size * GROUPED_LINE_LEAGUE_SHARE))
+
+
+def _group_subject(members: int, cohort_size: int) -> str:
+    """What a grouped line opens with in place of a name: "16 of 19
+    managers", or "All 6 managers" where the line is the whole league's."""
+    if members == cohort_size:
+        return f"All {cohort_size} managers"
+    return f"{members} of {cohort_size} managers"
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +230,11 @@ class NoteKind(str, Enum):
     """
 
     STREAK = "streak"
+    # One line standing for every manager who shares a streak (issue #563).
+    STREAK_GROUP = "streak_group"
     SEASON_COUNT = "season_count"
+    # One line standing for every manager who shares a season-count line.
+    SEASON_COUNT_GROUP = "season_count_group"
     SEASON_RECORD = "season_record"
     PERSONAL_RECORD = "personal_record"
     SEASON_PHASE = "season_phase"
@@ -363,6 +399,10 @@ class NotesPackEntry:
     # points`) or the one beaten. None and empty otherwise.
     previous_points: int | None = None
     previous_holders: tuple[RecordHolder, ...] = ()
+    # Grouped entries only (issue #563): every manager the line stands for,
+    # whose own entries stay in the pack with no surfaces. Empty for every
+    # other entry, and `manager_key` is None on a grouped one.
+    group_manager_keys: tuple[int, ...] = ()
 
     def text_for(self, surface: NoteSurface) -> str:
         """The line this entry renders as on `surface`."""
@@ -393,7 +433,14 @@ class NotesPack:
     or equalled one with enough of their season behind them (see
     `_personal_record_entries`), and `personal_record_tables` ranks every
     manager's two records at the two milestones, empty on every other week.
-    `season_phase_entry` and `coverage_entries` are always
+    `streak_groups` and `season_count_groups` hold the grouped lines
+    (issue #563): where enough of the league shares one streak or one
+    season-count line (`grouped_line_threshold`), one entry states it for
+    all of them and their own entries in `entries` and
+    `season_count_entries` keep no surfaces, so every per-manager fact still
+    reaches `--format json`. Read a surface's lines through `streaks_for()`
+    and `season_counts_for()`, which put the grouped lines after the named
+    ones. `season_phase_entry` and `coverage_entries` are always
     populated -- never absent, never merely implied by an empty `entries`
     list -- as their own dedicated fields: a pack with no open streaks
     still has something to say about where the season is and what history
@@ -416,22 +463,41 @@ class NotesPack:
     # not entries of their own, so `all_entries` leaves them out.
     personal_record_tables: tuple[PersonalRecordTable, ...] = ()
     coverage_entries: list[NotesPackEntry] = field(default_factory=list)
+    streak_groups: list[NotesPackEntry] = field(default_factory=list)
+    season_count_groups: list[NotesPackEntry] = field(default_factory=list)
 
     @property
     def entry_count(self) -> int:
         """Count of streak entries -- zero for a partition with no open runs
         at all, independent of the season-phase marker and coverage
-        statements, which are always present regardless."""
+        statements, which are always present regardless. One per manager per
+        open run: a grouped line is not a run of its own."""
         return len(self.entries)
+
+    def streaks_for(self, surface: NoteSurface) -> list[NotesPackEntry]:
+        """The streak lines `surface` shows: each named manager's, leaders
+        first, then the grouped lines (issue #563)."""
+        return [entry for entry in (*self.entries, *self.streak_groups) if surface in entry.surfaces]
+
+    def season_counts_for(self, surface: NoteSurface) -> list[NotesPackEntry]:
+        """The season-count lines `surface` shows: each named manager's,
+        highest first, then the grouped lines (issue #563)."""
+        return [
+            entry for entry in (*self.season_count_entries, *self.season_count_groups)
+            if surface in entry.surfaces
+        ]
 
     @property
     def all_entries(self) -> list[NotesPackEntry]:
-        """Every entry the pack holds -- streaks, then season counts, then
-        season records, then personal records, then the season-phase marker,
-        then coverage statements -- flattened into one list."""
+        """Every entry the pack holds -- streaks, then grouped streaks, then
+        season counts, then grouped season counts, then season records, then
+        personal records, then the season-phase marker, then coverage
+        statements -- flattened into one list."""
         return [
             *self.entries,
+            *self.streak_groups,
             *self.season_count_entries,
+            *self.season_count_groups,
             *self.season_record_entries,
             *self.personal_record_entries,
             self.season_phase_entry,
@@ -476,6 +542,7 @@ def _streak_text(
     inapplicable_count: int = 0,
     inapplicable_label: str | None = None,
     for_prompt: bool = False,
+    group: bool = False,
 ) -> str:
     """Render a run as an observed count over its true span. Built on the
     condition's `count_label_one`/`count_label_many` (issue #188), not its
@@ -516,13 +583,22 @@ def _streak_text(
     ("Bob has 3 waiver hauls in the last 4 (GW3-GW6). Of the rest, 1 had no
     completed moves.") rather than the ledger line. "Of the rest" places
     the gaps outside the run and apart from each other without stating a
-    remainder, which would be a figure the ledger line does not carry."""
+    remainder, which would be a figure the ledger line does not carry.
+
+    `group` renders a grouped line (issue #563), with `manager_name` the
+    count it stands for ("16 of 19 managers"). Both renderings say the run
+    and its trailing clause are each manager's -- "each have", "each with",
+    "for each of them" -- so neither reads as one run the managers share, or
+    one unrecorded gameweek across all of them."""
     span = window.label
     count_label = count_label_one if length == 1 else count_label_many
-    lead = f"{manager_name} has" if for_prompt else f"{manager_name}:"
+    if not for_prompt:
+        lead = f"{manager_name}:"
+    else:
+        lead = f"{manager_name} each have" if group else f"{manager_name} has"
     if window.span_length == length:
         return f"{lead} {length} {count_label} in a row ({span})."
-    not_recorded = max(held_count, window.span_length - length - inapplicable_count)
+    not_recorded = _streak_not_recorded(length, window, held_count, inapplicable_count)
     clauses: list[str] = []
     if not_recorded:
         clauses.append(
@@ -541,8 +617,21 @@ def _streak_text(
         )
     text = f"{lead} {length} {count_label} in the last {window.span_length} ({span})"
     if clauses:
-        text += (". Of the rest, " if for_prompt else ", with ") + " and ".join(clauses)
+        if for_prompt:
+            text += ". Of the rest, " + " and ".join(clauses) + (", for each of them" if group else "")
+        else:
+            text += (", each with " if group else ", with ") + " and ".join(clauses)
     return text + "."
+
+
+def _streak_not_recorded(length: int, window: GameweekWindow, held_count: int, inapplicable_count: int) -> int:
+    """How many gameweeks of a run's window its line states as not recorded:
+    every gameweek that neither extended the run nor had nothing to judge,
+    and never fewer than the fold's own held count (see `_streak_text`).
+    Zero for a run that fills its window, which reads "in a row"."""
+    if window.span_length == length:
+        return 0
+    return max(held_count, window.span_length - length - inapplicable_count)
 
 
 def _streak_entries(
@@ -551,8 +640,10 @@ def _streak_entries(
     cohort: dict[int, LeagueHistoryRow],
     projection: LeagueHistoryCountersProjection,
     rows_by_gameweek: dict[int, dict[int, LeagueHistoryRow]],
-) -> list[NotesPackEntry]:
-    """One entry per manager x applicable condition with an open run.
+) -> tuple[list[NotesPackEntry], list[NotesPackEntry]]:
+    """One entry per manager x applicable condition with an open run, and
+    the grouped lines standing in for any streak enough of the league shares
+    (see `_group_streak_entries`).
 
     Restricted to `cohort` -- the managers present in the gameweek this pack
     is built for -- rather than every manager key `projection` has ever
@@ -565,7 +656,7 @@ def _streak_entries(
     per `_fold_gameweek`'s docstring), and surfacing that as a live fact in a
     much later gameweek's pack would misrepresent it as current.
     """
-    entries: list[NotesPackEntry] = []
+    built: list[tuple[NotesPackEntry, ConditionRunView]] = []
     for manager_key, manager_row in cohort.items():
         views = manager_condition_views(projection, manager_key)
         for condition_key, view in views.items():
@@ -591,7 +682,7 @@ def _streak_entries(
                 inapplicable_count=view.inapplicable_in_run,
                 inapplicable_label=view.inapplicable_label,
             )
-            entries.append(NotesPackEntry(
+            built.append((NotesPackEntry(
                 kind=NoteKind.STREAK,
                 text=render(),
                 surfaces=surfaces,
@@ -605,14 +696,89 @@ def _streak_entries(
                 inapplicable_count=view.inapplicable_in_run,
                 excess=view.excess,
                 prompt_text=render(for_prompt=True),
-            ))
+            ), view))
 
-    def _sort_key(entry: NotesPackEntry) -> tuple[int, str, str]:
+    def _sort_key(item: tuple[NotesPackEntry, ConditionRunView]) -> tuple[int, str, str]:
+        entry = item[0]
         excess = entry.excess if entry.excess is not None else 0
         return (-excess, entry.manager_name or "", entry.condition_key or "")
 
-    entries.sort(key=_sort_key)
-    return entries
+    built.sort(key=_sort_key)
+    return _group_streak_entries(built, cohort_size=len(cohort))
+
+
+def _group_streak_entries(
+    built: list[tuple[NotesPackEntry, ConditionRunView]], *, cohort_size: int,
+) -> tuple[list[NotesPackEntry], list[NotesPackEntry]]:
+    """Collapse a streak enough of the league shares into one grouped line
+    (issue #563), and return every entry beside the grouped lines.
+
+    Two managers share a streak when their lines differ in nothing but the
+    name: the same condition, run length and span, and the same count of
+    gameweeks not recorded and inapplicable inside it. "Not recorded" is
+    keyed as the line states it, so a run that crossed an unknown row and
+    one that crossed a gameweek its manager was absent from read alike and
+    group alike. Once `grouped_line_threshold` managers
+    share one, a single line states it for all of them -- "16 of 19
+    managers: 2 captain blanks in a row (GW9-GW10)." -- and their own
+    entries keep no surfaces, so `--format json` still carries every one.
+    A manager whose run stands apart from the pack, the one on 3 in a row
+    beside sixteen on 2, keeps their own line: that is the story the pack
+    was burying. Only surfaced runs group, so a run below its condition's
+    minimum never joins a line it would not have reached on its own.
+    """
+    threshold = grouped_line_threshold(cohort_size)
+    shapes: dict[
+        tuple[str, int, GameweekWindow | None, int, int], list[tuple[NotesPackEntry, ConditionRunView]],
+    ] = {}
+    for entry, view in built:
+        if entry.surfaces and entry.window is not None:
+            not_recorded = _streak_not_recorded(view.length, entry.window, view.held_in_run, view.inapplicable_in_run)
+            shape = (view.condition_key, view.length, entry.window, not_recorded, view.inapplicable_in_run)
+            shapes.setdefault(shape, []).append((entry, view))
+
+    groups: list[NotesPackEntry] = []
+    grouped: set[tuple[int | None, str | None]] = set()
+    for (_, _, window, not_recorded, _), members in shapes.items():
+        if len(members) < threshold or window is None:
+            continue
+        first, view = members[0]
+        render = partial(
+            _streak_text,
+            _group_subject(len(members), cohort_size),
+            view.count_label_one,
+            view.count_label_many,
+            view.length,
+            window,
+            held_count=not_recorded,
+            inapplicable_count=view.inapplicable_in_run,
+            inapplicable_label=view.inapplicable_label,
+            group=True,
+        )
+        groups.append(NotesPackEntry(
+            kind=NoteKind.STREAK_GROUP,
+            text=render(),
+            prompt_text=render(for_prompt=True),
+            surfaces=first.surfaces,
+            tier=weakest_tier(entry.tier for entry, _ in members if entry.tier is not None),
+            window=window,
+            condition_key=view.condition_key,
+            length=view.length,
+            # What each member's line states as not recorded: their held
+            # counts can differ where one was absent rather than unknown.
+            held_count=not_recorded,
+            inapplicable_count=view.inapplicable_in_run,
+            excess=view.excess,
+            group_manager_keys=tuple(entry.manager_key for entry, _ in members if entry.manager_key is not None),
+        ))
+        grouped.update((entry.manager_key, entry.condition_key) for entry, _ in members)
+
+    entries = [
+        replace(entry, surfaces=frozenset()) if (entry.manager_key, entry.condition_key) in grouped else entry
+        for entry, _ in built
+    ]
+    groups.sort(key=lambda group: (-(group.excess or 0), group.condition_key or ""))
+    return entries, groups
 
 
 # ---------------------------------------------------------------------------
@@ -633,6 +799,7 @@ def _season_count_text(
     run_held: int = 0,
     run_framed: bool = False,
     for_prompt: bool = False,
+    group: bool = False,
 ) -> str:
     """Render a season total as a count over the span it was computed on.
 
@@ -665,6 +832,11 @@ def _season_count_text(
     ledger line (issue #452), with the same figures and the same qualifier:
     "Bob has 4 gameweek wins this season, the latest this gameweek (GW1-GW6;
     1 gameweek could not be judged)".
+
+    `group` renders a grouped line (issue #563) for managers whose lines
+    are identical but for the name, with `manager_name` the count it stands
+    for ("7 of 19 managers"): the unjudged qualifier applies to each of
+    them, and the prompt's sentence says each has the count.
     """
     label = label_one if occurrences == 1 else label_many
     span = window.label
@@ -672,7 +844,7 @@ def _season_count_text(
         return _season_count_prompt_text(
             manager_name, label_one, label_many, occurrences, held_total, span,
             occurred_this_gameweek=occurred_this_gameweek,
-            run_length=run_length, run_held=run_held, run_framed=run_framed,
+            run_length=run_length, run_held=run_held, run_framed=run_framed, group=group,
         )
 
     if run_framed and run_length > 0:
@@ -689,7 +861,7 @@ def _season_count_text(
 
     if held_total:
         plural = "" if held_total == 1 else "s"
-        text += f", with {held_total} gameweek{plural} not judged either way"
+        text += f", {'each ' if group else ''}with {held_total} gameweek{plural} not judged either way"
     return text + "."
 
 
@@ -705,6 +877,7 @@ def _season_count_prompt_text(
     run_length: int,
     run_held: int,
     run_framed: bool,
+    group: bool = False,
 ) -> str:
     """`_season_count_text`'s line as a sentence for the editorial prompt.
 
@@ -718,16 +891,61 @@ def _season_count_prompt_text(
     bracket = span
     if held_total:
         bracket += f"; {held_total} {_gameweek_noun(held_total)} could not be judged"
+        if group:
+            bracket += " for each"
+    lead = f"{manager_name} each have" if group else f"{manager_name} has"
 
     if run_framed and run_length > 0:
         run_label = label_one if run_length == 1 else label_many
         shape = "in a row" if run_held == 0 else "in their current run"
-        return f"{manager_name} has {run_length} {run_label} {shape}, and {occurrences} this season ({bracket})."
+        return f"{lead} {run_length} {run_label} {shape}, and {occurrences} this season ({bracket})."
     if not occurred_this_gameweek:
-        return f"{manager_name} has {occurrences} {label} this season ({bracket})."
+        return f"{lead} {occurrences} {label} this season ({bracket})."
     if occurrences == 1:
-        return f"{manager_name} has 1 {label} this season, and it came this gameweek ({bracket})."
-    return f"{manager_name} has {occurrences} {label} this season, the latest this gameweek ({bracket})."
+        return f"{lead} 1 {label} this season, and it came this gameweek ({bracket})."
+    return f"{lead} {occurrences} {label} this season, the latest this gameweek ({bracket})."
+
+
+def _season_count_group_text(
+    subject: str,
+    label_one: str,
+    label_many: str,
+    totals: list[int],
+    held_total: int,
+    window: GameweekWindow,
+    *,
+    for_prompt: bool = False,
+) -> str:
+    """A grouped season-count line (issue #563): `_season_count_text`'s line
+    for every manager it stands for, with `subject` the count ("15 of 19
+    managers").
+
+    Only a count that grew this gameweek is grouped, so the line always
+    says so. The managers' totals may differ -- a ride-along joins on the
+    condition's band rather than one figure -- so the line states their
+    range: "3", "3 or 4", "3 to 7". Every manager in the group shares the
+    span and the unjudged count, which is why the qualifier is stated once
+    for each of them rather than summed.
+    """
+    distinct = sorted(set(totals))
+    low, high = distinct[0], distinct[-1]
+    if len(distinct) == 1:
+        figure = str(low)
+    elif len(distinct) == 2:
+        figure = f"{low} or {high}"
+    else:
+        figure = f"{low} to {high}"
+    label = label_one if high == 1 else label_many
+    latest = "the first this gameweek" if high == 1 else "the latest this gameweek"
+    if for_prompt:
+        bracket = window.label
+        if held_total:
+            bracket += f"; {held_total} {_gameweek_noun(held_total)} could not be judged for each"
+        return f"{subject} each have {figure} {label} this season, {latest} ({bracket})."
+    text = f"{subject}: {figure} {label} this season ({window.label}), {latest}"
+    if held_total:
+        text += f", each with {held_total} {_gameweek_noun(held_total)} not judged either way"
+    return text + "."
 
 
 def _season_count_entries(
@@ -738,8 +956,10 @@ def _season_count_entries(
     rows_by_gameweek: dict[int, dict[int, LeagueHistoryRow]],
     milestone: bool,
     second_half: bool,
-) -> list[NotesPackEntry]:
-    """One entry per manager x applicable condition that has occurred at all.
+) -> tuple[list[NotesPackEntry], list[NotesPackEntry]]:
+    """One entry per manager x applicable condition that has occurred at
+    all, and the grouped lines standing in for any count line enough of the
+    league shares on an ordinary week (see `_group_season_count_entries`).
 
     Restricted to `cohort` for the same reason `_streak_entries` is: a
     manager no longer in this gameweek's rows keeps a frozen count in
@@ -789,7 +1009,7 @@ def _season_count_entries(
         if (manager_key, condition_key) in fired_managers:
             fired_totals.setdefault(condition_key, []).append(view.occurrences)
 
-    entries: list[NotesPackEntry] = []
+    built: list[tuple[NotesPackEntry, ConditionRunView, bool]] = []
     for manager_key, manager_row, condition_key, view, occurred_this_gameweek in counted:
         window = GameweekWindow(
             start_gameweek=view.first_evaluated_gameweek or gameweek, end_gameweek=gameweek,
@@ -835,7 +1055,7 @@ def _season_count_entries(
             # leave the reader wondering why this week.
             run_framed=bool(view.count_policy.run_milestones),
         )
-        entries.append(NotesPackEntry(
+        built.append((NotesPackEntry(
             kind=NoteKind.SEASON_COUNT,
             text=render(),
             prompt_text=render(for_prompt=True),
@@ -852,13 +1072,119 @@ def _season_count_entries(
             length=view.length,
             held_count=view.held_total,
             occurrences=view.occurrences,
-        ))
+        ), view, (manager_key, condition_key) in fired_managers))
 
-    def _sort_key(entry: NotesPackEntry) -> tuple[int, str, str]:
+    def _sort_key(item: tuple[NotesPackEntry, ConditionRunView, bool]) -> tuple[int, str, str]:
+        entry = item[0]
         return (-(entry.occurrences or 0), entry.manager_name or "", entry.condition_key or "")
 
-    entries.sort(key=_sort_key)
-    return entries
+    built.sort(key=_sort_key)
+    if milestone:
+        # The milestone set-piece is the season's whole picture, every
+        # manager by name, and is left exhaustive on purpose (issue #563).
+        return [entry for entry, _, _ in built], []
+    return _group_season_count_entries(built, cohort_size=len(cohort))
+
+
+def _group_season_count_entries(
+    built: list[tuple[NotesPackEntry, ConditionRunView, bool]], *, cohort_size: int,
+) -> tuple[list[NotesPackEntry], list[NotesPackEntry]]:
+    """Collapse a season-count line enough of the league shares into one
+    grouped line (issue #563), and return every entry beside the grouped
+    lines. Ordinary weeks only: the caller leaves the milestones alone, and
+    every entry surfaced on an ordinary week grew this gameweek.
+
+    Each entry here is `(entry, view, fired)`, `fired` saying whether the
+    manager's own increment fired the condition rather than riding along
+    beside someone who did. The two group differently, because they say
+    different things. A manager who fired is there for their own figure --
+    the fifth captain blank, the fifth gameweek without a green arrow -- so
+    they group only with managers whose line is the same but for the name.
+    A ride-along is there as company for that figure, and shares a line
+    with every other ride-along on the condition with the same span and the
+    same unjudged gameweeks, whatever their own total within the
+    condition's band: the grouped line states the range, "15 of 19
+    managers: 3 or 4 captain blanks this season (GW1-GW10), the latest this
+    gameweek." So when a shared event lets most of the league ride along,
+    the managers who fired keep their own lines and the pack becomes one. A
+    ride-along on a count framed on its run never groups, since its line
+    leads with a run the range could not state; no such condition carries
+    ride-alongs today.
+
+    Once `grouped_line_threshold` managers share a line it is grouped, and
+    their own entries keep no surfaces, so `--format json` still carries
+    every one.
+    """
+    threshold = grouped_line_threshold(cohort_size)
+    shapes: dict[
+        tuple[str, bool, GameweekWindow | None, int, int, int, bool],
+        list[tuple[NotesPackEntry, ConditionRunView]],
+    ] = {}
+    for entry, view, fired in built:
+        run_framed = bool(view.count_policy.run_milestones)
+        if not entry.surfaces or (run_framed and not fired):
+            continue
+        # Keyed on what the line states and nothing else. A fired line
+        # states its total, and a run-framed one its run and whether that
+        # run reads "in a row"; a plain count never mentions the run, so two
+        # managers on 5 read alike whatever their runs. A ride-along's
+        # grouped line states neither total nor run.
+        occurrences = view.occurrences if fired else 0
+        length = view.length if fired and run_framed else 0
+        crossed = fired and run_framed and view.held_in_run + view.inapplicable_in_run > 0
+        shape = (view.condition_key, fired, entry.window, view.held_total, occurrences, length, crossed)
+        shapes.setdefault(shape, []).append((entry, view))
+
+    groups: list[tuple[int, NotesPackEntry]] = []
+    grouped: set[tuple[int | None, str | None]] = set()
+    for (_, fired, *_), members in shapes.items():
+        if len(members) < threshold:
+            continue
+        first, view = members[0]
+        assert first.window is not None  # every season-count entry is windowed
+        subject = _group_subject(len(members), cohort_size)
+        totals = [member_view.occurrences for _, member_view in members]
+        run_framed = bool(view.count_policy.run_milestones)
+        if fired:
+            render = partial(
+                _season_count_text,
+                subject, view.count_label_one, view.count_label_many, view.occurrences, view.held_total,
+                first.window,
+                occurred_this_gameweek=True,
+                run_length=view.length,
+                run_held=view.held_in_run + view.inapplicable_in_run,
+                run_framed=run_framed,
+                group=True,
+            )
+        else:
+            render = partial(
+                _season_count_group_text,
+                subject, view.count_label_one, view.count_label_many, totals, view.held_total, first.window,
+            )
+        groups.append((max(totals), NotesPackEntry(
+            kind=NoteKind.SEASON_COUNT_GROUP,
+            text=render(),
+            prompt_text=render(for_prompt=True),
+            surfaces=first.surfaces,
+            tier=weakest_tier(entry.tier for entry, _ in members if entry.tier is not None),
+            window=first.window,
+            condition_key=view.condition_key,
+            # A fired group shares one total, and a run-framed one its run,
+            # so it states them as each member's entry does; anything else
+            # shares no run, and a ride-along group no total either.
+            length=view.length if fired and run_framed else 0,
+            held_count=view.held_total,
+            occurrences=view.occurrences if fired else None,
+            group_manager_keys=tuple(entry.manager_key for entry, _ in members if entry.manager_key is not None),
+        )))
+        grouped.update((entry.manager_key, entry.condition_key) for entry, _ in members)
+
+    entries = [
+        replace(entry, surfaces=frozenset()) if (entry.manager_key, entry.condition_key) in grouped else entry
+        for entry, _, _ in built
+    ]
+    groups.sort(key=lambda item: (-item[0], item[1].condition_key or ""))
+    return entries, [group for _, group in groups]
 
 
 # ---------------------------------------------------------------------------
@@ -1644,6 +1970,17 @@ def build_notes_pack(
     # One scoring pass for the league's records and every manager's own.
     scores = _season_scores(season, use_net_points=use_net_points)
     manager_seasons = _manager_seasons(season, scores, gameweek, league_start_gameweek)
+    streak_entries, streak_groups = _streak_entries(
+        gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
+    )
+    season_count_entries, season_count_groups = _season_count_entries(
+        gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
+        milestone=milestone,
+        # For the count policies' first-in-second-half and
+        # second-half-only rules: from GW20 of 38, so the GW19 milestone
+        # that closes the first half is not in it.
+        second_half=gameweek >= second_half_start(chip_split_gw),
+    )
 
     return NotesPack(
         season=store.season,
@@ -1653,17 +1990,10 @@ def build_notes_pack(
         phase=phase,
         league_start_gameweek=league_start_gameweek,
         season_phase_entry=_season_phase_entry(phase, gameweek, total_gameweeks, chip_split_gw, store.fpl_format),
-        entries=_streak_entries(
-            gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
-        ),
-        season_count_entries=_season_count_entries(
-            gameweek=gameweek, cohort=cohort, projection=projection, rows_by_gameweek=rows_by_gameweek,
-            milestone=milestone,
-            # For the count policies' first-in-second-half and
-            # second-half-only rules: from GW20 of 38, so the GW19 milestone
-            # that closes the first half is not in it.
-            second_half=gameweek >= second_half_start(chip_split_gw),
-        ),
+        entries=streak_entries,
+        streak_groups=streak_groups,
+        season_count_entries=season_count_entries,
+        season_count_groups=season_count_groups,
         season_record_entries=_season_record_entries(
             swept=season, scores=scores, gameweek=gameweek, league_start_gameweek=league_start_gameweek,
         ),

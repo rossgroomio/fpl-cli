@@ -81,6 +81,7 @@ from fpl_cli.cli._league_recap_types import (
 from fpl_cli.constants import DETAIL_CAP
 from fpl_cli.models.player import PlayerPosition
 from fpl_cli.prompts.league_recap import (
+    RECAP_SYNTHESIS_SYSTEM_PROMPT,
     collect_player_clubs,
     format_recap_awards_context,
     format_recap_captains_context,
@@ -4854,6 +4855,8 @@ def _history_pack(
     season_record_entries: list[NotesPackEntry] | None = None,
     personal_record_entries: list[NotesPackEntry] | None = None,
     personal_record_tables: tuple[PersonalRecordTable, ...] = (),
+    streak_groups: list[NotesPackEntry] | None = None,
+    season_count_groups: list[NotesPackEntry] | None = None,
     phase: SeasonPhase = SeasonPhase.MIDPOINT,
     phase_text: str = "GW20 is the season midpoint.",
     fpl_format: str = "classic",
@@ -4870,6 +4873,8 @@ def _history_pack(
         season_record_entries=season_record_entries or [],
         personal_record_entries=personal_record_entries or [],
         personal_record_tables=personal_record_tables,
+        streak_groups=streak_groups or [],
+        season_count_groups=season_count_groups or [],
         coverage_entries=coverage_entries if coverage_entries is not None else [
             NotesPackEntry(
                 kind=NoteKind.COVERAGE, text="Recorded history is complete from its start (GW1) through GW20.",
@@ -4988,6 +4993,49 @@ class TestFormatRecapLeagueHistoryContext:
         assert lines[count_index + 1] == (
             "- Alice: 4 gameweek wins this season (GW1-GW20), the latest this gameweek."
         )
+
+    def test_a_grouped_line_follows_the_named_ones_and_counts_as_one_entry(self):
+        """Issue #563: a streak most of the league shares reaches the model
+        as one league fact, in its sentence form, and the total counts the
+        lines the model reads -- not the managers behind the grouped one,
+        whose own entries carry no surfaces."""
+        surfaced = frozenset({NoteSurface.CONSOLE, NoteSurface.REPORT, NoteSurface.PROMPT})
+        named = _history_entry(text="Quinn: 3 captain blanks in a row (GW8-GW10).")
+        member = _history_entry(text="Alice: 2 captain blanks in a row (GW9-GW10).", surfaces=frozenset())
+        streak_group = NotesPackEntry(
+            kind=NoteKind.STREAK_GROUP, text="16 of 19 managers: 2 captain blanks in a row (GW9-GW10).",
+            prompt_text="16 of 19 managers each have 2 captain blanks in a row (GW9-GW10).",
+            surfaces=surfaced, group_manager_keys=tuple(range(1, 17)),
+        )
+        count_group = NotesPackEntry(
+            kind=NoteKind.SEASON_COUNT_GROUP,
+            text="15 of 19 managers: 3 or 4 captain blanks this season (GW1-GW10), the latest this gameweek.",
+            prompt_text=(
+                "15 of 19 managers each have 3 or 4 captain blanks this season, the latest this gameweek (GW1-GW10)."
+            ),
+            surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}), group_manager_keys=tuple(range(1, 16)),
+        )
+        lines = format_recap_league_history_context(_history_pack(
+            entries=[named, member], streak_groups=[streak_group], season_count_groups=[count_group],
+        )).splitlines()
+
+        streaks = lines.index("Total League History streak entries: 2")
+        assert lines[streaks + 1:streaks + 3] == [
+            "- Quinn: 3 captain blanks in a row (GW8-GW10).",
+            "- 16 of 19 managers each have 2 captain blanks in a row (GW9-GW10).",
+        ]
+        counts = lines.index("Total season-count entries: 1")
+        assert lines[counts + 1] == (
+            "- 15 of 19 managers each have 3 or 4 captain blanks this season, the latest this gameweek (GW1-GW10)."
+        )
+        assert not any("Alice" in line for line in lines)
+
+    def test_the_system_prompt_reads_a_grouped_line_as_naming_nobody(self):
+        """Issue #563: the rule that every League History entry is about one
+        named manager makes room for the grouped line, and forbids putting
+        a name to it."""
+        assert "except a grouped line, which opens with a count of managers" in RECAP_SYNTHESIS_SYSTEM_PROMPT
+        assert "never name a manager as one of them" in RECAP_SYNTHESIS_SYSTEM_PROMPT
 
     def test_season_records_render_under_their_own_total_before_coverage(self):
         """Issue #494: the season's highest and lowest gameweek score get
