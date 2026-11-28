@@ -1133,7 +1133,11 @@ async def _understat_checks(
     elements: list[dict[str, Any]] | None = None,
     team_name_by_id: dict[int, str] | None = None,
 ) -> list[CheckResult]:
-    from fpl_cli.api.understat import UnderstatClient, understat_club_rows
+    from fpl_cli.api.understat import (
+        UnderstatClient,
+        UnderstatNotJSONError,
+        understat_club_rows,
+    )
 
     league_name = "Understat league data"
     map_name = "Understat team map"
@@ -1179,16 +1183,22 @@ async def _understat_checks(
                     "every player until it recovers; broken if it persists",
                 )
             ]
-        except httpx.HTTPError as exc:
-            return [CheckResult(league_name, CheckStatus.UNCHECKED, _unreachable(exc))]
-        except json.JSONDecodeError:
+        except UnderstatNotJSONError:
+            # The client raises a non-JSON body as an httpx error so the
+            # scoring commands fall back on it (#562); here it is the
+            # provider answering in the wrong shape, not the network failing.
+            # httpx's own DecodingError (a truncated gzip stream) is the
+            # network, and stays in the unreachable branch below.
             return [
                 CheckResult(
                     league_name,
                     CheckStatus.BROKEN,
-                    "league endpoint did not return JSON — the endpoint shape may have changed",
+                    "league endpoint did not return a JSON object — the endpoint shape "
+                    "may have changed",
                 )
             ]
+        except httpx.HTTPError as exc:
+            return [CheckResult(league_name, CheckStatus.UNCHECKED, _unreachable(exc))]
 
     results: list[CheckResult] = []
     if not players:

@@ -190,6 +190,16 @@ def decode_entities(value: Any) -> Any:
     return value
 
 
+class UnderstatNotJSONError(httpx.DecodingError):
+    """Understat answered 200 with a body that is not a JSON object (#562).
+
+    An `httpx.DecodingError` so every caller's existing Understat-unavailable
+    fallback catches it, and its own class so `fpl doctor --providers` can
+    tell it apart from httpx's own content-decoding failure (a truncated
+    gzip stream), which is the network misbehaving, not the endpoint moving.
+    """
+
+
 class UnderstatClient:
     """Client for fetching data from Understat.
 
@@ -229,6 +239,15 @@ class UnderstatClient:
 
         Returns:
             Parsed JSON response, with Understat's HTML escaping undone.
+
+        Raises:
+            httpx.HTTPStatusError: Understat answered with an error status.
+            UnderstatNotJSONError: Understat answered 200 with a body that
+                is not a JSON object: its HTML error page during an outage
+                (#562), or valid JSON of the wrong shape (a list, string or
+                null), which every caller would otherwise crash on at
+                `.get()`. The scoring commands then run on FPL xGI instead
+                of failing outright.
         """
         headers = {
             "X-Requested-With": "XMLHttpRequest",
@@ -237,7 +256,20 @@ class UnderstatClient:
         }
         response = await self._http.get(f"/{endpoint}", headers=headers)
         response.raise_for_status()
-        return decode_entities(response.json())
+        try:
+            payload = response.json()
+        except ValueError as exc:  # json.JSONDecodeError, or an undecodable charset
+            raise UnderstatNotJSONError(
+                f"Understat's {endpoint} endpoint did not return JSON",
+                request=response.request,
+            ) from exc
+        if not isinstance(payload, dict):
+            raise UnderstatNotJSONError(
+                f"Understat's {endpoint} endpoint returned JSON "
+                f"{type(payload).__name__}, not an object",
+                request=response.request,
+            )
+        return decode_entities(payload)
 
     async def _get_html(self, endpoint: str) -> str:
         """Fetch HTML from Understat.
@@ -340,6 +372,9 @@ class UnderstatClient:
                 "shots": data.get("shots") or [],
                 "groups": data.get("groups") or {},
             }
+        except UnderstatNotJSONError as exc:
+            logger.warning("%s; no Understat detail for player %s", exc, player_id)
+            return None
         except (httpx.HTTPStatusError, httpx.RequestError):
             return None
 
@@ -419,6 +454,11 @@ class UnderstatClient:
                 f"getTeamData/{url_name}/{season}",
                 referer=f"team/{url_name}/{season}",
             )
+        except UnderstatNotJSONError as exc:
+            # Without this an outage reads as every club having no xG
+            # record, and `fpl ratings --use-xg` skips them all silently.
+            logger.warning("%s; no Understat xG for %s", exc, url_name)
+            return None
         except (httpx.HTTPStatusError, httpx.RequestError):
             return None
 

@@ -4,9 +4,14 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import respx
 from click.testing import CliRunner
 
+# Bound at import, before the autouse fixture below replaces the name with
+# a mock, so a test can put the real client back.
+from fpl_cli.api.understat import UnderstatClient as RealUnderstatClient
 from fpl_cli.cli import main
 from fpl_cli.models.player import PlayerPosition
 from tests.conftest import (
@@ -449,6 +454,33 @@ class TestPlayerUnderstatJoinWarning:
         assert result.exit_code == 0, result.output
         warnings = json.loads(result.output)["metadata"]["warnings"]
         assert [w for w in warnings if w["code"] == "understat_team_unmatched"] == []
+
+
+class TestPlayerUnderstatErrorPage:
+    """Understat's HTML error page leaves `fpl player` running on FPL stats (#562)."""
+
+    def test_html_200_still_returns_the_player(self):
+        client, fixture_agent, ratings_svc = _make_mocks()
+        runner = CliRunner()
+        with (
+            respx.mock(assert_all_called=False) as router,
+            patch("fpl_cli.cli.player.get_settings", return_value={"fpl": {}}),
+            patch("fpl_cli.api.fpl.FPLClient", return_value=client),
+            patch("fpl_cli.agents.data.fixture.FixtureAgent", return_value=fixture_agent),
+            patch("fpl_cli.services.team_ratings.TeamRatingsService", return_value=ratings_svc),
+            # The real client, so the guard under test is what decides.
+            patch("fpl_cli.api.understat.UnderstatClient", RealUnderstatClient),
+        ):
+            route = router.get(url__regex=r"https://understat\.com/.*").mock(
+                return_value=httpx.Response(200, text="<html>error</html>")
+            )
+            result = runner.invoke(main, ["player", "Salah", "--format", "json"])
+
+        assert route.called, "the real client never reached Understat"
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert "error" not in payload
+        assert payload["data"]
 
 
 class TestPlayerUnderstat:
