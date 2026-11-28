@@ -1514,11 +1514,17 @@ def _render_console_highlights(
 
     # Streaks (R12, KTD8): only the leaders, so the console stays a
     # highlights view -- the report carries the full report-surfaced set.
+    # A grouped line (issue #563) always keeps its place: it is one line
+    # standing for a large share of the league, so the named leaders fill
+    # the slots it leaves, and it never drops off behind five of them.
     if notes_pack is not None:
         console_entries = notes_pack.streaks_for(NoteSurface.CONSOLE)
-        if console_entries:
+        groups = [entry for entry in console_entries if entry.group_manager_keys]
+        named = [entry for entry in console_entries if not entry.group_manager_keys]
+        shown = [*named[:max(_CONSOLE_STREAK_LIMIT - len(groups), 0)], *groups][:_CONSOLE_STREAK_LIMIT]
+        if shown:
             console.print("\n[bold]Streaks:[/bold]")
-            for entry in console_entries[:_CONSOLE_STREAK_LIMIT]:
+            for entry in shown:
                 console.print(f"  {entry.text}")
 
 

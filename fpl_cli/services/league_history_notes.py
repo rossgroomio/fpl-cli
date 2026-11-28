@@ -124,6 +124,14 @@ def grouped_line_threshold(cohort_size: int) -> int:
     return max(GROUPED_LINE_MIN_MANAGERS, math.ceil(cohort_size * GROUPED_LINE_LEAGUE_SHARE))
 
 
+def _group_subject(members: int, cohort_size: int) -> str:
+    """What a grouped line opens with in place of a name: "16 of 19
+    managers", or "All 6 managers" where the line is the whole league's."""
+    if members == cohort_size:
+        return f"All {cohort_size} managers"
+    return f"{members} of {cohort_size} managers"
+
+
 # ---------------------------------------------------------------------------
 # Season phase (R15)
 # ---------------------------------------------------------------------------
@@ -578,9 +586,10 @@ def _streak_text(
     remainder, which would be a figure the ledger line does not carry.
 
     `group` renders a grouped line (issue #563), with `manager_name` the
-    count it stands for ("16 of 19 managers"). The ledger line reads as the
-    named one does; the prompt's sentence says each of them has the run, so
-    it never reads as one run the managers share between them."""
+    count it stands for ("16 of 19 managers"). Both renderings say the run
+    and its trailing clause are each manager's -- "each have", "each with",
+    "for each of them" -- so neither reads as one run the managers share, or
+    one unrecorded gameweek across all of them."""
     span = window.label
     count_label = count_label_one if length == 1 else count_label_many
     if not for_prompt:
@@ -589,7 +598,7 @@ def _streak_text(
         lead = f"{manager_name} each have" if group else f"{manager_name} has"
     if window.span_length == length:
         return f"{lead} {length} {count_label} in a row ({span})."
-    not_recorded = max(held_count, window.span_length - length - inapplicable_count)
+    not_recorded = _streak_not_recorded(length, window, held_count, inapplicable_count)
     clauses: list[str] = []
     if not_recorded:
         clauses.append(
@@ -608,8 +617,21 @@ def _streak_text(
         )
     text = f"{lead} {length} {count_label} in the last {window.span_length} ({span})"
     if clauses:
-        text += (". Of the rest, " if for_prompt else ", with ") + " and ".join(clauses)
+        if for_prompt:
+            text += ". Of the rest, " + " and ".join(clauses) + (", for each of them" if group else "")
+        else:
+            text += (", each with " if group else ", with ") + " and ".join(clauses)
     return text + "."
+
+
+def _streak_not_recorded(length: int, window: GameweekWindow, held_count: int, inapplicable_count: int) -> int:
+    """How many gameweeks of a run's window its line states as not recorded:
+    every gameweek that neither extended the run nor had nothing to judge,
+    and never fewer than the fold's own held count (see `_streak_text`).
+    Zero for a run that fills its window, which reads "in a row"."""
+    if window.span_length == length:
+        return 0
+    return max(held_count, window.span_length - length - inapplicable_count)
 
 
 def _streak_entries(
@@ -692,8 +714,11 @@ def _group_streak_entries(
     (issue #563), and return every entry beside the grouped lines.
 
     Two managers share a streak when their lines differ in nothing but the
-    name: the same condition, run length and span, and the same gameweeks
-    held and inapplicable inside it. Once `grouped_line_threshold` managers
+    name: the same condition, run length and span, and the same count of
+    gameweeks not recorded and inapplicable inside it. "Not recorded" is
+    keyed as the line states it, so a run that crossed an unknown row and
+    one that crossed a gameweek its manager was absent from read alike and
+    group alike. Once `grouped_line_threshold` managers
     share one, a single line states it for all of them -- "16 of 19
     managers: 2 captain blanks in a row (GW9-GW10)." -- and their own
     entries keep no surfaces, so `--format json` still carries every one.
@@ -703,27 +728,29 @@ def _group_streak_entries(
     minimum never joins a line it would not have reached on its own.
     """
     threshold = grouped_line_threshold(cohort_size)
-    shapes: dict[tuple[str, int, int | None, int, int], list[tuple[NotesPackEntry, ConditionRunView]]] = {}
+    shapes: dict[
+        tuple[str, int, GameweekWindow | None, int, int], list[tuple[NotesPackEntry, ConditionRunView]],
+    ] = {}
     for entry, view in built:
-        if entry.surfaces:
-            shape = (view.condition_key, view.length, view.start_gameweek, view.held_in_run, view.inapplicable_in_run)
+        if entry.surfaces and entry.window is not None:
+            not_recorded = _streak_not_recorded(view.length, entry.window, view.held_in_run, view.inapplicable_in_run)
+            shape = (view.condition_key, view.length, entry.window, not_recorded, view.inapplicable_in_run)
             shapes.setdefault(shape, []).append((entry, view))
 
     groups: list[NotesPackEntry] = []
     grouped: set[tuple[int | None, str | None]] = set()
-    for members in shapes.values():
-        if len(members) < threshold:
+    for (_, _, window, not_recorded, _), members in shapes.items():
+        if len(members) < threshold or window is None:
             continue
         first, view = members[0]
-        assert first.window is not None  # every streak entry is windowed
         render = partial(
             _streak_text,
-            f"{len(members)} of {cohort_size} managers",
+            _group_subject(len(members), cohort_size),
             view.count_label_one,
             view.count_label_many,
             view.length,
-            first.window,
-            held_count=view.held_in_run,
+            window,
+            held_count=not_recorded,
             inapplicable_count=view.inapplicable_in_run,
             inapplicable_label=view.inapplicable_label,
             group=True,
@@ -734,10 +761,12 @@ def _group_streak_entries(
             prompt_text=render(for_prompt=True),
             surfaces=first.surfaces,
             tier=weakest_tier(entry.tier for entry, _ in members if entry.tier is not None),
-            window=first.window,
+            window=window,
             condition_key=view.condition_key,
             length=view.length,
-            held_count=view.held_in_run,
+            # What each member's line states as not recorded: their held
+            # counts can differ where one was absent rather than unknown.
+            held_count=not_recorded,
             inapplicable_count=view.inapplicable_in_run,
             excess=view.excess,
             group_manager_keys=tuple(entry.manager_key for entry, _ in members if entry.manager_key is not None),
@@ -1088,21 +1117,22 @@ def _group_season_count_entries(
     """
     threshold = grouped_line_threshold(cohort_size)
     shapes: dict[
-        tuple[str, bool, GameweekWindow | None, int, int, int, int],
+        tuple[str, bool, GameweekWindow | None, int, int, int, bool],
         list[tuple[NotesPackEntry, ConditionRunView]],
     ] = {}
     for entry, view, fired in built:
         run_framed = bool(view.count_policy.run_milestones)
         if not entry.surfaces or (run_framed and not fired):
             continue
-        run_held = view.held_in_run + view.inapplicable_in_run
-        # A fired line is keyed on every figure it states; a ride-along's
-        # total and run are left out, since its grouped line states neither.
-        occurrences, length = (view.occurrences, view.length) if fired else (0, 0)
-        shape = (
-            view.condition_key, fired, entry.window, view.held_total, occurrences, length,
-            run_held if fired else 0,
-        )
+        # Keyed on what the line states and nothing else. A fired line
+        # states its total, and a run-framed one its run and whether that
+        # run reads "in a row"; a plain count never mentions the run, so two
+        # managers on 5 read alike whatever their runs. A ride-along's
+        # grouped line states neither total nor run.
+        occurrences = view.occurrences if fired else 0
+        length = view.length if fired and run_framed else 0
+        crossed = fired and run_framed and view.held_in_run + view.inapplicable_in_run > 0
+        shape = (view.condition_key, fired, entry.window, view.held_total, occurrences, length, crossed)
         shapes.setdefault(shape, []).append((entry, view))
 
     groups: list[tuple[int, NotesPackEntry]] = []
@@ -1112,8 +1142,9 @@ def _group_season_count_entries(
             continue
         first, view = members[0]
         assert first.window is not None  # every season-count entry is windowed
-        subject = f"{len(members)} of {cohort_size} managers"
+        subject = _group_subject(len(members), cohort_size)
         totals = [member_view.occurrences for _, member_view in members]
+        run_framed = bool(view.count_policy.run_milestones)
         if fired:
             render = partial(
                 _season_count_text,
@@ -1122,7 +1153,7 @@ def _group_season_count_entries(
                 occurred_this_gameweek=True,
                 run_length=view.length,
                 run_held=view.held_in_run + view.inapplicable_in_run,
-                run_framed=bool(view.count_policy.run_milestones),
+                run_framed=run_framed,
                 group=True,
             )
         else:
@@ -1138,9 +1169,10 @@ def _group_season_count_entries(
             tier=weakest_tier(entry.tier for entry, _ in members if entry.tier is not None),
             window=first.window,
             condition_key=view.condition_key,
-            # A fired group shares one total and run, so it states them as
-            # each member's entry does; a ride-along group shares neither.
-            length=view.length if fired else 0,
+            # A fired group shares one total, and a run-framed one its run,
+            # so it states them as each member's entry does; anything else
+            # shares no run, and a ride-along group no total either.
+            length=view.length if fired and run_framed else 0,
             held_count=view.held_total,
             occurrences=view.occurrences if fired else None,
             group_manager_keys=tuple(entry.manager_key for entry, _ in members if entry.manager_key is not None),

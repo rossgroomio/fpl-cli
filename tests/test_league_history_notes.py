@@ -1089,16 +1089,19 @@ def _blanks_league(
     blanks: dict[int, set[int]],
     *,
     unrecorded: dict[int, set[int]] | None = None,
+    absent: dict[int, set[int]] | None = None,
 ) -> LeagueHistoryStore:
     """A classic league of `managers` (M01, M02, ...) through GW`through`.
 
     Each manager's captain blanks in the gameweeks `blanks` names for them
     and scores well in every other, except a gameweek `unrecorded` names,
-    which records no captain at all and so holds. No row carries a position
-    or a score, so every other condition holds and only the captain-blank
-    streak and count say anything.
+    which records no captain at all and so holds, and one `absent` names,
+    where the manager has no row at all. No row carries a position or a
+    score, so every other condition holds and only the captain-blank streak
+    and count say anything.
     """
     unrecorded = unrecorded or {}
+    absent = absent or {}
     store = LeagueHistoryStore("2026-27", "classic", 1)
     for gw in range(1, through + 1):
         store.append_rows(gw, [
@@ -1110,6 +1113,7 @@ def _blanks_league(
                 ),
             )
             for key in range(1, managers + 1)
+            if gw not in absent.get(key, set())
         ])
     return store
 
@@ -1218,6 +1222,58 @@ class TestGroupedLines:
             "10 of 19 managers: 2 captain blanks in a row (GW9-GW10).",
         ]
 
+    def test_a_grouped_run_crossing_an_unrecorded_gameweek_says_each_of_them(self):
+        """Review of #563: "with 1 not recorded" after a count of managers
+        read as one gameweek across the group. A run that crossed an
+        unknown row and one that crossed a gameweek its manager was absent
+        from read alike, so they share the line."""
+        blanks = {key: {8, 10} for key in range(1, 9)}
+        store = _blanks_league(
+            19, 10, blanks,
+            unrecorded={key: {9} for key in range(1, 5)},
+            absent={key: {9} for key in range(5, 9)},
+        )
+        pack = build_notes_pack(store, 10)
+
+        assert _report_lines(pack.streaks_for(NoteSurface.REPORT)) == [
+            "8 of 19 managers: 2 captain blanks in the last 3 (GW8-GW10), each with 1 not recorded.",
+        ]
+        [group] = pack.streak_groups
+        assert group.held_count == 1
+        assert group.text_for(NoteSurface.PROMPT) == (
+            "8 of 19 managers each have 2 captain blanks in the last 3 (GW8-GW10). "
+            "Of the rest, 1 was not recorded, for each of them."
+        )
+
+    def test_a_grouped_draft_run_names_its_gameweek_with_nothing_to_judge(self):
+        """The trailing clause names an inapplicable gameweek in the
+        condition's own words, for each manager in the group."""
+        store = LeagueHistoryStore("2026-27", "draft", 1)
+        for gw in range(1, 5):
+            store.append_rows(gw, [
+                make_history_row(
+                    fpl_format="draft", gameweek=gw, manager_key=key, manager_name=f"M{key:02d}",
+                    transactions=[] if gw == 3 else [_transaction(5)],
+                )
+                for key in range(1, 7)
+            ])
+        pack = build_notes_pack(store, 4)
+
+        assert _report_lines(pack.streaks_for(NoteSurface.REPORT)) == [
+            "All 6 managers: 3 waiver hauls in the last 4 (GW1-GW4), each with no completed moves in 1.",
+        ]
+        assert pack.streak_groups[0].text_for(NoteSurface.PROMPT) == (
+            "All 6 managers each have 3 waiver hauls in the last 4 (GW1-GW4). "
+            "Of the rest, 1 had no completed moves, for each of them."
+        )
+
+    def test_the_whole_league_sharing_a_line_reads_as_all_of_it(self):
+        pack = build_notes_pack(_blanks_league(6, 10, {key: {9, 10} for key in range(1, 7)}), 10)
+
+        assert _report_lines(pack.streaks_for(NoteSurface.REPORT)) == [
+            "All 6 managers: 2 captain blanks in a row (GW9-GW10).",
+        ]
+
     def test_a_run_below_its_minimum_never_joins_a_group(self):
         """A single blank is below the streak's minimum, so a league-wide
         one-off blank says nothing on any surface, grouped or not."""
@@ -1268,6 +1324,20 @@ class TestGroupedLines:
         assert fired.text_for(NoteSurface.PROMPT) == (
             "7 of 19 managers each have 5 captain blanks this season, the latest this gameweek (GW1-GW10)."
         )
+
+    def test_managers_on_the_same_total_group_whatever_their_runs(self):
+        """Review of #563: a plain count's line never states the run, so
+        eight managers on exactly 5 read alike, four ending on a run of 2
+        and four on a run of 1, and are one line rather than eight."""
+        blanks = {key: {2, 4, 6, 9, 10} for key in range(1, 5)}
+        blanks.update({key: {2, 4, 6, 8, 10} for key in range(5, 9)})
+        pack = build_notes_pack(_blanks_league(19, 10, blanks), 10)
+
+        assert _report_lines(pack.season_counts_for(NoteSurface.REPORT)) == [
+            "8 of 19 managers: 5 captain blanks this season (GW1-GW10), the latest this gameweek.",
+        ]
+        [group] = pack.season_count_groups
+        assert (group.occurrences, group.length) == (5, 0)
 
     def test_a_shared_drought_groups_on_the_run_it_fired_on(self):
         """A count framed on its run groups too, on the run and the total

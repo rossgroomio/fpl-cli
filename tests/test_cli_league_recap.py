@@ -3721,6 +3721,7 @@ def _notes_pack(
     phase: SeasonPhase = SeasonPhase.MIDPOINT,
     phase_text: str = "GW20 is the season midpoint.",
     gameweek: int = 20,
+    streak_groups: list[NotesPackEntry] | None = None,
 ) -> NotesPack:
     return NotesPack(
         season=SEASON, fpl_format="classic", league_id=42, gameweek=gameweek, phase=phase,
@@ -3729,6 +3730,7 @@ def _notes_pack(
             kind=NoteKind.SEASON_PHASE, text=phase_text, surfaces=frozenset({NoteSurface.REPORT, NoteSurface.PROMPT}),
         ),
         entries=entries or [],
+        streak_groups=streak_groups or [],
         coverage_entries=coverage_entries if coverage_entries is not None else [
             NotesPackEntry(
                 kind=NoteKind.COVERAGE, text="Recorded history is complete from its start (GW1) through GW20.",
@@ -3757,6 +3759,31 @@ class TestConsoleStreaks:
         assert "Manager5: streak 5" in out
         assert "Manager1: streak 1" in out
         assert "Manager0: streak 0" not in out
+
+    def test_a_grouped_line_keeps_its_place_behind_five_named_leaders(self, capsys: pytest.CaptureFixture[str]):
+        """Issue #563 review: grouped lines follow the named ones, so slicing
+        at the limit dropped the one line that stands for half the league.
+        It keeps its slot, and the named leaders fill the rest."""
+        from fpl_cli.cli.league_recap import _render_console_highlights
+
+        named = [
+            _streak_entry(text=f"Manager{i}: 3 captain blanks in a row (GW8-GW10).", excess=1, manager_name=f"Manager{i}")
+            for i in range(1, 6)
+        ]
+        group = NotesPackEntry(
+            kind=NoteKind.STREAK_GROUP, text="10 of 19 managers: 2 captain blanks in a row (GW9-GW10).",
+            surfaces=frozenset({NoteSurface.CONSOLE, NoteSurface.REPORT, NoteSurface.PROMPT}),
+            excess=0, condition_key="captain_blank_run", group_manager_keys=tuple(range(6, 16)),
+        )
+        _render_console_highlights(
+            _recap_data(managers=[_manager(total_points=300)]), _notes_pack(entries=named, streak_groups=[group]),
+        )
+
+        out = _stdout(capsys)
+        assert "10 of 19 managers: 2 captain blanks in a row (GW9-GW10)." in out
+        assert "Manager4: 3 captain blanks" in out
+        assert "Manager5: 3 captain blanks" not in out
+        assert out.index("Manager4") < out.index("10 of 19 managers")
 
     def test_an_empty_pack_renders_no_streaks_heading(self, capsys: pytest.CaptureFixture[str]):
         from fpl_cli.cli.league_recap import _render_console_highlights
@@ -4181,7 +4208,7 @@ class TestSharedStreakThroughTheFullCommand:
     shares is one line on console and in the saved report, and every
     manager's own entry still reaches `--format json`."""
 
-    _GROUPED = "6 of 6 managers: 2 captain blanks in a row (GW4-GW5)."
+    _GROUPED = "All 6 managers: 2 captain blanks in a row (GW4-GW5)."
 
     def test_the_report_and_console_print_one_grouped_line(self, tmp_path: Path):
         result = _invoke_recap(_shared_captain_blank(), ["--save", "--output", str(tmp_path)])
