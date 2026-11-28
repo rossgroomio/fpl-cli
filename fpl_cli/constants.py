@@ -1,5 +1,9 @@
 """Shared constants used across agents and modules."""
 
+# The canonical repository URL, the one `pyproject.toml` publishes as
+# `Repository`; `tests/test_league_recap.py` holds the two together.
+REPOSITORY_URL = "https://github.com/rossgroomio/fpl-cli"
+
 MIN_MINUTES_FOR_PER90 = 200  # ~2 full matches; below this, per-90 stats are unreliable
 
 # Most managers, moves or picks one line of the recap names before it counts

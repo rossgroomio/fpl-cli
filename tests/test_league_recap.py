@@ -5441,6 +5441,27 @@ class TestFormatStandingsBlock:
 
 
 class TestLeagueRecapTemplateRender:
+    async def test_footer_links_to_the_published_repository(self, tmp_path):
+        import tomllib
+
+        agent = ReportAgent(config={"output_dir": str(tmp_path)})
+        result = await agent.run(context={
+            "report_type": "league-recap",
+            "gameweek": 10,
+            "data": {
+                "gameweek": 10,
+                "league_name": "Test League",
+                "fpl_format": "classic",
+                "managers": [_make_manager(name="Alice", gw_points=80, overall_rank=1)],
+                "awards": {},
+            },
+        })
+        assert result.data is not None
+        content = Path(result.data["report_path"]).read_text()
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        repository = tomllib.loads(pyproject.read_text())["project"]["urls"]["Repository"]
+        assert content.rstrip().endswith(f"{repository}*")
+
     async def test_rendered_recap_has_no_pipes_in_standings(self, tmp_path):
         agent = ReportAgent(config={"output_dir": str(tmp_path)})
         data = {

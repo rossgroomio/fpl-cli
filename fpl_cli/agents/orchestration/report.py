@@ -21,6 +21,7 @@ from fpl_cli.cli._league_recap_types import (
     recap_title,
 )
 from fpl_cli.cli._league_recap_vouchers import recap_voucher_lines
+from fpl_cli.constants import REPOSITORY_URL
 from fpl_cli.paths import TEMPLATE_DIR
 from fpl_cli.prompts.league_recap_checks import split_recap_problems
 from fpl_cli.services.team_ratings import fdr_columns_footer
@@ -55,6 +56,8 @@ def build_report_environment() -> Environment:
     # Footer wording for FDR tables, shared with the CLI so the saved
     # report and the terminal describe the columns the same way
     env.globals["fdr_columns_footer"] = fdr_columns_footer
+    # The footer link every saved recap ends with, read from one constant
+    env.globals["repository_url"] = REPOSITORY_URL
     # The one draft `kind` vocabulary, so a row stores what the API sent and
     # the label is derived at render -- here and in the prompt -- from the
     # same mapping rather than from a second stored field that could drift
