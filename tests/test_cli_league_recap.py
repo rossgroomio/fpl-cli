@@ -4146,6 +4146,72 @@ class TestEndToEndStreakThroughTheFullCommand:
         assert "Streaks:" not in result.output
 
 
+_SHARED_BLANK_NAMES = ("Alice", "Bob", "Carol", "Dan", "Eve", "Fay")
+
+
+def _shared_captain_blank(gameweek: int = 5) -> LeagueRecapData:
+    """Six managers whose captains all blanked in GW4, seeded, and blank
+    again in the recapped GW5: one shared run for the whole league."""
+    store = _store(fpl_format="classic", league_id=42)
+    store.append_rows(gameweek - 1, [
+        make_history_row(
+            season=SEASON, fpl_format="classic", league_id=42, gameweek=gameweek - 1,
+            manager_key=key, manager_name=name,
+            captain=LedgerCaptaincy(name="Salah", points=1, played=True, had_fixture=True),
+        )
+        for key, name in enumerate(_SHARED_BLANK_NAMES, start=1)
+    ])
+    return _recap_data(
+        gameweek=gameweek,
+        managers=[
+            _manager(
+                name=name, entry_id=key, overall_rank=key, previous_rank=key, captain_points=1,
+                total_points=300 - key,
+            )
+            for key, name in enumerate(_SHARED_BLANK_NAMES, start=1)
+        ],
+        cohort=_cohort(*(
+            (key, name, key, 60, 300 - key) for key, name in enumerate(_SHARED_BLANK_NAMES, start=1)
+        )),
+    )
+
+
+class TestSharedStreakThroughTheFullCommand:
+    """Issue #563 through the real command: a streak the whole league
+    shares is one line on console and in the saved report, and every
+    manager's own entry still reaches `--format json`."""
+
+    _GROUPED = "6 of 6 managers: 2 captain blanks in a row (GW4-GW5)."
+
+    def test_the_report_and_console_print_one_grouped_line(self, tmp_path: Path):
+        result = _invoke_recap(_shared_captain_blank(), ["--save", "--output", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        report = next(tmp_path.rglob("gw5-league-recap.md")).read_text(encoding="utf-8")
+        streaks = report[report.index("## Streaks"):]
+        assert f"- {self._GROUPED}" in streaks
+        assert "Alice: 2 captain blanks" not in report
+        assert self._GROUPED in result.output
+        assert "Alice: 2 captain blanks" not in result.output
+
+    def test_json_carries_the_grouped_line_beside_every_managers_own_entry(self):
+        result = _invoke_recap(_shared_captain_blank(), ["--format", "json"])
+
+        assert result.exit_code == 0, result.output
+        pack = json.loads(result.stdout)["metadata"]["notes_pack"]
+        [group] = pack["streak_groups"]
+        assert group["kind"] == "streak_group"
+        assert group["text"] == self._GROUPED
+        assert group["group_manager_keys"] == [1, 2, 3, 4, 5, 6]
+        assert group["manager_key"] is None
+        blanks = [entry for entry in pack["entries"] if entry["condition_key"] == "captain_blank_run"]
+        assert sorted(entry["manager_name"] for entry in blanks) == sorted(_SHARED_BLANK_NAMES)
+        assert all(entry["surfaces"] == [] and entry["group_manager_keys"] == [] for entry in blanks)
+        assert pack["season_count_groups"] == []
+        # One per manager per open run: the grouped line is not a run.
+        assert pack["entry_count"] == len(pack["entries"])
+
+
 # ---------------------------------------------------------------------------
 # U11: league-recap --format json
 # ---------------------------------------------------------------------------

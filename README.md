@@ -167,7 +167,10 @@ how often it happens: wins and last places on every third, captain blanks and wa
 hauls on every fifth, bottom-half gameweeks only in the second half of the season and
 only on every tenth, and a green-arrow drought only while unbroken at five or ten
 gameweeks, never counting the weeks a manager spent top of the table with nowhere
-to climb. Some bring along others who added to the same count that week. The full list
+to climb. Some bring along others who added to the same count that week. When a large
+share of the league shares one streak or count, as it does when a template captain
+blanks, it prints as one line ("16 of 19 managers: 2 captain blanks in a row") with
+anyone who stands apart from the pack still named. The full list
 prints twice a season, at GW19 and the finale, alongside the fines table. Unjudged
 gameweeks are always stated beside the number — see
 [Season counts](docs/command-reference.md#league-recap) for the per-count rules.
