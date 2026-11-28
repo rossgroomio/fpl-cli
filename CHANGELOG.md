@@ -1,6 +1,18 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+## [2.11.1] - 2026-11-28
+
+### Bug Fixes
+
+- fall back to FPL xGI when Understat serves an error page (#564)
+- green-arrow counts stop calling a league's first gameweek unjudged (#565)
+- league recap footer links to the canonical repository URL (#569)
+
+### Features
+
+- league-recap folds a league-wide streak or count into one line (#570)
+
 ## [2.11.0] - 2026-10-29
 
 ### Bug Fixes
